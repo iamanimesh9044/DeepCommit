@@ -1,0 +1,28 @@
+prompt_file: stage_breakdown_v1/milestone_consolidate.md
+subagent_prompt_file: stage_breakdown_v1/seed_expansion.md
+
+# MCP tools required by both main agent and subagents
+mcp_tools:
+  git_analysis:
+    # Main agent (milestone_consolidate.md) only:
+    - analyze_commit_coverage            # Phase 3: validate coverage & partition
+    - validate_milestone_partitioning    # Phase 3: validate milestone partitioning (no cycles)
+    - check_dependency                   # Phase 2: check milestone dependencies, Phase 3: detailed cycle analysis
+    # Both main agent and subagents (seed_expansion.md):
+    - analyze_milestone_conflicts        # Validate path completeness
+    - get_commit_context                 # Get commit details
+    - search_entities                    # Search PRs, issues, conversations
+
+input:
+  directory: input
+  children:
+    milestone_seeds: milestone_seeds.jsonl
+    subgraphs: subgraphs
+    seed_group_analysis: seed_groups_analysis.json
+
+output:
+  directory: output
+  children:
+    dependency_proposals_csv: dependency_proposals.csv
+    seed_groups: seed_groups.json
+    milestone_csv: milestones.csv

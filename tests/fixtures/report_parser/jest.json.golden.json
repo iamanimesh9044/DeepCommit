@@ -1,0 +1,26 @@
+{
+  "_framework": "jest",
+  "collectors": [],
+  "duration": 0,
+  "summary": {
+    "error": 0,
+    "failed": 1,
+    "passed": 1,
+    "skipped": 1,
+    "total": 3
+  },
+  "tests": [
+    {
+      "nodeid": "ui/a.test.js::Suite > fails",
+      "outcome": "failed"
+    },
+    {
+      "nodeid": "ui/a.test.js::Suite > passes",
+      "outcome": "passed"
+    },
+    {
+      "nodeid": "ui/a.test.js::Suite > pends",
+      "outcome": "skipped"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+prompt_file: stage_breakdown_v1/dep_infer.md
+
+mcp_tools:
+  git_analysis:
+    - get_commit_context
+    - search_entities
+    - check_dependency
+    - analyze_dag_conflicts
+
+input:
+  directory: input
+  children:
+    dependency_proposals_csv: dependency_proposals.csv
+    milestone_csv: milestones.csv
+    pre_selected_candidates: pre_selected_candidates.json
+    inferred_dependencies: inferred_dependencies.json
+
+output:
+  directory: output
+  children:
+    dependencies_csv: dependencies.csv

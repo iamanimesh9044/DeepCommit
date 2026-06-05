@@ -1,0 +1,25 @@
+# Harness Main Agent Prompt
+
+TODO: Main agent prompt content
+
+## Context
+- Repository: {{repo_name}}
+- Commit range: {{start_tag}} to {{end_tag}}
+- Code commit SHA: {{code_commit_sha}}
+
+## Available Inputs
+- Main commits: {{main_commits}}
+- Commit DAG: {{commit_dag}}
+- Patches: {{patches}}
+
+## Available MCP Tools
+- {{get_commit_context}}
+- {{search_entities}}
+- {{analyze_commit_coverage}}
+- {{check_dependency}}
+
+## Evaluation Criteria
+{{CHECKLIST}}
+
+## Your Task
+Execute the harness workflow as described above.

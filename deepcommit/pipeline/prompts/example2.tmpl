@@ -1,0 +1,44 @@
+# Environment and MCP Tools Verification — Minimal Test
+
+## Environment Verification
+1. Check Python version: run `python --version`
+2. Check that you can import packages (verify uv environment is active)
+3. Verify git is available: run `git --version`
+
+## Inputs
+- repo_git_path: {{repo_path}}
+- result_path: {{result_path}}
+
+## Task
+1. Use git to get two recent commit SHAs from repo_path
+2. Use MCP tool `get_commit_context` to fetch commit details (verify MCP tools work)
+3. Create minimal output based on those commits
+
+## MCP Tool Usage
+- Server: `git_analysis`
+- Tool: `get_commit_context(sha="<commit_sha>")`
+
+## Output Requirements (based on models.py)
+Write these CSV files to `{{result_path}}`:
+
+### milestones.csv
+Header: `id,title,commits,mini_srs,category`
+Generate 2 rows:
+- `M1,First milestone,<commit1_sha>,First test milestone,feature`
+- `M2,Second milestone,<commit2_sha>,Second test milestone,feature`
+
+Note: `category` field is optional but recommended for compatibility with analysis tools
+
+### dependencies.csv
+Header: `prerequisite_id,dependant_id,dependency_primary_type,dependency_secondary_types,dependency_strength,dependency_tags,dependency_notes`
+Generate 1 row (single edge):
+- `M1,M2,FUNC,,strong,,M2 depends on M1`
+
+## Success Criteria
+- Python commands execute successfully (uv env active)
+- MCP tool returns commit data
+- CSV files created with correct column headers
+- 2 milestones with valid id and title
+- 1 dependency edge created
+
+Return brief summary: "Environment verified. Created 2 milestones and 1 dependency based on commits."

@@ -1,0 +1,108 @@
+# Rust Test Detection Rules for ast-grep
+# Uses 'follows' relation to match functions preceded by test attributes
+# Multiple rules separated by ---
+
+id: test_fn
+language: rust
+rule:
+  pattern: fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[test]'
+---
+id: test_fn_pub
+language: rust
+rule:
+  pattern: pub fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[test]'
+---
+id: test_should_panic
+language: rust
+rule:
+  pattern: fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[should_panic]'
+---
+id: test_should_panic_pub
+language: rust
+rule:
+  pattern: pub fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[should_panic]'
+---
+id: test_ignore
+language: rust
+rule:
+  pattern: fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[ignore]'
+---
+id: test_ignore_pub
+language: rust
+rule:
+  pattern: pub fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[ignore]'
+---
+id: tokio_test
+language: rust
+rule:
+  pattern: async fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[tokio::test]'
+---
+id: tokio_test_pub
+language: rust
+rule:
+  pattern: pub async fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[tokio::test]'
+---
+id: async_std_test
+language: rust
+rule:
+  pattern: async fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[async_std::test]'
+---
+id: actix_test
+language: rust
+rule:
+  pattern: async fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[actix_rt::test]'
+---
+id: rstest_fn
+language: rust
+rule:
+  pattern: fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[rstest]'
+---
+id: rstest_fn_pub
+language: rust
+rule:
+  pattern: pub fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[rstest]'
+---
+id: rstest_async
+language: rust
+rule:
+  pattern: async fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[rstest]'
+---
+id: bench_fn
+language: rust
+rule:
+  pattern: fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[bench]'
+---
+id: bench_fn_pub
+language: rust
+rule:
+  pattern: pub fn $NAME($$$ARGS) { $$$ }
+  follows:
+    pattern: '#[bench]'

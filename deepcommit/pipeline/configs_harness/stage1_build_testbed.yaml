@@ -1,0 +1,7 @@
+# Stage 1: Build Testbed Agent 配置
+
+# 主 agent prompt
+prompt_file: harness_v1/stage1_build_testbed.tmpl
+
+# MCP 工具配置 (build testbed 不需要 MCP 工具,主要使用 bash)
+mcp_tools: {}

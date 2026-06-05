@@ -1,0 +1,158 @@
+# MCP Tools Test — Using search_entities and get_commit_context
+
+## Task Overview
+This prompt tests the MCP tools integration by using ONLY `search_entities` and `get_commit_context` to gather commit information and construct a valid DAG (milestones + dependencies).
+
+## CRITICAL: Tool Usage Requirements
+
+### Available MCP Tools
+You MUST use ONLY these two tools to gather information:
+1. **mcp__git_analysis__search_entities** - Search for commits matching criteria
+2. **mcp__git_analysis__get_commit_context** - Get detailed information for a specific commit
+
+### Tool Failure Handling
+**MANDATORY**: If ANY tool call fails or returns an error:
+1. **DO NOT PROCEED** with subsequent steps
+2. Immediately output an error message: "❌ MCP Tool Error: <tool_name> failed. Aborting task."
+3. **EXIT** without creating any CSV files
+4. Do not attempt recovery or retry
+
+## Actual CSV Format Requirements
+
+### milestones.csv
+Required columns: `id,title,commits,mini_srs,category`
+- `id`: non-empty string (e.g., "M1", "M2", "M3")
+- `title`: non-empty milestone title
+- `commits`: semicolon-separated commit SHA7 list (can be empty)
+- `mini_srs`: mini-SRS requirement specification (can be empty)
+- `category`: milestone category (can be empty, suggested: "feature", "bugfix", "refactor")
+
+### dependencies.csv
+Required columns: `prerequisite_id,dependant_id,dependency_primary_type,dependency_secondary_types,dependency_strength,dependency_tags,dependency_notes`
+- `prerequisite_id`: must match an existing milestone id
+- `dependant_id`: must match an existing milestone id (prerequisite_id ≠ dependant_id)
+- `dependency_primary_type`: ARCH/FUNC/NFR (can be empty)
+- `dependency_secondary_types`: semicolon-separated types (can be empty)
+- `dependency_strength`: strong/weak (can be empty)
+- `dependency_tags`: VERIFY/REGRESSION/etc (can be empty)
+- `dependency_notes`: notes (can be empty)
+
+## Step-by-Step Execution Plan
+
+### Step 1: Search for Recent Commits
+Use `mcp__git_analysis__search_entities` to find recent commits:
+```python
+# Example: Get last 20 commits
+result = mcp__git_analysis__search_entities(
+    types=["commit"],
+    expand=["commit.files", "commit.stats"],
+    order_by="created_at",
+    limit=20
+)
+```
+
+**CHECK**: If this call fails, output error and EXIT immediately.
+
+From the results, extract:
+- `sha`: Commit hash
+- `author.name`, `author.email`: Author information
+- `authored_at`: Commit date
+- `message_excerpt`: Commit message
+- `files`: Modified files (if expanded)
+- `stats`: Code statistics (if expanded)
+
+### Step 2: Analyze Commit Details
+For key commits identified in Step 1, use `mcp__git_analysis__get_commit_context`:
+```python
+# Example: Get detailed info for a specific commit
+context = mcp__git_analysis__get_commit_context(
+    sha="<commit_sha_from_step1>",
+    expand=["files", "stats", "diff", "issue_refs"],
+    diff_limit_lines=100
+)
+```
+
+**CHECK**: If ANY call fails, output error and EXIT immediately.
+
+From the context, extract:
+- `files`: Detailed file changes (path, status, additions, deletions)
+- `diff.snippet`: Code diff preview
+- `issue_refs`: Related issue numbers
+- `touches_tests`: Boolean indicating if tests were modified
+
+### Step 3: Group Commits into Milestones
+Based on the commit information gathered:
+1. Analyze commit messages, file changes, and dates
+2. Group related commits into logical milestones
+3. Create 3-5 meaningful milestones
+4. Assign categories: "feature", "bugfix", "refactor", "test", "docs"
+
+### Step 4: Identify Dependencies
+Analyze:
+- File overlap between milestones (shared files = potential dependency)
+- Temporal order (earlier commits likely dependencies of later ones)
+- Commit messages indicating dependencies (e.g., "depends on", "requires")
+- Test file changes (test milestones often depend on feature milestones)
+
+Create dependencies with:
+- `dependency_primary_type`: ARCH (architectural), FUNC (functional), NFR (non-functional)
+- `dependency_strength`: strong (must-have) or weak (nice-to-have)
+
+### Step 5: Generate CSV Files
+Write to `{{result_path}}`:
+
+**milestones.csv** example:
+```
+id,title,commits,mini_srs,category
+M1,Add HTTPResponse.read1 support,ac6ca99,Implement read1() method for buffered reading in HTTPResponse,feature
+M2,Fix read1 resource cleanup,6b2b377,Ensure read1() properly closes response when all data is read,bugfix
+M3,Improve chunked encoding errors,6ffe55b,Provide clearer error messages for truncated chunked responses,bugfix
+M4,Validate response content length,fa54179,Distinguish between truncated and excess content in responses,bugfix
+M5,Update encoding to UTF-8,07f236b,Change default chunked request body encoding from ISO-8859-1 to UTF-8,feature
+```
+
+**dependencies.csv** example:
+```
+prerequisite_id,dependant_id,dependency_primary_type,dependency_secondary_types,dependency_strength,dependency_tags,dependency_notes
+M1,M2,FUNC,,strong,,M2 fixes issues in M1's read1() implementation
+M1,M3,ARCH,,weak,,Both work with response handling
+M3,M4,FUNC,,strong,,M4 extends M3's error handling improvements
+M2,M5,ARCH,,weak,,Both modify response/request processing
+```
+
+## Validation Checklist
+Before writing files, verify:
+- [ ] All MCP tool calls succeeded (no errors)
+- [ ] At least 3 milestones created
+- [ ] All milestone IDs are unique and non-empty
+- [ ] All milestone titles are non-empty
+- [ ] All dependencies reference valid milestone IDs
+- [ ] No self-dependencies (prerequisite_id ≠ dependant_id)
+- [ ] CSV headers exactly match requirements
+- [ ] At least 2 dependencies created
+
+## Success Output
+If all checks pass, output:
+```
+✅ MCP Tools Test Complete
+- search_entities calls: <N>
+- get_commit_context calls: <N>
+- Milestones generated: <N>
+- Dependencies generated: <N>
+- Files written to: {{result_path}}
+```
+
+## Failure Output
+If any MCP tool fails:
+```
+❌ MCP Tool Error: <tool_name> failed
+Error details: <error_message>
+Task aborted. No files generated.
+```
+
+## Notes
+- Use SHORT SHA (7 characters) in the `commits` field
+- The `commits` field can contain multiple SHAs separated by semicolons
+- Dependencies should form a valid DAG (no cycles)
+- Prioritize commits with meaningful changes (avoid trivial commits like "fix typo")
+- Use the diff information to understand what each commit actually changes

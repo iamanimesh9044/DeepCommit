@@ -1,0 +1,28 @@
+{
+  "name": "deepcommit-analysis-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for DeepCommit repository analysis tools",
+  "main": "mcp_server.py",
+  "scripts": {
+    "start": "python mcp_server.py"
+  },
+  "mcp": {
+    "name": "DeepCommit Analysis Tools",
+    "description": "Repository analysis tools for DeepCommit including issue, PR, commit, and release context retrieval",
+    "server": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "env": {
+        "PYTHONPATH": "${PYTHONPATH}:.."
+      }
+    },
+    "tools": [
+      "get_issue_context",
+      "get_pr_context",
+      "get_commit_context",
+      "get_release_context",
+      "get_commits_diff",
+      "search_entities"
+    ]
+  }
+}

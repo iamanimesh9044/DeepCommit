@@ -1,0 +1,14 @@
+title = "DeepCommit gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Project conventions that are not secrets"
+paths = [
+  '''tests/legacy/.*''',          # archived, not shipped; scanned separately if ever revived
+  '''tests/unit/test_repo_hygiene\.py''',  # contains the BANNED regex literals by design
+]
+regexes = [
+  '''DATA/github_data/.*''',      # project-relative data convention (documented, not a secret)
+]

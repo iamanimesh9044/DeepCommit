@@ -1,0 +1,28 @@
+# M3 frozen-prefix hard gate thresholds.
+#
+# These are the 7 aggregate thresholds applied to the candidate frozen prefix
+# in frozen_check_gate.py. M2 sub-thresholds (e.g., H_patched_completeness per
+# milestone) and gate calculation semantics live in code; this file holds only
+# the M3 policy knobs.
+#
+# Aggregation modes (see frozen_check_gate.py:_signal_gate):
+#   - H_patched_completeness_ratio: value_mean (mean of per-milestone real_value,
+#     0-1 continuous). A milestone at 0.97 contributes 0.97 to the mean; not binary.
+#     This drives M3 strategy: partial completeness counts, leverage analysis applies.
+#   - H_none_error_fail_to_pass_present_ratio: pass_count_ratio (count of milestones with
+#     ≥1 F2P/N2P transition / total). Boolean per milestone, count aggregates.
+#   - H_anomaly_within_budget_ratio: pass_count_ratio. Per-milestone anomaly_ratio
+#     ≤ threshold gives boolean pass; aggregate counts passers.
+#
+# All gates evaluate against `value_real` (waiver-exclusive). `value_with_waiver`
+# is informational only — waivers cannot mask the gate.
+thresholds:
+  # Signal gates (M2 outputs aggregated across candidate)
+  H_patched_completeness_ratio: 0.80   # value_mean
+  H_none_error_fail_to_pass_present_ratio: 0.80   # pass_count_ratio
+  H_anomaly_within_budget_ratio: 0.80      # pass_count_ratio
+  # Quantity gates (apply to candidate prefix metadata vs phase2 baseline)
+  commit_retention_rate: 0.85
+  loc_retention_rate: 0.80
+  milestone_count_delta: 0.20
+  loc_cv: 1.50

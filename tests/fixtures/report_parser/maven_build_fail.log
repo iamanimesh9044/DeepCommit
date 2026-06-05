@@ -1,0 +1,22 @@
+[INFO] dubbo-dependencies-all ............................. SKIPPED
+[INFO] dubbo-bom .......................................... SKIPPED
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  06:26 min
+[INFO] Finished at: 2026-04-25T08:32:28Z
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.14.0:compile (default-compile) on project dubbo-rpc-triple: Compilation failure
+[ERROR] /testbed/dubbo-rpc/dubbo-rpc-triple/src/main/java/org/apache/dubbo/rpc/protocol/tri/h12/http1/Http1SseServerChannelObserver.java:[59,32] error: buildMessage(int,Object) in Http1SseServerChannelObserver cannot override buildMessage(int,Object) in AbstractServerHttpChannelObserver
+[ERROR]   overridden method is final
+[ERROR] 
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException
+[ERROR] 
+[ERROR] After correcting the problems, you can resume the build with the command
+[ERROR]   mvn <args> -rf :dubbo-rpc-triple

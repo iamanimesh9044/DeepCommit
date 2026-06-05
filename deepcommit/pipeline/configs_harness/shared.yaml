@@ -1,0 +1,20 @@
+# Harness Pipeline 共享配置
+# 简化版：扁平目录结构，无需 input/output 子目录
+
+# 预处理数据输入文件（位于 proc_data/ 目录）
+inputs:
+  main_commits: main_commits.jsonl
+  commit_dag: commit_dag.json
+  patches: patches
+  pull_requests: pull_requests.jsonl
+  releases: releases.jsonl
+  pr_conversations: pr_conversations.jsonl
+  issues: issues.jsonl
+  codemaat_analysis: codemaat_analysis.json
+  symbol: symbol/main_commits_symbol.jsonl
+
+# 输出文件（直接存放在 workspace root）
+outputs:
+  milestones: milestones.csv
+  dependencies: dependencies.csv
+  metadata: metadata.json

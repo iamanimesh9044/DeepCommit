@@ -1,0 +1,22 @@
+# Stage 2: Collect Test Agent 配置
+# 简化版：扁平目录结构
+
+# 主 agent prompt
+prompt_file: harness_v1/stage2_main_loop.tmpl
+
+# Subagent prompts (由主 agent 动态调用)
+subagent_prompt_file: harness_v1/stage2_sub_dag_builder.tmpl
+deep_analysis_subagent_prompt_file: harness_v1/stage2_sub_dockerfile_builder.tmpl
+
+# MCP 工具配置
+mcp_tools:
+  git_analysis:
+    - get_commit_context
+    - search_entities
+    - analyze_commit_coverage
+    - check_dependency
+
+# 输出文件（直接写到 workspace root，扁平结构）
+outputs:
+  result_summary: result_summary.json
+  agent_output: agent_output.txt

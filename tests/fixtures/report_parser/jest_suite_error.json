@@ -1,0 +1,29 @@
+{
+  "numTotalTests": 1,
+  "numPassedTests": 1,
+  "numFailedTests": 0,
+  "numPendingTests": 0,
+  "numRuntimeErrorTestSuites": 1,
+  "testResults": [
+    {
+      "name": "/testbed/test/unit-tests/stores/room-list-v3/RoomListStoreV3-test.ts",
+      "status": "failed",
+      "message": "  \u001b[1m\u25cf \u001b[22mTest suite failed to run\n\n    Cannot find module '../../../../src/stores/room-list-v3/skip-list/filters' from 'test/unit-tests/stores/room-list-v3/RoomListStoreV3-test.ts'\n\n    \u001b[0m \u001b[90m 22 |\u001b[39m \u001b[36mimport\u001b[39m { \u001b[33mMetaSpace\u001b[39m\u001b[33m,\u001b[39m \u001b[33mUPDATE_SELECTED_SPACE\u001b[39m } \u001b[36m",
+      "assertionResults": []
+    },
+    {
+      "name": "/testbed/test/unit-tests/DeviceListener-test.ts",
+      "status": "passed",
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "DeviceListener",
+            "client information"
+          ],
+          "title": "watches device client information setting",
+          "status": "passed"
+        }
+      ]
+    }
+  ]
+}

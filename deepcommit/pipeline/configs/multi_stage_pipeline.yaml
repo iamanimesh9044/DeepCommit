@@ -1,0 +1,21 @@
+# Multi-stage pipeline configuration
+# Simplified version: only stage_id, stage_impl, and stage_config needed
+# Other details (prompts, inputs/outputs, validation) are handled in stage implementations
+
+stages:
+  - stage_id: "stage1_seed"
+    stage_impl: "stage1_seed_discovery.py"
+    stage_config: "stage1_seed_discov.yaml"
+
+  - stage_id: "stage2_mstone"
+    stage_impl: "stage2_milestone_consolidation.py"
+    stage_config: "stage2_mstone_consol.yaml"
+
+  - stage_id: "stage3_depend"
+    stage_impl: "stage3_dependency_inference.py"
+    stage_config: "stage3_depend_infer.yaml"
+
+  - stage_id: "stage4_decomp"
+    stage_impl: "stage4_milestone_decompose.py"
+    stage_config: "stage4_mstone_decomp.yaml"
+

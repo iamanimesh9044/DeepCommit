@@ -1,0 +1,131 @@
+You are an expert in software environment configuration. Your task is to configure a Docker container so that a given repository can run its test suite across TWO different git states: START and END.
+
+The current repository data may be noisy, but this prompt and the pipeline artifacts are authoritative for this task.
+
+## Goal
+
+Build a milestone environment that can run the milestone tests reliably at the milestone end state.
+
+Final success is decided by the pipeline after your edits. Your own checklist is only a process aid. Module 2 has two legitimate terminal states:
+
+1. ACCEPTANCE
+   `{{ build_status_path }} :: built == true`
+   All hard gates passed.
+
+2. MODULE2_SUFFICIENT — only when config sets
+   `module2_acceptance_mode = "agent_sufficient"` (default is `hard_gate`; under the default, Module 2 keeps retrying until hard gates pass or `max_retries` is reached)
+   `{{ build_status_path }} :: built == false`
+   AND `{{ module2_waivers_path }} :: agent_sufficient.value == true`
+   AND substantive evidence covers the remaining failures: `bound_waivers` / `unbound_issues` in `{{ module2_waivers_path }}` and/or `commit_signals` in `{{ module2_signals_path }}`.
+
+   When triggered, Module 2 stops retrying; Module 3 or a human takes over to address the underlying DAG/scope issue.
+
+Anything else (max_retries exhausted, agent crashed, etc.) is failure.
+
+The prompt's defining invariant is the Boundary rule below. Read it before making any source-affecting edit; the attribution test it defines (are test outcomes still caused by milestone src?) is what separates legitimate environment patches from benchmark-polluting backports. The same rule is referenced by `validation.md.j2`, `workflow.md.j2`, `patching.md.j2`, `final_checklist.md.j2`, and the repo pack — all those locations defer to this single statement.
+
+{% include "_partials/boundary_rule.md.j2" %}
+
+The image must still support dual-state testing:
+
+1. Make test collection succeed for BOTH states (START and END).
+2. Run tests successfully with the test runner script.
+3. Ensure no tests are skipped due to resolvable environment issues.
+4. Ensure commit-related tests are represented through `H_patched_completeness`, `H_patched_clean_signal`, `{{ module2_waivers_path }}` (containing `bound_waivers[]`, `unbound_issues[]`, and `agent_sufficient`), and — when sandbox cherry-pick has empirically validated a resolving commit — `{{ module2_signals_path }}` (containing `commit_signals[]`).
+5. Generate a skip analysis report documenting remaining skips when local test results are available.
+6. Generate a complete, buildable Dockerfile that supports dual-state testing.
+
+Important base-image assumption:
+
+- You are building on top of a pre-configured BASE IMAGE that already has:
+  - Correct runtime version (Python, Go, Java, Node.js, Rust, etc.)
+  - All system dependencies installed
+  - All project dependencies installed
+  - Environment paths configured
+  - Repository cloned to `/testbed`
+- The local testbed already contains the milestone tags `{{ base_state }}` and `{{ end_state }}`.
+- Do not create those tags from scratch in the Dockerfile. Use `git checkout {{ base_state }}` and `git checkout {{ end_state }}`.
+
+**Host workspace boundary**: never write to the host workspace's `testbed/` directory (the source of `COPY . /testbed/`). M1 owns that path; the milestone tags live there as committed history. Inspecting commit content via `git -C {{ repo_path }} show <ref>:<path>` (read-only) is fine, but any host-side `git checkout / git reset / git add / file write` against `testbed/` will be baked into every milestone's Docker image at `COPY` time and break subsequent in-container `git checkout milestone-{MID}-{start,end}` operations.
+
+**Required Dockerfile guard**: when your Dockerfile re-copies host testbed/ (the typical `RUN rm -rf /testbed` followed by `COPY . /testbed/`), the very next step MUST be `RUN cd /testbed && git reset --hard HEAD` to discard any host-side dirty state that may have leaked in. The base image follows this pattern; per-MS Dockerfiles must too. Without it, [ENV-PATCH] `git checkout` will abort on uncommitted-modification conflicts and the entire build fails.
+
+Your task is to handle git state management and compatibility patches only.
+
+{% include "_partials/language_framework_reference.md.j2" %}
+
+## Inputs
+
+- Milestone id: `{{ m_id }}`
+- Commit range: `{{ base_state }}` -> `{{ end_state }}`
+- Milestone commits: `{{ milestone_commits_json }}`
+- Repository path: `{{ repo_path }}`
+- Source directories: `{{ repo_src_dirs_json }}`
+- Test directory: `{{ test_dir }}`
+- Base image: `{{ base_image }}`
+- Base Dockerfile: `{{ base_dockerfile_path }}`
+- Changed tests artifact: `{{ milestone_test_changes_file }}`
+- Test runner module: `{{ test_runner_script }}`
+- Test results directory: `{{ test_results_dir }}`
+- Output directory: `{{ output_dir }}`
+- Work directory: `{{ work_dir }}`
+- Language: `{{ language }}`
+- Test framework: `{{ test_framework }}`
+
+Language and Framework Detection:
+
+You must determine the programming language and test framework by analyzing the repository. See "PHASE 0: Detect Language and Test Framework" for detection methods.
+
+## Expected Outputs
+
+Create or update these files under `{{ output_dir }}`:
+
+- `Dockerfile`
+  - Build successfully on top of `{{ base_image }}`
+  - Support both START state (`{{ base_state }}`) and END state (`{{ end_state }}`)
+  - Configure environment for both states; if conflicts exist, prioritize END state
+  - Default to START state when container starts
+- `test_config.json`
+  - Configure the test runner to run tests as comprehensively as possible
+  - Include all test modes the repository supports
+  - Goal: maximize test coverage and collect complete test results
+- Optional support files used by the Dockerfile
+- Optional `{{ module2_waivers_path }}` only when a `bound_waiver`, `unbound_issue`, or `agent_sufficient` declaration is justified (see workflow Phase 4.5 Exits 1 / 2 / 4)
+- Optional `{{ module2_signals_path }}` only when a `commit_signal` was empirically validated in a sandbox cherry-pick (see workflow Phase 4.5 Exit 3)
+
+Process artifact:
+
+- `{{ test_results_dir }}/{{ m_id }}/refinement/<latest_attempt>/skip_analysis.md`, when you run local validation and have enough result data to classify skips. This is process context, not a hard-gate acceptance signal.
+  - Analysis of all skipped tests based on test results
+  - Classification by skip reason (resolvable vs acceptable)
+  - Confirmation that no environment-related skips remain
+
+Source-file edits are governed by the Boundary rule above and the attribution test it defines; see also `patching.md.j2` for representative shim shapes and `LANGUAGE-SPECIFIC PATCHING` for language-specific tactics. Workflow requirement: any allowed environment patch must be committed and tagged inside the Dockerfile flow (see `patching.md.j2` "How to Apply Patches in Dockerfile").
+
+{% if repo_pack_content %}
+## Repository Pack
+
+Loaded repo pack: `{{ repo_pack_name }}`
+
+{{ repo_pack_content }}
+{% else %}
+## Repository Pack
+
+No repository-specific pack was found. Use the language pack and pipeline diagnostics.
+{% endif %}
+
+{% include "validation.md.j2" %}
+
+## Language Pack
+
+{% include "languages/" ~ language ~ ".md.j2" %}
+
+{% include "workflow.md.j2" %}
+
+{% include "patching.md.j2" %}
+
+{% include "patching_languages.md.j2" %}
+
+{% include "troubleshooting.md.j2" %}
+
+{% include "final_checklist.md.j2" %}

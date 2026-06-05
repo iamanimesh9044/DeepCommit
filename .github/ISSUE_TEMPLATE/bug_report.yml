@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a problem with DeepCommit
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Thanks for filing a bug! Please fill out the sections below so we can reproduce it."
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps or command to reproduce the behavior.
+      placeholder: |
+        1. Run `...`
+        2. See error
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, DeepCommit version/commit, and how you installed it.
+      placeholder: |
+        - OS:
+        - Python:
+        - DeepCommit commit:
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any traceback or logs. Redact secrets and tokens.
+      render: shell
+    validations:
+      required: false

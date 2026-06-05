@@ -1,0 +1,108 @@
+# Retry Context
+
+This is the same milestone setup task with additional information from a previous attempt. Use the context below to focus your next edit; do not treat retry as a different workflow.
+
+{% if has_work_context %}
+Primary status file:
+
+```text
+{{ build_status_path }}
+```
+
+{% if build_status_exists %}
+- Latest recorded `built`: `{{ built }}`
+- Failed gates: `{{ failed_gates | join(", ") if failed_gates else "none recorded" }}`
+- Latest attempt: `{{ latest_attempt }}`
+{% else %}
+No `build_status.json` is available yet for this milestone. Use the raw failure message and attempt artifacts below.
+{% endif %}
+
+Artifact hints:
+
+- Latest attempt directory: `{{ latest_attempt_dir }}`
+- Runner diagnostic: `{{ runner_diagnostic_path }}`
+- Patched tests artifact: `{{ patched_tests_path }}`
+- Waiver file: `{{ module2_waivers_path }}`
+- Signals file: `{{ module2_signals_path }}`
+{% else %}
+No structured work directory was provided. Use the raw failure message below.
+{% endif %}
+
+If `module2_waivers.json` already contains `agent_sufficient.value=true`, re-check that judgment critically. Read the waiver evidence, look for broad filters or artificial skips, and continue fixing if a Dockerfile/test_config/environment change could still solve the blocker. Preserve or refine `agent_sufficient` only when the remaining issue is genuinely outside Module 2 scope.
+
+## Before this attempt: review your previous work
+
+If this is not your first attempt for this milestone, take a moment to review what you produced last time. The pipeline will not flag these issues for you — agent self-discipline is the safeguard, and PR-2 dropped concrete evidence into `build_status.json::raw_metrics` that you can read.
+
+Previous attempt artifacts are under:
+
+```text
+{{ work_dir }}/_build_runs/{{ milestone_id }}/
+```
+
+`ls` that directory to find earlier `attempt_N` folders. For each previous attempt, the relevant files are:
+
+```text
+attempt_N/after_agent/Dockerfile
+attempt_N/after_agent/module2_waivers.json
+attempt_N/after_validation/build_status.json
+```
+
+Self-check before generating this attempt's edits:
+
+1. **Per-class lint evidence** — read `attempt_N/after_validation/build_status.json :: raw_metrics.per_class_lint_evidence`. It carries `per_class_summary` (per-class total_added vs threshold, plus the files in each class) and `per_file_classification` (path → label + added/deleted). If the previous attempt's `violations[]` flagged a file_class with `exceeded_by > 0`, that's a backport pattern at that file class — Phase 4.5 has the right exit (`bound_waiver` + `unbound_issue`, or `commit_signal` if sandbox cherry-pick advanced the anchor). Diff this attempt's Dockerfile against the most recent previous one to confirm you have not pushed the same backport again.
+
+2. **bound_waiver self-audit (BOTH invalid AND verified entries) + candidates_pending follow-through** — do NOT only look at `invalid_bound_waivers`. Read `build_status.json :: raw_metrics.verified_bound_waivers` too and re-audit every entry — pipeline accepts the schema-valid ones, but M3 can only act when the **classification** is correct. Real-world finding from prior attempts: agents discover 8+ future SHAs via `git log -S` then only cherry-pick 3 and quietly forget the rest. The fix is the **iterative cherry-pick lifecycle** (workflow Phase 4.5 Exit 3): write all discovered SHAs as `commit_moves[]` entries with `status="pending"` BEFORE the first cherry-pick, then update each entry's status as you process. This file survives silent exit / context exhaustion / attempt boundaries.
+
+   **FIRST**: read `build_status.json :: raw_metrics.candidates_pending[]` and `raw_metrics.candidates_attempted_failed[]`. These are entries from previous attempts that need follow-through:
+   - For each `pending` entry: continue from where the previous attempt stopped — do the sandbox cherry-pick. Update the entry's status to `verified` (success) or `attempted_failed` (with specific `attempt_log`).
+   - For each `attempted_failed` entry: DO NOT re-try the same SHA. If the cluster still has uncovered errors, write a NEW pending entry with a DIFFERENT candidate SHA, OR ensure the cluster has a corresponding `unbound_issue` documenting it.
+   - `raw_metrics.candidates_pending_warning` non-null means previous attempt left pending entries while declaring `agent_sufficient=true` — that's an empirical-discipline failure; this attempt MUST complete the pending list.
+
+   For EACH entry in the previous attempt's `module2_waivers.json :: bound_waivers[]`:
+   - **Path B (`feature_introduced_later`) audit** — Is `symbol` a clean identifier (NOT `def test_xxx`, NOT a multi-token code fragment)? Is `path` in production source (NOT under any test directory like `tests/`)? Is there a paired `commit_moves[]` entry whose `resolves.bound_waiver_ids` includes this waiver's `id`? If the answer is no to any — fix the entry; if cherry-pick truly cannot advance the anchor, move it to `unbound_issues` (does NOT offset gates).
+   - **Path A (`test_out_of_scope`) audit** — Did you actually run `git log -S '<test_fn>' -- <test_path>` to confirm the test was introduced in a future commit? Or is the test actually in milestone scope and just failing collection due to a future symbol → that's Path B (feature_introduced_later, attached_gates ⊇ `[H_patched_completeness]`).
+   - **`unbound_issue` audit — should it be a bound_waiver instead?** Re-ask: does the cluster actually have a clean future symbol you can `git log -S`? Then it's Path B (cherry-pick + paired commit_signal). Is it a single future test? Then it's Path A. Only leave it in `unbound_issues` when no Path A/B candidate exists — and accept that the gate will fail (unbound_issues do NOT offset gates). **Each unbound_issue = 1 specific M3 action**; if the summary says "broader behavior gaps" or covers >50 errors without a `cluster_breakdown` evidence, split it. The evidence must have `root_cause` + `m3_action` + `why_not_path_a` / `why_not_path_b` per gate.
+   - **Schema check** — `invalid_bound_waivers[].error` tells you what pipeline rejected (deprecated reason_code like `dag_gap_acknowledged` / id missing / attached_gates wrong / symbol not a clean identifier / paired signal missing). Fix the entry (don't switch `reason_code` to a different one to dodge the check).
+
+3. **unbound_issue accumulation + quality warnings** — read previous `module2_waivers.json :: unbound_issues[]`. If there are several entries already, some may belong as `bound_waivers` (if the symptom maps to a verifiable git fact) or as fixable environment problems — review each one critically before this attempt rather than just appending more.
+
+   Also read `build_status.json :: raw_metrics.unbound_issue_quality_warnings` — pipeline flags entries with missing `evidence.root_cause` / `evidence.m3_action`, entries covering >50 error_groups (lumping), and global boilerplate (multiple issues sharing the same root_cause string). Fix every flagged entry: name a specific root_cause + m3_action, split lumped entries, and rewrite boilerplate with per-cluster specifics. Pipeline does not fail on these warnings, but unfixed quality warnings reappear next retry — they are not optional.
+
+4. **agent_sufficient mismatch** — if previously `agent_sufficient.value = true` but the build still failed, a `bound_waiver` is likely missing. Under default config mode (`hard_gate`), self-declaring sufficient does not bypass hard gates — you still need `bound_waivers` (verified by pipeline) covering the failed gates, plus `unbound_issues` documenting what is structurally outside Module 2 scope.
+
+5. **Collection collapse signals Kind 1, not Kind 2.** If the previous attempt's `H_total_not_below_base` value dropped near zero (collected tests ≪ baseline), src is not loading at all — read the attempt's stderr / `start_*.json.log` for `AttributeError` / `ImportError` / fixture crash. The fix is the smallest shim that passes the attribution test (typical shapes: single attribute default, stub declaration; see `patching.md.j2` Boundary rule and the repo pack's loading-shim list). Do NOT escape into `agent_sufficient` before collection recovers. Collapse plus mass `unbound_issue` filing is almost always a Kind 1 problem misclassified as Kind 2. After collection recovers, reclassify remaining failures: real behavior gaps become waivers / signals, not increasingly capable shims.
+
+5a. **Self-audit: shim transparency + test integrity.** Before declaring `agent_sufficient.value=true`:
+   - For each shim block: if it substitutes for a distinct future feature (not just one missing reference), that feature needs an `unbound_issue`.
+   - Test set must reflect what would naturally run. No pytest filters, custom test lists, or collection-modifying hooks. Convert to waivers.
+
+6. **Prior commit_signals — inspect, don't blindly inherit.** Read `attempt_N-1/after_agent/module2_signals.json` if it exists. It is an *alternative milestone proposal* from the prior attempt's sandbox, not production state.
+
+   (a) **Commits proposed last time.** Each `commit_moves[].resolving_commit` is a future SHA the prior sandbox confirmed could advance a blocker. If THIS attempt's blockers cluster on the same missing symbols, consider re-running the Phase 4.5 Exit 3 sandbox workflow with the same candidate(s). **Do not** copy the cherry-pick into the production Dockerfile — that path is sandbox-only.
+
+   (b) **`dockerfile_diff` as shim-shape inspiration.** Prior `dockerfile_diff` is NOT directly production-applicable (M3 owns that decision). But the **shim text inside the diff** (e.g. `Field.db_default = None`) is a *legitimate L1 shim shape* — if the same loading symptom recurs in your current attempt, borrow the shim text into THIS attempt's production Dockerfile per the Q3.L1 location priority.
+
+   (c) **Invalid entries.** Read `build_status.json :: raw_metrics.invalid_commit_signals`. Each invalid entry carries an `error` string (e.g. `resolving_commit IS reachable from end_state` — candidate is in the past, not the future; `dockerfile_diff is not parseable as unified diff`; or `resolves.bound_waivers index N out of bounds`). Either correct the rejected entry or remove it and re-do the sandbox cherry-pick.
+
+7. **Mandatory commit_signal check + candidates_pending closeout.**
+
+   Read `build_status.json :: raw_metrics.commit_signal_missing_warning`. If it is non-null, the previous attempt has one or more `feature_introduced_later` bound_waivers (Path B) **without** a paired `commit_signal` of `status="verified"`. Every Path B waiver mandates a paired verified `commit_moves[]` entry — see validation Design Principles "Path B carries a heavy lift". THIS attempt **MUST** either:
+
+   (a) Run the Phase 4.5 Exit 3 iterative sandbox workflow for each unpaired Path B waiver: `git log -S '<symbol>' -- <path>` to find the introducing commit → write `commit_moves[]` entry with `status="pending"` → `git checkout -b sandbox-...` → `git cherry-pick <sha>` (use `--theirs` if conflict) → rerun the anchor test → confirm the failure stack advanced → **update the entry to `status="verified"`** with `resolves.bound_waiver_ids: [<waiver_id>]` → destroy sandbox branch (production Dockerfile unchanged).
+
+   (b) If sandbox cherry-pick demonstrably cannot advance the anchor (every candidate conflicts unresolvable, or post-pick image still fails on same symbol), update the `commit_moves[]` entry to `status="attempted_failed"` with specific `attempt_log`, AND move the Path B waiver to `unbound_issues`. Don't leave Path B hanging without verified paired signal.
+
+   **Also check `raw_metrics.candidates_pending_warning`**: if non-null, the previous attempt declared `agent_sufficient=true` while leaving `commit_moves[]` entries in `status="pending"`. That is an empirical-discipline failure — the agent discovered SHAs and quit before sandboxing them. THIS attempt MUST process each pending entry (verified or attempted_failed) before declaring sufficient.
+
+   Do NOT switch a Path B waiver to `test_out_of_scope` or another `reason_code` to dodge the paired-signal requirement — pipeline's empirical checks will reject the new classification too. There is no `dag_gap_acknowledged` escape: fix the underlying reality. Either cherry-pick succeeds (Path B) or it doesn't (and the gate fails with the cluster documented in `unbound_issues` with `m3_action` specified).
+
+Raw failure message:
+
+```text
+{{ error_message }}
+```
+
+{% include "troubleshooting.md.j2" %}
+
+---

@@ -1,0 +1,17 @@
+{
+    "command": "bash",
+    "args": [
+        "deepcommit/mcp/start_mcp_server.sh"
+    ],
+    "env": {
+        "DEEPCOMMIT_REPO_DIR": "{{REPO_PATH}}",
+        "DEEPCOMMIT_PREPROC_DIR": "{{PREPROCESSED_PATH}}",
+        "DEEPCOMMIT_COMMIT_DAG_PATH": "{{COMMIT_DAG_PATH}}",
+        "REPO_SRC_DIRS": "{{REPO_SRC_DIRS}}",
+        "REPO_TEST_DIRS": "{{REPO_TEST_DIRS}}",
+        "REPO_EXCLUDE": "{{REPO_EXCLUDE}}",
+        "ENABLED_MCP_TOOLS": "{{ENABLED_MCP_TOOLS}}",
+        "PYTHON_BIN": "{{PYTHON_BIN}}"
+    },
+    "transport": "stdio"
+}

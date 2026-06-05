@@ -1,0 +1,226 @@
+================================================================================
+MILESTONE: {{ milestone_id }} - {{ title }}
+================================================================================
+
+# TASK
+
+Your task is to generate a complete Software Requirements Specification (SRS) for this milestone based on the provided inputs. You will be given:
+1. A **mini SRS** (brief requirement description)
+2. **Code changes** (curated source-only modifications)
+3. **Full commit history** (complete development record with context)
+4. **Test list** (fail-to-pass test cases)
+
+Your goal is to **reverse-engineer** a comprehensive, production-quality SRS that:
+- Expands the mini SRS into detailed functional requirements
+- Analyzes code changes and commits to understand implementation
+- Uses fail-to-pass tests as acceptance criteria
+- Produces a realistic requirements document that could have guided the original development
+
+**Output Requirements**:
+- Save the generated SRS document to: `{{ output_file }}`
+- Use Markdown format (.md extension)
+- Ensure the document is complete and ready for engineering use
+
+================================================================================
+
+# AVAILABLE INPUTS
+
+## INPUT 1: Mini SRS
+
+{{ mini_srs }}
+
+
+## INPUT 2: Code Changes
+
+**Docker Container**: `{{ milestone_container }}`
+**Git range**: `{{ start_commit }}..{{ end_commit }}`
+
+**How to Access Code in Container:**
+
+The milestone container has the complete git repository (working directory: `/testbed`) already checked out to commit `{{ end_commit }}`.
+
+To view files in the container:
+```bash
+docker exec {{ milestone_container }} cat <file_path>
+```
+
+To run git commands:
+```bash
+docker exec {{ milestone_container }} git <git-command>
+```
+
+---
+
+This represents the **curated** implementation changes for this milestone:
+- Squashed source code modifications (project source code only)
+- Focused on requirement-related functional changes
+- Excludes test files, documentation, and auxiliary changes
+
+**Use this to**: Understand the core functional implementation relevant to requirements.
+
+**How to view**: Run `docker exec {{ milestone_container }} git diff {{ start_commit }}..{{ end_commit }}`
+
+
+## INPUT 3: Full Commit History ({{ commit_count }} commits)
+
+This is the **complete** development record for context:
+{%- for commit in commits %}
+- `{{ commit.sha }}` - {{ commit.subject }}
+{%- endfor %}
+
+Includes all original commits with:
+- Complete semantic information and commit messages
+- Test files and their evolution
+- Documentation and configuration changes
+
+**Use this to**: Gain full context on implementation rationale and test-requirement alignment.
+
+**How to access patches**: Read `{{ patches_dir }}/{sha}.patch` for detailed changes.
+
+
+## INPUT 4: Stable Fail-to-Pass Test List ({{ f2p_test_count }} tests)
+
+{%- if f2p_test_count > 0 %}
+**Source**: Stable classification from `test_results/{{ milestone_id }}/benchmark/{{ milestone_id }}_classification.json`
+**Full Test List**: `{{ f2p_tests_list_file }}`
+
+These are **verified stable** fail-to-pass tests (filtered from flaky tests through multiple test runs).
+
+{%- if show_all_tests %}
+**Complete list ({{ f2p_test_count }} tests)**:
+{%- for test in f2p_tests_preview %}
+- {{ test.test_id }}
+{%- endfor %}
+{%- else %}
+**Note**: {{ f2p_test_count }} tests total. See full list in `{{ f2p_tests_list_file }}`.
+{%- endif %}
+
+**How to access test code**:
+- Each test ID follows the format: `<file_path>::<ClassName>::<method_name>` or `<file_path>::<function_name>`
+- To view test implementation in the container (already at commit `{{ end_commit }}`):
+  ```bash
+  docker exec {{ milestone_container }} cat test/test_response.py
+  ```
+{%- else %}
+No acceptance tests found for this milestone.
+{%- endif %}
+
+================================================================================
+
+# SRS GENERATION GUIDELINES
+
+## Design Philosophy
+
+A good SRS should simulate real-world development scenarios where engineers receive requirements and must independently research, analyze code, and design solutions. The SRS must be **realistic**, **challenging**, and **well-defined**.
+
+### Core Principles
+
+1. **Realism**: Mimic actual issue statements and requirements from production environments
+   - Base problems on real user reports and symptoms
+   - Avoid artificial or overly academic problem descriptions
+   - Use concrete error messages and failure scenarios when available
+
+2. **Agent Autonomy**: Test comprehensive engineering capabilities
+   - Agent must research domain knowledge (RFCs, standards, documentation)
+   - Agent must analyze codebase to find root causes
+   - Agent must design implementation approach independently
+   - Frame requirements around desired outcomes, not prescribed edits
+   - **Do NOT over-specify**: No implementation hints, no file paths, no code snippets
+
+3. **Sufficiency**: Provide clear and complete problem definitions
+   - Problem symptoms must be specific and observable
+   - Requirements must define **what** to achieve, not **how**
+   - Acceptance criteria must be verifiable (preferably via tests)
+   - Use gold-patch and test suite to validate completeness
+   - Maintain clarity to avoid ambiguity while keeping the task challenging—do not simplify implementation choices
+
+---
+
+## Format Requirements
+
+### Document Structure
+
+Every SRS must include:
+
+1. **Overview Section**: High-level summary of all requirements
+2. **Requirements Sections**: Individual functional requirements (FR1, FR2, ...)
+
+### Individual Requirement Format
+
+```markdown
+### FRX: [Requirement Title]
+
+**Problem**: [One-sentence symptom description. Describe what fails, not why.]
+
+**User Report** (optional - only when real user issue exists):
+```
+[Brief excerpt from actual issue: error messages, reproduction steps, impact]
+```
+
+**Requirements**:
+- [Functional requirement 1 - what to achieve]
+- [Functional requirement 2]
+- ...
+
+**Acceptance**:
+- [Prefer scenario-style observable outcome, e.g., “When <action>, <result>”; if not feasible, clearly state the observable outcome]
+- [Additional observable outcome]
+- ...
+```
+
+### What to INCLUDE
+
+✅ **Overview section**:
+- Brief summary of all requirements (numbered list)
+- Affected modules/files
+- High-level problem domain
+- Include only the context necessary to eliminate ambiguity; avoid extra guidance that makes implementation trivial
+- **Omit** issue/PR numbers and implementation details
+
+✅ **Problem section**:
+- Observable symptoms and error messages
+- Failure scenarios and reproduction context
+- Impact on users or system functionality
+- Key technical terms (e.g., "TLS 1.3 PHA", "FIPS", "OpenSSL 3.2.0")
+
+✅ **User Report** (when available):
+- Actual error messages from issue
+- User's reproduction steps
+- User's description of impact
+- Keep concise (3-5 lines max)
+- **Omit** issue/PR numbers and external links (GitHub, bug trackers, etc.)
+
+✅ **Requirements**:
+- What functionality to implement
+- What behavior to fix or improve
+- What compatibility to maintain
+- Describe desired end state or constraints; avoid mandating specific functions, methods, or code edits
+- Provide extra context only when required to prevent misinterpretation, not to ease implementation
+- Keep implementation-agnostic
+
+✅ **Acceptance**:
+- Prefer scenario-style observable outcomes (“When <action>, <result>”); if that’s not feasible, clearly state the observable result
+- Test scenarios that must pass (refer to existing tests by behavior, not implementation steps)
+- Backward compatibility requirements
+- Non-breaking change requirements
+
+### What to EXCLUDE
+
+❌ **Do NOT include**:
+- Technical background tutorials (e.g., "TLS 1.3 PHA allows...")
+- Root cause analysis (e.g., "The bug is in line 42 because...")
+- Implementation details (e.g., "Use lazy loading by...")
+- Prescriptive changes (e.g., "Delete `selected_npn_protocol()`" or "Call function X")
+- Code snippets (before/after examples)
+- File paths and line numbers
+- Step-by-step implementation guides
+- Historical context (e.g., "accidentally broken during refactoring")
+- Issue/PR/Changelog references (e.g., "Issue #1234", "PR #5678")
+- **External links that reveal implementation** (e.g., upstream bug trackers, reference implementations)
+
+❌ **Do NOT add separate sections**:
+- "Background", "Root Cause", "Technical Context"
+- "Implementation Plan", "Solution Approach"
+- "Implementation References"
+
+**End of Template**

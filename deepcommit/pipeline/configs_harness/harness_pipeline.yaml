@@ -1,0 +1,13 @@
+# Harness Pipeline 配置
+# 两阶段流程:
+# 1. Build Testbed - 构建测试环境
+# 2. Collect Test - 收集测试信息
+
+stages:
+  - stage_id: "stage1_build_testbed"
+    stage_impl: "stage1_build_testbed.py"
+    stage_config: "stage1_build_testbed.yaml"
+
+  # - stage_id: "stage2_collect_test"
+  #   stage_impl: "stage2_collect_test.py"
+  #   stage_config: "stage2_collect_test.yaml"

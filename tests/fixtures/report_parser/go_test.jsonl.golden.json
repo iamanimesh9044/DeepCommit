@@ -1,0 +1,26 @@
+{
+  "_framework": "go_test",
+  "collectors": [],
+  "duration": 0.0,
+  "summary": {
+    "error": 0,
+    "failed": 1,
+    "passed": 1,
+    "skipped": 1,
+    "total": 3
+  },
+  "tests": [
+    {
+      "nodeid": "pkg/TestA",
+      "outcome": "passed"
+    },
+    {
+      "nodeid": "pkg/TestB",
+      "outcome": "failed"
+    },
+    {
+      "nodeid": "pkg/TestC",
+      "outcome": "skipped"
+    }
+  ]
+}

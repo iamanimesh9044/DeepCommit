@@ -1,0 +1,113 @@
+## ENVIRONMENT PATCHING
+
+### Minimal Fix Principle
+
+Use minimal environment patches only when the historical START or END state cannot collect or run tests normally.
+
+```text
+Compilation or setup error found
+    |
+    +-- Locate the exact file and line
+    |
+    +-- Field, method, type, import, or package does not exist
+    |      -> patch the narrowest function/module boundary that unblocks collection;
+    |         for future API calls, use the Boundary rule's shape 4 vs shape 9
+    |         decision flow before writing any adapter. If no inert shape fits,
+    |         use waiver/signal.
+    |
+    +-- Interface or method signature mismatch
+    |      -> add the narrowest inert shape/adapter only if it passes the attribution test;
+    |         for future API calls, use the Boundary rule's shape 4 vs shape 9
+    |         decision flow before writing any adapter. If no inert shape fits,
+    |         use waiver/signal. Compiled-language test-method containment is
+    |         only the special case described in patching_languages.md.j2.
+    |
+    +-- Build option, feature flag, or runner mode issue
+           -> fix through test_config.json or environment variables
+```
+
+Core principles:
+
+1. Do not delete files or modules.
+2. Do not use file-level `git checkout` as a fix.
+3. Prefer environment variables, dependency setup, build flags, or narrow compatibility shims over source edits.
+4. If an environment patch is unavoidable, commit it and retag the affected state.
+5. Preserve all tests that can run normally.
+
+Specific rules:
+
+- Do not skip or exclude an entire module just because one function or test has an environment issue.
+- Only comment out code under the compilation-before-collection exception for compiled languages; do not use comments to hide interpreted test failures or behavior gaps.
+- If a compile-containment patch has direct callers in the same build unit, patch only the minimum needed for compilation to proceed and re-apply the attribution test. If callers need real behavior, escalate to L2.
+- Build option issues should be fixed through `test_config.json`, command flags, profiles, features, or environment variables.
+- Build config files such as `pom.xml`, `build.gradle`, `Cargo.toml`, or package manifests may be patched only at the narrow dependency/profile/feature line needed to unblock tests.
+
+Before applying any source-affecting patch, re-apply the **Boundary rule** (defined once near the top of this prompt). Its decision framework (Q1 attribution test → Q2 L1/L2 → Q3 action) is the gatekeeper: edits qualifying as Kind 1 evaluation-enabling shims are written here per the workflow below; anything failing the attribution test must escalate to one of the four exits in `workflow.md.j2` Phase 4.5 (`bound_waivers` / `unbound_issues` / `commit_signals` / `agent_sufficient`).
+
+For missing future APIs, do not improvise a working adapter. First use
+the Boundary rule's shape 4 vs shape 9 flow: runtime/test-body
+first-touch sites use raise-on-call placeholders; module-load /
+class-body / decorator first-touch sites may use only inert
+construction. If either shape would need real behavior, escalate
+instead of patching.
+
+### How to Apply Patches in Dockerfile
+
+Apply patches through Dockerfile commands. Do not modify `{{ repo_path }}` directly.
+
+Any environment patch that the attribution test in the Boundary rule allows must be **committed and tagged** inside the Dockerfile flow. After applying patches, you MUST commit the changes and move the tag to preserve patches across git checkouts. Without this step, patches are lost when switching START and END states.
+
+NEVER DELETE FILES when applying patches. Do not use `rm`, `git rm`, or similar commands to make tests disappear. Only modify file contents when a narrow environment patch is unavoidable.
+
+```dockerfile
+RUN cd /testbed && git checkout <TAG> && \
+    <PATCH_COMMANDS> && \
+    git add -A && \
+    git commit -m "[ENV-PATCH] Apply compatibility patches" && \
+    git tag -f <TAG> HEAD
+```
+
+Example with a patch file:
+
+```dockerfile
+COPY /tmp/patches-{{ m_id }}/*.patch /tmp/patches/
+RUN cd /testbed && git checkout {{ base_state }} && \
+    for patch in /tmp/patches/*.patch; do patch -p1 < "$patch"; done && \
+    git add -A && \
+    git commit -m "[ENV-PATCH] Apply compatibility patches" && \
+    git tag -f {{ base_state }} HEAD
+RUN rm -rf /tmp/patches
+```
+
+**Explain every source-affecting patch in a Dockerfile comment.** Each `RUN` block that modifies a source file (or writes a `sitecustomize` / `conftest` / scaffolding file that intercepts src behavior) must carry a comment explaining what the patch does and why it passes the attribution test in the Boundary rule. Example:
+
+```dockerfile
+# [ENV-PATCH] declaration stub for GeneratedField — attribution test: evaluability-only,
+# no business logic, identifier resolution restored at historical default.
+# Future commit f333e3513e8 introduces the real class; idempotent guard
+# in /tmp/sitecustomize.py ensures the shim no-ops when the real symbol
+# becomes available.
+RUN cd /testbed && git checkout {{ end_state }} && \
+    cat > /tmp/sitecustomize.py << 'EOF'
+    ...
+```
+
+A comment that just says "fix tests" or repeats the function name is not enough — write the reasoning. Retry context and human auditors read these comments to triage whether the patch is a legitimate Kind 1 shim or a Kind 2 backport in disguise.
+
+**Aggregate shim transparency.** If removing your shims would expose distinct future features (not just unresolved imports), each substituted feature MUST also surface as an `unbound_issue`. The shim recovers the build; the unbound_issue tells the truth.
+
+**Test subsetting is prohibited.** Do not narrow the test run via pytest filters, custom test lists, conftest item removal, or runner-level module restriction. Tests that cannot run for environment reasons must surface as waiver or unbound_issue, never silent exclusion.
+
+Why commit and move tags:
+
+- Uncommitted patches are lost when switching git states via `git checkout`.
+- Moving the tag makes the patched state reachable by the runner.
+- The runner can switch between START and END without losing the patch.
+
+Verify patches persist:
+
+```bash
+docker build -t test-milestone-{{ m_id }}-temp -f Dockerfile {{ repo_path }}
+docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && <COLLECT_CMD>"
+docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && git checkout {{ end_state }} && <COLLECT_CMD>"
+```

@@ -1,0 +1,21 @@
+# preprocessed
+input:
+  directory: proc_data
+  children:
+    main_commits: main_commits.jsonl
+    commit_dag: commit_dag.json
+    patches: patches
+    pull_requests: pull_requests.jsonl
+    releases: releases.jsonl
+    pr_conversations: pr_conversations.jsonl
+    issues: issues.jsonl
+    codemaat_analysis: codemaat_analysis.json
+    symbol: symbol/main_commits_symbol.jsonl
+
+# results
+output:
+  directory: result
+  children:
+    milestone_csv: milestones.csv
+    dependencies_csv: dependencies.csv
+    analysis_dir: analysis

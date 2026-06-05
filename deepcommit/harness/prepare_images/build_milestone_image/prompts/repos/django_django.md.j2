@@ -1,0 +1,152 @@
+### Python (Django projects - SPECIAL CASE)
+
+Django projects require special configuration. Django tests often access `settings` at module import time, BEFORE `pytest_configure` runs. You MUST set `DJANGO_SETTINGS_MODULE` environment variable.
+
+**Key Configuration Steps:**
+
+1. **Create a complete Django settings file** (`pytest_settings.py`) in `/testbed/tests/`:
+
+```python
+# pytest_settings.py - Complete Django test settings
+import os
+import sys
+
+TESTS_DIR = "/testbed/tests"
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+DATABASES = {
+    "default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"},
+    "other": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"},
+}
+
+SECRET_KEY = "django_tests_secret_key"
+PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
+DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
+USE_TZ = False
+DEBUG = False
+SITE_ID = 1
+
+# Standard Django apps
+INSTALLED_APPS = [
+    "django.contrib.contenttypes",
+    "django.contrib.auth",
+    "django.contrib.sites",
+    "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.admin.apps.SimpleAdminConfig",
+    "django.contrib.staticfiles",
+    "django.contrib.flatpages",
+    "django.contrib.redirects",
+]
+
+# Dynamically discover and add test modules
+SUBDIRS_TO_SKIP = {"import_error_package", "test_runner_apps", "gis_tests", "__pycache__"}
+
+def _get_test_modules():
+    modules = []
+    for entry in os.scandir(TESTS_DIR):
+        if (entry.is_dir() and entry.name not in SUBDIRS_TO_SKIP
+            and "." not in entry.name
+            and os.path.exists(os.path.join(entry.path, "__init__.py"))):
+            modules.append(entry.name)
+    return modules
+
+_test_apps = _get_test_modules()
+INSTALLED_APPS.extend(_test_apps)
+
+# Disable migrations for all test apps
+MIGRATION_MODULES = {app: None for app in _test_apps}
+MIGRATION_MODULES.update({"auth": None, "contenttypes": None, "sessions": None})
+
+MIDDLEWARE = [
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+]
+
+ROOT_URLCONF = "urls"
+TEMPLATES = [{
+    "BACKEND": "django.template.backends.django.DjangoTemplates",
+    "DIRS": [os.path.join(TESTS_DIR, "templates")],
+    "APP_DIRS": True,
+    "OPTIONS": {"context_processors": [
+        "django.template.context_processors.debug",
+        "django.template.context_processors.request",
+        "django.contrib.auth.context_processors.auth",
+        "django.contrib.messages.context_processors.messages",
+    ]},
+}]
+STATIC_URL = "/static/"
+```
+
+2. **Configure pytest.ini with DJANGO_SETTINGS_MODULE:**
+
+```ini
+[pytest]
+DJANGO_SETTINGS_MODULE = pytest_settings
+python_files = test*.py tests.py
+python_classes = *Test *Tests *TestCase
+python_functions = test_*
+addopts = --tb=short -p no:warnings --ignore=gis_tests --ignore=test_runner_apps --reuse-db
+```
+
+3. **Set environment variable in Dockerfile:**
+
+```dockerfile
+ENV PYTHONPATH=/testbed/tests:/testbed
+ENV DJANGO_SETTINGS_MODULE=pytest_settings
+```
+
+4. **Prefer bounded Django runner settings for full-suite validation:**
+
+When wrapping Django's `runtests.py`, avoid one monolithic high-parallel run. Use bounded chunks and per-chunk timeout by default: `--workers 8`, `--chunk-size 20`, and `--run-timeout 900`. If a module produces multiprocessing pipe / pickle issues or very large traceback output, keep that module in the suite but run it as a serial tail instead of filtering it out.
+
+If you generate a Django `runtests.py` → pytest-json-report bridge, preserve
+Django's result boundary:
+
+```python
+{"ok": "passed", "FAIL": "failed", "ERROR": "error",
+ "skipped": "skipped", "expected failure": "xfailed",
+ "unexpected success": "xpassed"}
+```
+
+`ERROR` means import/setup/collection/runtime error, not an assertion failure.
+Do not map Django `ERROR` to `failed`.
+
+5. **Copy config files after each git checkout:**
+
+```dockerfile
+RUN cd /testbed && git checkout {{ end_state }} && \
+    cp /tmp/pytest_config/pytest.ini /testbed/tests/pytest.ini && \
+    cp /tmp/pytest_config/conftest.py /testbed/tests/conftest.py && \
+    cp /tmp/pytest_config/pytest_settings.py /testbed/tests/pytest_settings.py && \
+    git add -A && \
+    git commit -m "[ENV-PATCH] Add pytest config for milestone compatibility" && \
+    git tag -f {{ end_state }} HEAD
+```
+
+Repeat the same copy/commit/retag pattern for `{{ base_state }}` if START also needs this config committed into the checked-out state.
+
+**Common Django 4.2 → 5.x compatibility symptoms:**
+
+Apply the attribution test in `patching.md.j2` Boundary rule to classify each symptom, then take the right path. Verify with `git log -S '<symbol>' --oneline` and `git merge-base --is-ancestor <commit> {{ end_state }}` whenever the symbol attribution matters.
+
+**Apply as loading shims (Kind 1 — patch passes the attribution test):**
+
+- `class RemovedInDjango60Warning(PendingDeprecationWarning): pass` in `django/utils/deprecation.py` — Declaration stub pattern. Lets historical imports resolve; introduces no behavior.
+- `PY312 = sys.version_info >= (3, 12)` / `PYPY = ...` in `django/utils/version.py` — Constant / version flag pattern.
+- `Field.generated = False` (class-level default) in `django/db/models/fields/__init__.py` — Default attribute pattern. Restores the load-time invariant for code paths that branch on `f.generated` without implementing the `GeneratedField` feature.
+
+Each entry above is identifier-only with no executable logic, restores load-time invariants, and preserves attribution to milestone src. Add them when encountered. They are concrete instances of the catalog in `_partials/boundary_rule.md.j2`, not exceptions to the rule.
+
+**Write as waivers (Kind 2 — behavior substitution, real feature implementation):**
+
+- `LoginRequiredMiddleware`, `login_not_required` decorator
+- async test client helpers (`Client.asession` etc.)
+- the new `querystring` template tag, `reverse(query=, fragment=)` parameters
+- `CompositePrimaryKey`, `GeneratedField` actual implementations, `nulls_distinct` parameter handling
+
+These implement framework behavior. Even when they manifest as import errors in `tests/<feature>/models.py`, the test files reference future-symbol functionality that Django 4.2 src genuinely lacks — fix is a `bound_waiver` (`reason_code: feature_introduced_later` with `attached_gates: ["H_patched_completeness"]`) paired with the MANDATORY `commit_signal` from sandbox cherry-pick (see workflow Phase 4.5 Exit 3). Do NOT implement the feature in patch code regardless of how short the implementation looks.

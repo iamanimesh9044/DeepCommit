@@ -1,0 +1,7 @@
+test_foo (app.tests.MyTest) ... ok
+test_bar (app.tests.MyTest) ... FAIL
+test_baz (app.tests.MyTest) ... skipped 'reason'
+
+Ran 3 tests in 0.1s
+
+FAILED (failures=1, skipped=1)

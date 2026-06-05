@@ -1,0 +1,84 @@
+# MCP Tools Testing — DAG and Milestone Analysis Tools
+
+## Objective
+Test the correctness and robustness of all MCP DAG/milestone analysis tools using real data from the codex project.
+
+## Test Data
+- milestones_path: DATA/result/full_dag_v1/codex/milestones.csv
+- dependencies_path: DATA/result/full_dag_v1/codex/dependencies.csv
+- repo_git_path: {{repo_git_path}}
+
+## Task
+Systematically test each MCP tool and report on its functionality, correctness, and any issues discovered.
+
+### Tools to Test (MCP Server: `git_analysis`)
+
+1. **validate_dag**(milestones_path, dependencies_path)
+   - Expected: Validates DAG structure, detects cycles
+   - Test: Call with the provided data
+
+2. **analyze_dag_parallelism**(dependencies_path)
+   - Expected: Computes parallelism metrics (max parallelism, critical path)
+   - Test: Call with dependencies.csv
+
+3. **analyze_commit_coverage**(milestones_path, repo_git_path)
+   - Expected: Checks if all repo commits are covered by milestones
+   - Test: Verify coverage percentage and list unassigned commits
+
+4. **analyze_milestone_size_balance**(milestones_path)
+   - Expected: Analyzes milestone size distribution
+   - Test: Check if size metrics are reasonable
+
+5. **analyze_milestone_conflicts**(milestones_path, dependencies_path, repo_git_path)
+   - Expected: Detects potential merge conflicts between milestones
+   - Test: Identify any conflict warnings
+
+6. **analyze_dag_conflicts**(milestones_path, dependencies_path, repo_git_path)
+   - Expected: Analyzes conflicts across entire DAG
+   - Test: Check for DAG-wide conflict patterns
+
+## Testing Procedure
+For each tool:
+1. Call the tool with specified parameters
+2. Record whether it executes successfully (✓) or fails (✗)
+3. Examine output format and content
+4. Validate that results are reasonable and meaningful
+5. Note any errors, warnings, or unexpected behaviors
+
+## Output Format
+Provide a structured test report:
+
+```
+=== MCP Tools Test Report ===
+
+Tool: validate_dag
+Status: [✓ PASS / ✗ FAIL / ⚠ WARNING]
+Output: [Brief summary of what the tool returned]
+Issues: [Any bugs, errors, or unexpected behaviors]
+Suggestions: [Recommendations for fixes or improvements]
+
+Tool: analyze_dag_parallelism
+Status: [✓ PASS / ✗ FAIL / ⚠ WARNING]
+Output: [Brief summary of what the tool returned]
+Issues: [Any bugs, errors, or unexpected behaviors]
+Suggestions: [Recommendations for fixes or improvements]
+
+... (repeat for all 6 tools)
+
+=== Overall Summary ===
+- Tools Passed: X/6
+- Tools Failed: Y/6
+- Critical Issues: [List any blocking issues]
+- Recommendations: [High-level suggestions for tool improvements]
+```
+
+## Success Criteria
+- Tool executes without crashing
+- Output format is valid and parseable
+- Results make logical sense given the input data
+- Error messages (if any) are clear and actionable
+
+## Notes
+- Continue testing remaining tools even if one fails
+- Provide detailed error messages if a tool crashes
+- Suggest specific fixes if you identify the root cause of issues

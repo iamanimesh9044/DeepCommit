@@ -1,0 +1,15 @@
+Use the repository's Go metadata first: `go.mod`, `go.sum`, workspace files, and documented package commands.
+
+Common commands to test locally inside the image:
+
+```bash
+go mod download
+go test ./...
+go test -json ./...
+```
+
+Go patching notes:
+
+- Keep `GOMODCACHE` and `GOCACHE` deterministic when caching dependencies.
+- Do not hide package import errors with broad package exclusions.
+- If cgo or system libraries are required, install them in the Dockerfile and keep the test command unchanged.

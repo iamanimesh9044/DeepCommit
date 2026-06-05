@@ -1,0 +1,23 @@
+{
+  "_framework": "vitest",
+  "collectors": [],
+  "duration": 0.0,
+  "summary": {
+    "error": 0,
+    "failed": 1,
+    "passed": 1,
+    "skipped": 0,
+    "total": 2
+  },
+  "tests": [
+    {
+      "message": "boom",
+      "nodeid": "ui/b.test.js::S > bad",
+      "outcome": "failed"
+    },
+    {
+      "nodeid": "ui/b.test.js::S > ok",
+      "outcome": "passed"
+    }
+  ]
+}

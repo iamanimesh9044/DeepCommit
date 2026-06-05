@@ -1,0 +1,30 @@
+{
+  "summary": {
+    "passed": 1,
+    "failed": 1,
+    "skipped": 1,
+    "total": 5
+  },
+  "tests": [
+    {
+      "nodeid": "sklearn/_loss/tests/test_loss.py::test_loss_dtype[1-None-1-1-float32-float32-False-HalfBinomialLoss]",
+      "outcome": "passed"
+    },
+    {
+      "nodeid": "sklearn/cluster/tests/test_birch.py::test_birch_copy_deprecated",
+      "outcome": "failed"
+    },
+    {
+      "nodeid": "sklearn/cluster/tests/test_affinity_propagation.py::test_affinity_propagation_non_convergence_regressiontest[float32]",
+      "outcome": "skipped"
+    },
+    {
+      "nodeid": "sklearn/datasets/tests/test_arff_parser.py::test_pandas_arff_parser_strip_no_quotes[_liac_arff_parser]",
+      "outcome": "xfailed"
+    },
+    {
+      "nodeid": "sklearn/linear_model/tests/test_common.py::test_balance_property[42-False-LogisticRegression]",
+      "outcome": "xpassed"
+    }
+  ]
+}

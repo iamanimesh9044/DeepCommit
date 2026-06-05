@@ -1,0 +1,130 @@
+# Jest/Vitest BDD Test Detection Rules for ast-grep
+# Detects Jest/Vitest test patterns commonly used in JavaScript/TypeScript projects
+# Multiple rules separated by ---
+
+# ========== describe() - Test suite definition ==========
+id: jest_describe
+language: javascript
+rule:
+  pattern: describe($DESC, $$$)
+---
+# describe.only() - Focused test suite
+id: jest_describe_only
+language: javascript
+rule:
+  pattern: describe.only($DESC, $$$)
+---
+# describe.skip() - Skipped test suite
+id: jest_describe_skip
+language: javascript
+rule:
+  pattern: describe.skip($DESC, $$$)
+---
+# fdescribe() - Focused describe (Jasmine style)
+id: jest_fdescribe
+language: javascript
+rule:
+  pattern: fdescribe($DESC, $$$)
+---
+# xdescribe() - Skipped describe (Jasmine style)
+id: jest_xdescribe
+language: javascript
+rule:
+  pattern: xdescribe($DESC, $$$)
+
+---
+# ========== it() - Test case ==========
+id: jest_it
+language: javascript
+rule:
+  pattern: it($DESC, $$$)
+---
+# it.only() - Focused test
+id: jest_it_only
+language: javascript
+rule:
+  pattern: it.only($DESC, $$$)
+---
+# it.skip() - Skipped test
+id: jest_it_skip
+language: javascript
+rule:
+  pattern: it.skip($DESC, $$$)
+---
+# it.todo() - Todo test placeholder
+id: jest_it_todo
+language: javascript
+rule:
+  pattern: it.todo($DESC)
+---
+# fit() - Focused it (Jasmine style)
+id: jest_fit
+language: javascript
+rule:
+  pattern: fit($DESC, $$$)
+---
+# xit() - Skipped it (Jasmine style)
+id: jest_xit
+language: javascript
+rule:
+  pattern: xit($DESC, $$$)
+
+---
+# ========== test() - Test case (alias for it) ==========
+id: jest_test
+language: javascript
+rule:
+  pattern: test($DESC, $$$)
+---
+# test.only() - Focused test
+id: jest_test_only
+language: javascript
+rule:
+  pattern: test.only($DESC, $$$)
+---
+# test.skip() - Skipped test
+id: jest_test_skip
+language: javascript
+rule:
+  pattern: test.skip($DESC, $$$)
+---
+# test.todo() - Todo test placeholder
+id: jest_test_todo
+language: javascript
+rule:
+  pattern: test.todo($DESC)
+---
+# test.concurrent() - Concurrent test execution
+id: jest_test_concurrent
+language: javascript
+rule:
+  pattern: test.concurrent($DESC, $$$)
+---
+# test.concurrent.only() - Focused concurrent test
+id: jest_test_concurrent_only
+language: javascript
+rule:
+  pattern: test.concurrent.only($DESC, $$$)
+---
+# test.concurrent.skip() - Skipped concurrent test
+id: jest_test_concurrent_skip
+language: javascript
+rule:
+  pattern: test.concurrent.skip($DESC, $$$)
+
+---
+# ========== test.each() / it.each() - Parameterized tests ==========
+id: jest_test_each
+language: javascript
+rule:
+  pattern: test.each($$$TABLE)($DESC, $$$)
+---
+id: jest_it_each
+language: javascript
+rule:
+  pattern: it.each($$$TABLE)($DESC, $$$)
+---
+id: jest_describe_each
+language: javascript
+rule:
+  pattern: describe.each($$$TABLE)($DESC, $$$)

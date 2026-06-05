@@ -1,0 +1,105 @@
+[project]
+name = "deepcommit"
+version = "0.1.0"
+description = "Automated agentic pipeline for synthesizing long-horizon coding tasks from the commit histories of open-source repositories"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+    { name = "The DeepCommit Authors", email = "gangdade@usc.edu" },
+]
+keywords = [
+    "git",
+    "software-evolution",
+    "commit-history",
+    "benchmark",
+    "agentic-pipeline",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+dependencies = [
+    "pygit2>=1.13.0",
+    "requests>=2.31.0",
+    "tqdm>=4.66.0",
+    "fastmcp>=0.1.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "jinja2>=3.1.0",
+    "pathspec>=0.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "pre-commit>=3.5.0",
+]
+
+[project.scripts]
+deepcommit = "deepcommit.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/DeepCommit-ai/DeepCommit"
+Repository = "https://github.com/DeepCommit-ai/DeepCommit"
+Issues = "https://github.com/DeepCommit-ai/DeepCommit/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["deepcommit"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "pre-commit>=3.5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+norecursedirs = ["tests/legacy", ".git", ".venv", "__pycache__", "*.egg-info"]
+markers = [
+    "integration: requires Docker or git repos (deselect with -m 'not integration')",
+    "agent: invokes a live LLM/agent CLI — never run in CI",
+    "slow: long-running test",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long
+    "B008",  # do not perform function calls in argument defaults
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

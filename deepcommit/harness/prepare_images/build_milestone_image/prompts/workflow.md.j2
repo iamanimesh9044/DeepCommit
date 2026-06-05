@@ -1,0 +1,795 @@
+## CRITICAL WORKFLOW (FOLLOW THIS ORDER)
+
+```text
+PHASE 0: Detect Language and Test Framework
+    -> Analyze repository -> identify language -> determine test framework
+
+PHASE 1: Write Initial Dockerfile and Test END State
+    -> Build minimal image -> test collection for END state -> verify success
+
+PHASE 2: Test START State and Apply Minimal Patches if Needed
+    -> Test START collection -> apply patches if needed -> verify both states collect
+
+PHASE 2.5: Generate test_config.json
+    -> Create the test configuration required by the milestone runner
+
+PHASE 3: Run Tests and Analyze Runtime Signal
+    -> Run {{ test_runner_script }} -> distinguish error from fail -> analyze environment-related skips
+
+PHASE 4: Fix Environment Issues
+    -> Update Dockerfile -> rebuild -> rerun tests -> repeat until environment errors are resolved
+
+PHASE 4.5: Validate Commit-Related Tests
+    -> Check patched-test artifact completeness and clean signal through pipeline gates
+
+PHASE 5: Finalize Dockerfile and Process Artifacts
+    -> Set default state to START -> write skip_analysis.md when possible -> clean up temporary images
+```
+
+### Iterating cheaply
+
+The pipeline is the authority for acceptance, but the full round-trip (build -> run all tests -> diagnosis) is slow. The probes below are **examples** of cheap local checks you can run to spot common gate failures earlier -- pick what fits the signal you're chasing, in any order. You don't need to run all of them, and you may use other tools that are useful. Local results never replace `{{ build_status_path }}`; treat them as a way to shorten your own loop, not to declare acceptance.
+
+Before trusting any local runner result, rebuild the exact milestone image from the current Dockerfile. A stale local image can hide the bug you just introduced or fixed.
+
+#### Static — sub-second, no docker
+
+`dockerfile_lint` ships as a CLI. It catches forbidden `rm`, file-level `git checkout`, and similar block-level violations before you build:
+
+```bash
+python -m deepcommit.harness.prepare_images.build_milestone_image.dockerfile_lint \
+    {{ output_dir }}/Dockerfile \
+    --repo-src-dirs {{ repo_src_dirs | join(' ') }} \
+    --test-dir {{ test_dir }}
+```
+
+Exit code: `0` clean, `1` warn-only (recorded but won't fail the gate), `2` block-level (will fail `B_lint_block_clean`).
+
+You can also `json.load` your `test_config.json` to confirm it parses before letting the runner crash on it.
+
+#### Repository state — sub-second, reads testbed only
+
+- Milestone tags resolve in the testbed: `git -C {{ repo_path }} rev-parse {{ base_state }} {{ end_state }}`. A stale or missing tag will trip `B_state_tags_consistent`.
+- The patched test set you must collect lives in `{{ milestone_test_changes_file }}`. That file is your ground truth for `H_patched_completeness`.
+
+#### Image-level — seconds to minutes, one docker build / run
+
+Build the image early to catch RUN / COPY / install errors:
+
+```bash
+docker build -t test-milestone-{{ m_id }}-temp -f {{ output_dir }}/Dockerfile {{ repo_path }}
+```
+
+Once the image is up, you can also run a small subset of tests inside it (a handful of patched ids, or one stable test file) to validate fixtures / DB / runner setup before committing to a full run.
+
+#### Test collection — the highest-value cheap probe
+
+Test discovery without execution. Catches import errors, missing settings, broken `conftest`, and silent filtering minutes earlier than the full run, and gives you a concrete number to compare against the baseline.
+
+Use the collect-only command for your detected framework (see the `SUPPORTED LANGUAGES AND TEST FRAMEWORKS` table above) and run it inside the temp image at each state:
+
+```bash
+docker run --rm test-milestone-{{ m_id }}-temp bash -c \
+    "cd /testbed && git checkout {{ end_state }} && <collect-only command>"
+```
+
+Then you can make two cheap comparisons:
+
+**Collected count vs scenario base baseline** (`H_total_not_below_base`). The scenario base baseline collected **{{ base_collected_total }}** tests (source: `{{ base_baseline_path }} :: collection.total_collected`). Both START and END collected counts should not drop materially below this number — a large drop usually means `--ignore=...`, `SUBDIRS_TO_SKIP`, an `addopts` filter, or a collection error hiding entire files.
+
+If your local `test_config.json` runs only patched files or a narrow directory list, treat it as a probe, not as the default config. The default config should run broadly enough to stay near the base baseline unless a hard, documented repo mode requires otherwise.
+
+**Collected nodeids vs the patched test set** (`H_patched_completeness`). Diff your collected nodeids against the test ids in `{{ milestone_test_changes_file }}` — patched tests that fail to discover usually mean an import / settings / fixture issue. After at least one full run, `{{ patched_tests_path }} :: collected.patched_not_in_results` already lists the specific missing ids; you don't need to recompute the matching yourself. If the root cause is outside Module 2, write one root waiver that explains the blocker and the affected path or nodeid anchor instead of listing every cascaded missing test. For a patched nodeid that is absent from both START and END source states, use an evidence-backed `nodeid_absent_in_states` waiver rather than inventing a test or broadening filters.
+
+### PHASE 0: Detect Language and Test Framework
+
+Analyze the repository before making Dockerfile changes. This determines commands, output format, and `test_config.json`.
+
+Detection commands:
+
+```bash
+docker run --rm {{ base_image }} bash -c "cd /testbed && ls -la"
+```
+
+| File Found | Language | Likely Framework |
+|------------|----------|------------------|
+| `setup.py`, `pyproject.toml`, `requirements.txt` | Python | pytest |
+| `go.mod`, `go.sum` | Go | go_test |
+| `pom.xml` | Java | maven |
+| `build.gradle`, `build.gradle.kts` | Java | gradle |
+| `Cargo.toml` | Rust | cargo |
+| `package.json` | JavaScript/TypeScript | jest or mocha |
+
+Framework verification examples:
+
+```bash
+docker run --rm {{ base_image }} bash -c "cd /testbed && cat setup.py pyproject.toml 2>/dev/null | grep -i pytest"
+docker run --rm {{ base_image }} bash -c "cd /testbed && ls conftest.py pytest.ini 2>/dev/null"
+docker run --rm {{ base_image }} bash -c "cd /testbed && ls *_test.go 2>/dev/null | head -5"
+docker run --rm {{ base_image }} bash -c "cd /testbed && grep -i surefire pom.xml"
+docker run --rm {{ base_image }} bash -c "cd /testbed && grep -i 'test {' build.gradle"
+docker run --rm {{ base_image }} bash -c "cd /testbed && ls tests/ src/lib.rs 2>/dev/null"
+docker run --rm {{ base_image }} bash -c "cd /testbed && cat package.json | grep -E '(jest|mocha)'"
+```
+
+Record:
+
+```text
+DETECTED LANGUAGE: <python|go|java|rust|javascript>
+DETECTED FRAMEWORK: <pytest|unittest|go_test|maven|gradle|cargo|jest|mocha>
+OUTPUT FILE EXTENSION: <.json|.jsonl|.log>
+```
+
+Do not proceed to Phase 1 until this is clear.
+
+### IMPORTANT: Building on Base Image
+
+Since you are building on top of `{{ base_image }}`, you do NOT need to:
+
+- Install runtime or system dependencies.
+- Install project packages or dependencies from scratch.
+- Configure base environment paths from scratch.
+
+Your Dockerfile should handle git state management, runner configuration, and minimal compatibility patches.
+
+Temporary image name:
+
+```text
+test-milestone-{{ m_id }}-temp
+```
+
+Rules:
+
+- NEVER modify files in `{{ repo_path }}` directly. This is the source repository and shared build context. Do not run `git checkout`, `git reset`, `git apply`, `git clean`, `sed -i`, `rm`, or any write into this path.
+- Use a working copy or Docker build context for exploration.
+- Build using `docker build -t test-milestone-{{ m_id }}-temp -f Dockerfile {{ repo_path }}`.
+- Clean up test images when done: `docker rmi test-milestone-{{ m_id }}-temp`.
+
+### PHASE 1: Write Initial Dockerfile and Test END State
+
+Start with a minimal Dockerfile:
+
+```dockerfile
+FROM {{ base_image }}
+
+RUN echo 'umask 000' >> /etc/bash.bashrc && \
+    echo '#!/bin/bash\numask 000\nexec "$@"' > /entrypoint.sh && \
+    chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
+
+RUN rm -rf /testbed
+COPY . /testbed/
+
+RUN cd /testbed && git checkout {{ end_state }}
+```
+
+Build:
+
+```bash
+docker build -t test-milestone-{{ m_id }}-temp -f Dockerfile {{ repo_path }}
+```
+
+Collection commands by framework:
+
+| Framework | Test Collection Command |
+|-----------|-------------------------|
+| pytest | `docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && pytest --collect-only {{ test_dir }}"` |
+| go_test | `docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && go test -list '.*' ./..."` |
+| maven | `docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && mvn test-compile"` |
+| gradle | `docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && gradle testClasses"` |
+| cargo | `docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && cargo test --no-run"` |
+| jest | `docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && npx jest --listTests"` |
+| mocha | `docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && npx mocha --dry-run"` |
+
+END state success criteria:
+
+- Exit code 0, or an acceptable non-failure code for the framework.
+- Output shows tests found or collected, or the framework reports a valid empty set for this repository.
+- No import, module, dependency, syntax, runner, or compilation setup errors remain.
+
+### PHASE 2: Test START State and Apply Minimal Patches if Needed
+
+Use the same collection commands as Phase 1 inside the docker run, with `git checkout {{ base_state }} &&` prepended (e.g. `... bash -c "cd /testbed && git checkout {{ base_state }} && pytest --collect-only {{ test_dir }}"`).
+
+Handle results:
+
+- Case A: collection succeeds immediately. Both states work; proceed to Phase 2.5.
+- Case B: collection fails. Apply language-specific minimal patches from the patching section.
+
+Java special case: unlike interpreted languages, Java requires all relevant test files to compile before any JUnit test can run.
+
+After patching, verify both states:
+
+```bash
+docker build -t test-milestone-{{ m_id }}-temp -f Dockerfile {{ repo_path }}
+docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && git checkout {{ end_state }} && <COLLECT_CMD>"
+docker run --rm test-milestone-{{ m_id }}-temp bash -c "cd /testbed && git checkout {{ base_state }} && <COLLECT_CMD>"
+```
+
+### PHASE 2.5: Generate test_config.json
+
+The config defines how the milestone runner executes tests:
+
+```json
+[
+  {
+    "name": "default",
+    "test_states": ["start", "end"],
+    "test_cmd": "test command with placeholders",
+    "description": "Normal tests"
+  }
+]
+```
+
+Available placeholders: `{workers}`, `{timeout}`, `{output_file}`.
+
+Framework examples:
+
+| Framework | Example `test_cmd` | Output Extension |
+|-----------|--------------------|------------------|
+| pytest | `pytest -n {workers} --timeout={timeout} --json-report --json-report-file=/output/{output_file}` | `.json` |
+| go_test | `go test -json -timeout {timeout}s -parallel {workers} ./... 2>&1 | tee /output/{output_file}` | `.jsonl` |
+| maven | `mvn test -Dmaven.test.failure.ignore=true -Dsurefire.timeout={timeout} 2>&1 | tee /output/{output_file}` | `.log` |
+| gradle | `gradle test --continue -Dtest.maxParallelForks={workers} 2>&1 | tee /output/{output_file}` | `.log` |
+| cargo | `cargo test --no-fail-fast -- --test-threads={workers} 2>&1 | tee /output/{output_file}` | `.log` |
+| jest | `npx jest --json --outputFile=/output/{output_file} --testTimeout={timeout}000 --maxWorkers={workers}` | `.json` |
+| mocha | `npx mocha --reporter json --timeout {timeout}000 --parallel --jobs {workers} > /output/{output_file}` | `.json` |
+
+Always include a `default` configuration. It should be the broad normal suite, not a patched-test-only shortcut. Add special modes only when the repository exposes them through pytest options, Go build tags, Maven profiles, Gradle test tasks, Cargo features, or Jest/Mocha config.
+
+Discover special modes by grepping the framework's config file (pytest custom options via `pytest --help`, Maven `<profiles>`, Gradle `task ... [Tt]est`, Cargo `[features]`, Jest / Mocha config in `package.json`, Go build constraints `// +build`). Add a special mode to `test_config.json` only when the repo actually exposes one.
+
+### PHASE 3: Run Tests and Analyze Runtime Signal
+
+Run through the same runner shape the pipeline uses:
+
+```bash
+python -m {{ test_runner_script }} \
+  {{ m_id }} \
+  --work-dir {{ work_dir }} \
+  --output-dir {{ test_results_dir }}/agent_self_checks \
+  --language <DETECTED_LANGUAGE> \
+  --test-framework <DETECTED_FRAMEWORK> \
+  --output-scope refinement \
+  --max-retries 1 \
+  --attempt-source agent_self_check \
+  --no-cache \
+  --force-rebuild-image
+```
+
+Replace `<DETECTED_LANGUAGE>` and `<DETECTED_FRAMEWORK>` with the Phase 0 values.
+
+Run this exact current harness entrypoint. Do not set `PYTHONPATH` to `trial_space` or another repo checkout, and do not use an older runner copy; if `--attempt-source` is not accepted, you are running the wrong test runner.
+
+Use this runner as a cheap self-check, not as the final validation loop. Prefer collect-only checks, one stable file, or patched-test probes while editing. Run broad/full validation sparingly; the pipeline will run the authoritative full hard gate after you hand off.
+
+Keep `--force-rebuild-image` when validating your own edits. Without it, an existing image may be reused and local results can disagree with the pipeline.
+
+Keep agent self-check reports under `{{ test_results_dir }}/agent_self_checks/{{ m_id }}/refinement/attempt_N/`. The pipeline-owned hard-gate reports stay under `{{ test_results_dir }}/{{ m_id }}/refinement/attempt_N/` and are the only reports referenced by `{{ build_status_path }}`.
+
+Analyze outcomes using the validation boundary:
+
+- `error`: the framework or test process did not run normally.
+- `fail`: the test ran and an assertion failed.
+
+If you generate a runner bridge script that converts a framework-specific
+result into pytest-json-report shape, preserve this boundary in the emitted
+`outcome` field. Assertion failures map to `failed`; collection/setup/import
+errors map to `error`. Do not map both framework `FAIL` and framework `ERROR`
+to `failed`, because the downstream classifier keeps `error` separate from
+`fail` and `H_f2f_not_above_base` must not include setup crashes.
+
+If the signal is unclear, prefer `{{ build_status_path }}`, the latest attempt directory, and runner diagnostics. Treat local observations as debugging input; the hard gate result is written by the pipeline.
+
+Analyze skipped tests when result summaries are available. Skips are not automatically failures, but environment-related skips should be fixed because they hide test signal.
+
+Example local analysis:
+
+```python
+import json
+
+with open("{{ test_results_dir }}/{{ m_id }}/refinement/<latest_attempt>/end_summary.json") as f:
+    summary = json.load(f)
+
+for skip_group in summary["results"].get("skipped", []):
+    reason = skip_group["reason"]
+    count = skip_group["count"]
+    tests = skip_group["tests"]
+    print(reason, count, tests[:5])
+```
+
+Skip classification examples:
+
+| Language | Skip Reason Pattern | Classification | Action |
+|----------|---------------------|----------------|--------|
+| Python | `could not import` or `No module named` | Resolvable environment issue | install or configure missing dependency |
+| Python | requires Windows/macOS | Usually acceptable | document platform constraint |
+| Go | requires cgo | Resolvable environment issue | enable `CGO_ENABLED=1` and install native libs |
+| Go | intentionally short-mode skip | Usually acceptable | document runner mode |
+| Java | `ClassNotFoundException` | Resolvable environment issue | add dependency or profile |
+| Java | `@Disabled` with project reason | Usually acceptable | document project intent |
+| Rust | `ignored` | Review | inspect reason and features |
+| JavaScript | `Cannot find module` | Resolvable environment issue | install or configure missing package |
+| JavaScript | pending test | Usually acceptable | document project intent |
+
+### PHASE 4: Fix Environment Issues
+
+Resolve environment-driven errors by updating Dockerfile or runner config, then rebuild and rerun.
+
+Common fix shapes: install missing language-level deps (`pip` / `go get` / `mvn dependency:resolve` / `cargo fetch` / `npm install`), set runtime env vars, install native libraries via `apt-get`, or adjust the test runner command in `test_config.json`. See `patching.md.j2` for the commit + retag Dockerfile flow.
+
+Iteration loop:
+
+1. Update Dockerfile or `test_config.json`.
+2. Rebuild with `docker build -t test-milestone-{{ m_id }}-temp -f Dockerfile {{ repo_path }}`.
+3. Rerun tests through the milestone runner.
+4. Check whether `error` results decreased and whether `fail` remains a real assertion signal.
+5. Repeat until environment errors are resolved or a narrow waiver is justified.
+
+STOP if your next patch would fail the attribution test in `patching.md.j2` Boundary rule — i.e. it would make the patch, rather than milestone src, determine why some test passes or fails (adds executable logic determining a result, replaces an existing function body, modifies an assertion-role file, drops tests via `pytest_collection_modifyitems` skip logic, or silently narrows discovery via `--ignore` / `-k` without routing the excluded set into another `test_config.json` mode). These are Kind 2 patterns, not environment fixes. Go to Phase 4.5 for the right exit (`bound_waivers` / `unbound_issues` / `commit_signals` / `agent_sufficient`).
+
+### Phase 4.5: When fixes run out — Four Exits
+
+Patched-test validation is limited to these pipeline concepts (definitions live in `validation.md.j2` Gate Groups):
+
+- `H_patched_completeness`: the milestone patched-test artifact includes the commit-related tests needed for this milestone, except entries explicitly waived through `bound_waivers`.
+- `H_patched_clean_signal`: patched tests run cleanly enough to expose real behavior. They must not be hidden by environment errors, discovery errors, or skip patterns introduced by the setup.
+- `H_error_within_budget`: `error` outcomes must stay within budget. Errors caused by future-symbol DAG misalignment can be waived through `bound_waivers` with `feature_introduced_later` (paired with `commit_signal`) or `test_out_of_scope` — see Exit 1 below. If neither path applies, document in `unbound_issues` and accept the gate failure (does NOT offset).
+
+Use `{{ patched_tests_path }}` and `{{ milestone_test_changes_file }}` to understand which tests matter. Do not rely on local checklist text as the patched-test result; the pipeline writes the result into `{{ build_status_path }}`.
+
+First try to fix Dockerfile, runner, dependency, database, service, import, and settings issues. If the blocker is outside Dockerfile/test_config/environment scope, choose one of the four structured exits below. Exits 1, 2, and 4 record into `{{ module2_waivers_path }}`; Exit 3 (`commit_signals`) records into a separate file `{{ module2_signals_path }}` because its schema and verification differ.
+
+**bound_waivers vs unbound_issues — same intent, different verification:**
+
+Both express "I can't fix this within Module 2 scope, here's the workaround." The choice is purely about how the claim gets verified:
+
+- **bound_waiver** — when the workaround can be expressed as a specific git-verifiable fact (a symbol's defining commit is unreachable from `{{ end_state }}`; a test path is absent in both states; a deletion commit predates `{{ base_state }}`). Pipeline runs git checks automatically and offsets the attached gate if verification passes.
+- **unbound_issue** — when the workaround is real but cannot be reduced to a single git fact. Examples: env dependency that cannot be installed, runner configuration trade-off, suspected DAG misalignment without a single attributable symbol. Pipeline does not verify; the entry surfaces to Module 3 / human review via `raw_metrics`.
+
+Use bound_waiver whenever the situation fits one of the four `reason_code` slots in Exit 1 (cheaper for the gate to forgive). Use unbound_issue for everything else you want documented as a deliberate trade-off rather than silently swept under the rug. Both are valid first-class outputs — neither is a "fallback for when you didn't try hard enough."
+
+#### Exit 1: bound_waivers (M3-actionable, machine-verified, multi-gate-attached)
+
+**Waivers are M3-actionable signals, not pipeline免死金牌。** Each
+`reason_code` tells Module 3 exactly what to do — `test_out_of_scope` → M3
+removes the test from milestone scope; `feature_introduced_later` → M3
+applies the paired commit_signal (cherry-pick). Without precise
+classification M3 can't act and the milestone stays broken across attempts.
+Pipeline rejects miscategorized waivers; fix the entry (symbol / path /
+rationale), don't switch reason_code to dodge the check.
+
+**Empirical, not declarative.** Every reason_code has a git-verifiable fact
+that Pipeline checks automatically (`git log -S`, ancestry vs `{{ end_state }}`,
+anchor presence in symptom pool). Validate your claim BEFORE writing the
+waiver — guesses get rejected and waste a retry.
+
+**Only 4 bound_waiver reason_codes exist.** There is **no `dag_gap_acknowledged` /
+"Path C" escape hatch**. If you cannot find a Path A or Path B candidate
+for an error, the correct action is to **document it in `unbound_issues`**
+(Exit 2 — does NOT offset gates) and accept the gate failure honestly. M3
+will see the cluster in `unbound_issues` and decide separately.
+
+**Path B carries a heavy lift — MANDATORY paired commit_signal.** Writing a
+`feature_introduced_later` waiver is a promise that M3 can cherry-pick the
+introducing commit. Pipeline requires you to actually run the sandbox
+workflow (Exit 3 below) and emit a matching `commit_moves[]` entry whose
+`resolves.bound_waiver_ids` includes this waiver's `id`. Unpaired
+`feature_introduced_later` waivers are rejected to `invalid_bound_waivers`.
+
+| reason_code | M3 action | attached_gates allowed | required fields | machine verification |
+|---|---|---|---|---|
+| `test_out_of_scope` (Path A) | Remove test from milestone scope | subset of `{H_patched_completeness, H_error_within_budget}` | `id`, `reason_code`, `anchor` (nodeid), `test_path` (under test_dirs), `attached_gates`, `rationale` | test_path under test_dirs; `git log -S '<test_fn>' -- <test_path>` finds future commit (NOT reachable from `{{ end_state }}`) |
+| `feature_introduced_later` (Path B) | Apply paired commit_signal (cherry-pick) | subset of `{H_patched_completeness, H_error_within_budget}` | `id`, `reason_code`, `anchor`, `symbol` (clean identifier or `(async )?def NAME` / `class NAME`), `path` (under repo_src_dirs, NOT under test_dirs), `attached_gates`, `rationale` | symbol regex; path is production source (not tests/); `git log -S '<symbol>' -- <path>` finds future commit; **MANDATORY** matching `commit_moves[].resolves.bound_waiver_ids` entry |
+| `nodeid_absent_in_states` | Fix upstream patched data (orthogonal to DAG) | `["H_patched_completeness"]` | `id`, `reason_code`, `anchor` (nodeid), `attached_gates`, `rationale` | nodeid absent in BOTH start and end source states |
+| `deleted_earlier` | Fix upstream patched data (orthogonal to DAG) | `["H_patched_completeness"]` | `id`, `reason_code`, `anchor` (nodeid), `attached_gates`, `rationale` | delete commit is ancestor of `{{ base_state }}` |
+
+Common rules:
+
+- `id`: integer ≥ 1, unique within `bound_waivers[]`. Used by
+  `commit_moves[].resolves.bound_waiver_ids` to reference this waiver.
+- `attached_gates`: non-empty list, elements ∈ `{H_patched_completeness,
+  H_error_within_budget}`, no duplicates. Tells Pipeline which gate(s) this
+  waiver offsets; anchor must appear in each corresponding symptom pool.
+- `rationale`: short sentence (≤ 200 chars) stating the empirical fact.
+- `anchor` is evidence, not scope. Keep `test_config.json` broad — do not
+  use `--ignore`, `-k not`, narrowed directories, or artificial skips to
+  make a waiver look clean.
+
+Examples:
+
+Path A — `test_out_of_scope`:
+
+```json
+{
+  "id": 1,
+  "reason_code": "test_out_of_scope",
+  "anchor": "tests/template_tests/filter_tests/test_floatformat.py::test_too_many_digits",
+  "test_path": "tests/template_tests/filter_tests/test_floatformat.py",
+  "attached_gates": ["H_error_within_budget"],
+  "rationale": "Test introduced after {{ m_id }}; git log -S confirms future commit."
+}
+```
+
+Path B — `feature_introduced_later` (with required paired `commit_moves[]` entry):
+
+```json
+{
+  "id": 2,
+  "reason_code": "feature_introduced_later",
+  "anchor": "AttributeError: 'UserManager' object has no attribute 'acreate'",
+  "symbol": "acreate",
+  "path": "django/contrib/auth/__init__.py",
+  "attached_gates": ["H_error_within_budget"],
+  "rationale": "async helper acreate() introduced after {{ m_id }}; cherry-pick verified in sandbox (see commit_moves[id=1])."
+}
+```
+
+Patched-data-quality — `nodeid_absent_in_states`:
+
+```json
+{
+  "id": 4,
+  "reason_code": "nodeid_absent_in_states",
+  "anchor": "tests/legacy/test_stale.py::test_missing_nodeid",
+  "attached_gates": ["H_patched_completeness"],
+  "rationale": "Function does not exist in source at either START or END; do not create one to satisfy stale patched data."
+}
+```
+
+#### Exit 2: unbound_issues (gate-orthogonal, judgment-required trade-off)
+
+**Try Exit 1 (bound_waiver) first.** `unbound_issue` is a free-form fallback
+for trade-offs that genuinely cannot reduce to a git-verifiable fact. If the
+blocker fits one of the 4 bound_waiver `reason_code` slots in Exit 1, use
+that — Pipeline machine-verifies and offsets the corresponding gate. Only
+fall back to `unbound_issue` when no Exit 1 slot fits.
+
+**`unbound_issue` is the legitimate "too hard / out of M2 scope" exit.** When
+you judge that sandbox cherry-pick is prohibitively expensive, that the
+milestone should be split / moved by M3, or that the blocker is structurally
+beyond Module 2 (DAG-level decision), **use this exit** with a specific
+`m3_action` and let the gate fail honestly. This is strictly more honest than
+faking `commit_moves[].status="attempted_failed"` or stuffing a `/tmp/sitecustomize.py`
+declaration stub to mask the problem — both pollute Module 3's signal and
+will be rejected by pipeline validation.
+
+When to use: unfixable trade-offs requiring natural-language description
+for Module 3 (environment dependency unsupportable, runtime config trade-off,
+multi-symptom cluster without a single attributable symbol). Does NOT
+affect any gate's pass/fail. Full entries live in
+`{{ module2_waivers_path }} :: unbound_issues`; Module 3 reads the file
+directly. `build_status.json :: raw_metrics.unbound_issues_count` is a
+quick integer index.
+
+**One `unbound_issue` = one specific M3 action.** Don't lump multiple unrelated clusters into a generic "broader behavior gaps" entry. If you have 3 distinct root causes / 3 different M3 actions, write 3 entries. Boilerplate / catch-all summaries get flagged by retry self-audit and reject in `agent_sufficient` evaluation.
+
+Fields:
+
+| field | type | required |
+|---|---|---|
+| `id` | int ≥ 1, unique within `unbound_issues[]` | yes |
+| `kind` | string (free-form descriptive label — use `other` if unsure) | yes |
+| `summary` | string ≤ 200 chars,**name 1 specific root cause** (NOT generic) | yes |
+| `evidence` | object with required sub-keys (below) | yes |
+
+`evidence` required sub-keys:
+
+| sub-key | type | required when |
+|---|---|---|
+| `root_cause` | string,**1 specific cause**(e.g. "in-milestone behavior change in commit `<sha>`" / "no clean future symbol identified for cluster") | always |
+| `affected_error_groups` | list of `{reason, count, sample_test}` | when issue covers any error_groups |
+| `m3_action` | string,**1 specific action**(e.g. "cherry-pick commit X" / "split this milestone in DAG construction" / "accept failure — measures real milestone behavior") | always |
+| `why_not_path_a` | string | when issue covers patched_not_in_results entries |
+| `why_not_path_b` | string,cite specific git-log-S attempts or SHA cherry-pick failures | when issue covers error_groups |
+| `affected_paths` | list of str | optional |
+| `test_count_excluded` | int | optional (for env exclusions) |
+| `install_attempts` | list of str | optional (for env unsupportable) |
+
+Pipeline warns when a single `unbound_issue` covers >100 distinct error_group reasons (likely lumping — should split).
+
+Examples — each one M3 action:
+
+```json
+{
+  "id": 1,
+  "kind": "environment_unsupportable",
+  "summary": "PostGIS extension cannot be installed; M3 action: exclude gis_tests/ from milestone scope",
+  "evidence": {
+    "root_cause": "Base image libgeos 3.10 incompatible with PostGIS package",
+    "m3_action": "exclude tests/gis_tests/ from milestone scope OR upgrade base image",
+    "affected_paths": ["tests/gis_tests/"],
+    "test_count_excluded": 47,
+    "install_attempts": [
+      "apt-get install postgresql-postgis → conflicts with libgeos 3.10",
+      "compile from source → requires GDAL 3.4+ headers not in base apt repo"
+    ]
+  }
+}
+```
+
+```json
+{
+  "id": 2,
+  "kind": "in_milestone_behavior_change",
+  "summary": "M3 action: accept FieldError as in-milestone Django Query optimizer change",
+  "evidence": {
+    "root_cause": "Commit 107aa76bcf5 (in-milestone) tightens Query.deferred+traversed check",
+    "m3_action": "accept failure — this measures a real Django behavior change introduced by the milestone",
+    "affected_error_groups": [
+      {"reason": "FieldError: Field Topic.category cannot be both deferred and traversed (xml)", "count": 11, "sample_test": "tests/serializers/test_xml.py::..."},
+      {"reason": "FieldError: Field Topic.category cannot be both deferred and traversed (json)", "count": 10, "sample_test": "tests/serializers/test_json.py::..."}
+    ],
+    "why_not_path_a": "Tests exist in both start and end source states",
+    "why_not_path_b": "No single clean future symbol; behavior change is internal Query optimizer logic"
+  }
+}
+```
+
+```json
+{
+  "id": 3,
+  "kind": "cherry_pick_unresolvable",
+  "summary": "M3 action: cherry-pick c7fc9f20b49 OR exclude affected auth tests",
+  "evidence": {
+    "root_cause": "login_not_required decorator introduced in c7fc9f20b49b; cherry-pick conflicts",
+    "m3_action": "M3 cherry-pick c7fc9f20b49b OR exclude tests/auth_tests/test_decorators.py from scope",
+    "affected_error_groups": [
+      {"reason": "ImportError: cannot import name 'login_not_required'...", "count": 10, "sample_test": "tests/auth_tests/test_decorators.py::..."}
+    ],
+    "why_not_path_b": "Cherry-pick attempted in commit_moves[id=3] status=attempted_failed: conflicts on django/contrib/auth/decorators.py and 2 middleware files; --theirs broke 8 unrelated middleware tests"
+  }
+}
+```
+
+#### Exit 3: commit_signals (sandbox-empirical, prescriptive — MANDATORY paired with Path B)
+
+**Conditional upgrade over waivers, not a standalone exit.** A `commit_signal` only makes sense when `bound_waivers` and/or `unbound_issues` already document blockers — its purpose is to propose a DAG adjustment that **resolves those documented blockers**. M3 reads the signal as a self-contained *alternative milestone proposal*.
+
+**MANDATORY trigger — narrow.** You MUST emit a paired `commit_signal` for **every** `bound_waiver` with `reason_code = feature_introduced_later` (Path B). Each such waiver promises "M3 can cherry-pick this commit"; that promise requires empirical sandbox proof. The pipeline rejects Path B waivers without a matching `commit_moves[].resolves.bound_waiver_ids` entry → they land in `invalid_bound_waivers` and `raw_metrics.commit_signal_missing_warning` flags the gap.
+
+Other paths (`test_out_of_scope`, patched-data-quality codes, all `unbound_issue` kinds) do NOT trigger MANDATORY commit_signal — they have other M3 actions.
+
+**If sandbox cherry-pick demonstrably can't advance the anchor** (every candidate has unresolvable conflicts, or post-pick image still fails on the same symbol), the waiver is NOT Path B — **move it to `unbound_issues`** (which does NOT offset gates) and let the gate failure stand honestly. Don't leave a Path B waiver hanging without paired signal, and don't fabricate a different reason_code to dodge the check.
+
+**Iterative sandbox workflow — write candidates FIRST, then process each.** Past attempts showed agents who only wrote `commit_moves[]` after each successful cherry-pick lost discovered SHAs between attempts (silent exit or context exhaustion). Treat `module2_signals.json` as a **durable TODO log** that survives attempt boundaries.
+
+Each `commit_moves[]` entry has a `status` field (one of `pending` / `verified` / `attempted_failed`). The lifecycle:
+
+```
+git log -S finds future SHA  →  write entry with status="pending" (TODO)
+                                ↓
+                          sandbox cherry-pick
+                          ↓                          ↓
+              advanced anchor                   conflict unresolvable
+              ↓                                          ↓
+       status="verified" + fill in            status="attempted_failed"
+       applied_at / conflict /                + attempt_log + move blocker
+       verified_via_anchor / resolves         to unbound_issue
+```
+
+**Step-by-step**:
+
+1. **Enumerate candidates first** (before any cherry-pick). Use `git log -S '<symbol>' -- <path>` for **every** clean future symbol you find in:
+   - `module2_waivers.json :: bound_waivers[]` with `reason_code = feature_introduced_later`
+   - High-count `error_groups[]` reasons (e.g. `AttributeError: '<X>' has no attribute '<symbol>'`, `ImportError: cannot import name '<symbol>'`)
+   - Anchor symbols from `unbound_issues[].evidence.affected_error_groups[]`
+
+   For each discovered SHA, immediately write a `commit_moves[]` entry with `status="pending"`, the SHA, `intended_symbol`, `intended_path`. **Persist to disk** before moving to the next candidate. This survives silent exit / context exhaustion.
+
+   **Static analysis first (locate before validate).** Before any sandbox work, examine each pending SHA with `git show --stat <sha>` (what files / how many lines), `git log --oneline <sha>~3..<sha>+3` (neighboring commits), and `git diff <milestone-end>..<sha> -- <intended_path>` (cumulative drift). Use this to: (a) group topologically related SHAs into clusters (same feature series, same conflict locus), (b) spot SHAs that are unrealistic to cherry-pick (massive cross-file refactor, depends on many intermediate commits) and downgrade them to `unbound_issue` without touching sandbox, (c) plan an efficient sandbox order. Static analysis is cheap (no docker rebuild); dynamic verification is expensive — front-load reasoning.
+
+2. **Pull a sandbox branch**: `git checkout -b sandbox-{{ m_id }}-<cluster>`.
+
+3. **Cherry-pick and verify — batch related SHAs in one sandbox.** Sequential single-SHA verification works but is expensive (one rebuild + anchor rerun per SHA). When SHAs belong to the same feature series or share a conflict locus identified in static analysis:
+   - Cherry-pick the related group in topological order on the same sandbox branch (`git cherry-pick <sha1> <sha2> <sha3>`).
+   - **Single** rebuild + **single** anchor-test run for the whole cluster.
+   - Attribute the post-pick test outcomes to each entry individually — read the test log to see which anchor each SHA personally advanced (e.g. if anchors A, B, C are affected and you picked SHAs 1, 2, 3, identify which combination resolved which anchor by reading the rerun stderr / test output).
+   - Update each `commit_moves[]` entry's `status` independently. Shared `verified_via_anchor` is fine when SHAs jointly resolve the same anchor; record the cluster-wide fact in each entry's `attempt_log`.
+
+   Per-SHA mechanics (apply per entry regardless of batching):
+   - `git cherry-pick <sha>` — record `clean` / `resolved_theirs` / `unresolvable`. On conflict prefer `--theirs`.
+   - If the anchor's failure point measurably advanced (error symbol changed, test now collects, or a different symbol surfaces) → **update the entry** to `status="verified"` and fill in `applied_at`, `conflict_during_pick`, `verified_via_anchor`, `resolves.bound_waiver_ids`.
+   - If cherry-pick is unresolvable OR post-pick image still fails on the same symbol → **update the entry** to `status="attempted_failed"`, fill in `attempt_log` (specific reason — which file conflicted, what was tried), optionally add `moved_to_unbound_issue_id` if you decide to document the cluster as `unbound_issue` instead.
+
+4. **Save after EACH cherry-pick attempt** (or after each batch's rebuild/rerun). Don't defer persistence — silent exit between batches must not lose status updates for already-processed entries.
+
+5. **Destroy the sandbox**: `git checkout <pre-sandbox-head> && git branch -D sandbox-{{ m_id }}-<cluster>`. Verify production Dockerfile is unchanged.
+
+6. **Before declaring `agent_sufficient.value=true`**: confirm there are **NO** entries with `status="pending"`. Every pending entry must have been processed (verified OR attempted_failed). The pipeline emits `raw_metrics.candidates_pending_warning` if you declare sufficient with unfinished pending entries.
+
+**MANDATORY trigger — narrow.** For **every** `bound_waiver` with `reason_code = feature_introduced_later` (Path B), there MUST be a `commit_moves[]` entry with `status="verified"` whose `resolves.bound_waiver_ids` includes that waiver's `id`. Entries with `status="pending"` or `"attempted_failed"` do NOT satisfy the Path B mandate — pipeline still surfaces `commit_signal_missing_warning` until verified.
+
+Other paths (`test_out_of_scope`, patched-data-quality codes, all `unbound_issue` kinds) do NOT trigger MANDATORY commit_signal.
+
+**If sandbox cherry-pick demonstrably can't advance the anchor for a Path B waiver**, mark the `commit_moves[]` entry `status="attempted_failed"` AND **move the Path B waiver to `unbound_issues`** (which does NOT offset gates). Let the gate failure stand honestly. Don't leave a Path B waiver hanging without a verified paired signal, and don't fabricate a different reason_code to dodge the check.
+
+**`attempted_failed` requires actual cherry-pick evidence.** The `attempt_log` field MUST cite real sandbox execution: the `git cherry-pick` command output, conflict file paths, or post-pick rebuild / anchor-test stderr. Phrases like *"sandbox cherry-pick not run this attempt"*, *"absorbed by /tmp/sitecustomize.py"*, or *"shim handles it"* are NOT valid evidence — pipeline rejects such entries as `invalid_commit_signals`. The two legitimate paths are mutually exclusive at the entry level:
+
+- **Kind 1 shim path** (evaluation-only fix): write the shim in the Dockerfile, **do NOT write a `commit_moves[]` entry**. The shim is the entire answer for M3.
+- **Path B cherry-pick path** (real behavior gap): run the sandbox cherry-pick. If it works → `status="verified"`. If it genuinely fails (real conflicts / persistent symbol) → `status="attempted_failed"` with stderr-grade evidence, plus move the paired waiver to `unbound_issues`.
+
+A *companion* shim recorded inside a `verified` entry's `dockerfile_diff` field is allowed (it's auxiliary to a real pick). A shim claimed as the reason for `attempted_failed` (no real pick was run) is not. If you cannot or will not run sandbox, escalate to `unbound_issue` instead — that's the legitimate "too hard" exit; see Exit 2.
+
+Schema (file `{{ module2_signals_path }}`):
+
+```json
+{
+  "milestone_id": "{{ m_id }}",
+  "schema_version": 2,
+  "based_on_waivers": "schema_version=3",
+  "commit_moves": [
+    {
+      "id": 1,
+      "status": "verified",
+      "resolving_commit": "f333e3513e8b08fae1e6f64eb1ff7c2d553ed81b",
+      "applied_at": "predecessor",
+      "conflict_during_pick": "resolved_theirs",
+      "resolves": {
+        "bound_waiver_ids": [2, 7],
+        "unbound_issue_ids": []
+      },
+      "verified_via_anchor": "tests/admin_views/test_actions.py::AdminActionsTest::test_x"
+    },
+    {
+      "id": 2,
+      "status": "pending",
+      "resolving_commit": "c7fc9f20b49b5889a9a8f47de45165ac443c1a21",
+      "intended_symbol": "login_not_required",
+      "intended_path": "django/contrib/auth/decorators.py",
+      "discovered_at_attempt": 2,
+      "estimated_cluster_error_count": 15
+    },
+    {
+      "id": 3,
+      "status": "attempted_failed",
+      "resolving_commit": "abc1234567890abcdef1234567890abcdef12345",
+      "attempt_log": "Cherry-pick conflicts on django/X.py line 100 unresolvable; --theirs broke 5 unrelated tests; abandoned. Cluster moved to unbound_issues[id=4].",
+      "moved_to_unbound_issue_id": 4
+    }
+  ],
+  "dockerfile_diff": "--- a/Dockerfile\n+++ b/Dockerfile\n@@ -42,6 +42,9 @@\n+\n+# [ENV-PATCH] companion shim for cherry-pick f333e3513e8\n+RUN echo 'Field.db_default = None' >> /tmp/sitecustomize.py\n",
+  "remaining_unbound_issue_ids": [3, 4]
+}
+```
+
+Top-level fields:
+
+| field | type | required | description |
+|---|---|---|---|
+| `milestone_id` | string | yes | matches the milestone tag |
+| `schema_version` | int | yes | `2` |
+| `based_on_waivers` | string | yes | `"schema_version=3"` |
+| `commit_moves` | list | yes (non-empty) | cherry-pick proposals at various lifecycle stages |
+| `dockerfile_diff` | string | yes | single composite unified diff (empty string if no companion shim) |
+| `remaining_unbound_issue_ids` | list of int | yes (may be empty) | unresolved unbound_issue ids |
+
+`commit_moves[]` entry fields (per `status`):
+
+| field | type | when required | values |
+|---|---|---|---|
+| `id` | int ≥ 1, unique | all | referenced from retry context / logs |
+| `status` | enum | all (default `verified` if omitted) | `pending` \| `verified` \| `attempted_failed` |
+| `resolving_commit` | 40-hex SHA | all | candidate commit |
+| `intended_symbol` | str | `pending` (info-only for others) | clean identifier you searched for |
+| `intended_path` | str | `pending` (info-only for others) | production source path |
+| `discovered_at_attempt` | int | optional | when this candidate was first seen |
+| `estimated_cluster_error_count` | int | optional | size of cluster this would clear |
+| `applied_at` | enum | `verified` | `predecessor` \| `internal` |
+| `conflict_during_pick` | enum | `verified` | `clean` \| `resolved_theirs` \| `unresolvable` |
+| `verified_via_anchor` | nodeid | `verified` | the anchor test that confirmed advance |
+| `resolves.bound_waiver_ids` | list[int] | `verified` | ids of Path B waivers this resolves |
+| `resolves.unbound_issue_ids` | list[int] | `verified` | ids of unbound_issues this resolves |
+| `attempt_log` | str | `attempted_failed` | SPECIFIC failure reason (file/line conflicts, etc.) |
+| `moved_to_unbound_issue_id` | int | optional (`attempted_failed`) | if this candidate's cluster moved to unbound_issues |
+
+Machine verifications (pipeline) — apply ONLY to `status == "verified"` entries:
+
+- **SHA existence:** `resolving_commit` must resolve via `git rev-parse <sha>`.
+- **SHA is future:** `git merge-base --is-ancestor <resolving_commit> {{ end_state }}` must exit 1.
+- **Diff parseable:** `dockerfile_diff` must be a syntactically valid unified diff (empty string allowed).
+- **Id lookup:** each `resolves.bound_waiver_ids[i]` must be a valid id from `{{ module2_waivers_path }} :: bound_waivers[*].id`; same for `unbound_issue_ids`.
+- **Conditional precondition:** `module2_signals.json` requires non-empty `bound_waivers` OR `unbound_issues` in waivers file.
+
+Entries failing verification land in `raw_metrics.invalid_commit_signals` (gate pass/fail unaffected). Verified entries count in `raw_metrics.commit_signals_count`. Pending/failed surface in `raw_metrics.candidates_pending` / `raw_metrics.candidates_attempted_failed` for retry context. Unresolved pending at declared-sufficient time triggers `raw_metrics.candidates_pending_warning`.
+
+Behavior:
+
+- Does NOT change `built` (hard gates remain authoritative).
+- Does NOT trigger retry early-stop on its own (only `agent_sufficient` controls that, see Exit 4).
+- Reusable across attempts: a signal can stay valid for subsequent retries if the underlying blocker cluster is unchanged.
+- **Non-destructive:** production Dockerfile and `{{ module2_waivers_path }}` are unchanged regardless of whether commit_signal is emitted. Module 3 chooses between current waivers state and the proposal.
+
+#### Exit 4 (Meta): agent_sufficient (declarative stop signal)
+
+When to set `value: true`: when Exits 1, 2, and 3 cover all remaining unfixable issues. Set `value: false` whenever a plausible environment / runner fix still exists.
+
+Behavior:
+
+- Does NOT change `built` (hard gates remain authoritative for acceptance).
+- Whether it triggers retry early-stop is decided by `module2_acceptance_mode` config:
+  - `hard_gate` (default) — Module 2 keeps retrying until hard gates pass or `max_retries` is reached.
+  - `agent_sufficient` — if hard gates fail and the agent declares sufficient, retry stops early with terminal status `module2_sufficient`.
+- `value: true` requires at least one `bound_waivers`, `unbound_issues`, or `commit_signals` entry — pipeline rejects an empty declaration.
+- **Collection-collapse guard.** Do not set `value: true` when `H_total_not_below_base.value` is near zero (collection ≪ baseline). Collapse means src is not loading at all — that is Kind 1 (evaluation repair), not Kind 2 (behavior substitution), and the right action is the smallest shim restoring the missing interface (apply the attribution test in `patching.md.j2` Boundary rule). Write the shim, rerun, and only declare sufficient after collection recovers. Once collection recovers, reclassify remaining failures: real behavior gaps become waivers / signals, not increasingly capable shims.
+- Even when retry does not stop (default mode), `agent_sufficient` is recorded in `raw_metrics`, so Module 3 / human auditors can still see the signal.
+
+Complete `{{ module2_waivers_path }}` example combining bound_waivers + unbound_issues + agent_sufficient (commit_signals live in `{{ module2_signals_path }}` — see Exit 3 above):
+
+```json
+{
+  "schema_version": 3,
+  "milestone_id": "{{ m_id }}",
+  "bound_waivers": [
+    {
+      "id": 1,
+      "reason_code": "feature_introduced_later",
+      "anchor": "tests/auth_tests/test_views.py::TestLoginRequired::test_anonymous",
+      "symbol": "LoginRequiredMiddleware",
+      "path": "django/contrib/auth/middleware.py",
+      "attached_gates": ["H_patched_completeness"],
+      "rationale": "LoginRequiredMiddleware introduced after milestone; cherry-pick verified in sandbox (see commit_moves[id=1])"
+    }
+  ],
+  "unbound_issues": [
+    {
+      "id": 1,
+      "kind": "other",
+      "summary": "660 stable F→F tests cluster on 5 missing-symbol signatures",
+      "evidence": {
+        "missing_symbols": ["LoginRequiredMiddleware", "Client.asession"],
+        "f2f_count": 660,
+        "affected_gates": ["H_f2f_not_above_base"]
+      }
+    }
+  ],
+  "agent_sufficient": {
+    "value": true,
+    "rationale": "All remaining unfixable issues recorded above; backporting Django features would pollute benchmark signal"
+  }
+}
+```
+
+Note: schema v3 is enforced by the pipeline. Older v1/v2 files and deprecated reason_codes (`symbol_introduced_later`, `error_signature_dag_caused`) are rejected with explicit migration hints. See `module2_waiver_m3_actionable_plan.md` for the full design.
+
+### PHASE 5: Finalize Dockerfile and Process Artifacts
+
+Ensure the Dockerfile defaults to START state:
+
+```dockerfile
+FROM {{ base_image }}
+
+RUN rm -rf /testbed
+COPY . /testbed/
+
+# Environment fixes and committed patches, if any
+
+RUN cd /testbed && git checkout {{ end_state }}
+
+# Apply and commit patches if needed
+
+RUN cd /testbed && git checkout {{ base_state }}
+```
+
+Generate process artifact when local test results are available:
+
+```text
+{{ test_results_dir }}/{{ m_id }}/refinement/<latest_attempt>/skip_analysis.md
+```
+
+The skip analysis should summarize:
+
+1. Total skipped tests by state and config.
+2. Resolvable environment-related skips and what was fixed.
+3. Remaining acceptable skips with evidence.
+4. Confirmation that commit-related test signal is handled by `H_patched_completeness`, `H_patched_clean_signal`, and `{{ module2_waivers_path }}` (if used).
+
+Final local review:
+
+1. Dockerfile starts from `{{ base_image }}`.
+2. `RUN rm -rf /testbed` and `COPY . /testbed/` are present.
+3. Both START and END states can collect tests.
+4. `test_config.json` exists at `{{ output_dir }}/test_config.json`.
+5. `skip_analysis.md` is written if local results exist.
+6. Temporary image `test-milestone-{{ m_id }}-temp` is removed when local validation is done.

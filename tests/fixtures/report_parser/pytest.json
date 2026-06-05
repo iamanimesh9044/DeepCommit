@@ -1,0 +1,31 @@
+{
+  "created": 1700000000.0,
+  "duration": 0.42,
+  "exitcode": 1,
+  "root": "/testbed",
+  "summary": {
+    "passed": 2,
+    "failed": 1,
+    "skipped": 1,
+    "total": 4,
+    "collected": 4
+  },
+  "tests": [
+    {
+      "nodeid": "tests/test_math.py::test_add",
+      "outcome": "passed"
+    },
+    {
+      "nodeid": "tests/test_math.py::test_sub",
+      "outcome": "failed"
+    },
+    {
+      "nodeid": "tests/test_math.py::test_div",
+      "outcome": "skipped"
+    },
+    {
+      "nodeid": "tests/test_math.py::test_mul[2-3]",
+      "outcome": "passed"
+    }
+  ]
+}

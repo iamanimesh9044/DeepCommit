@@ -1,0 +1,21 @@
+Use the repository's Python packaging metadata first: `pyproject.toml`, `setup.cfg`, `setup.py`, `requirements*.txt`, `tox.ini`, and lockfiles.
+
+Common commands to test locally inside the image:
+
+```bash
+python -m pip install -U pip setuptools wheel
+python -m pip install -e .
+python -m pytest {{ test_dir }} --tb=short
+```
+
+If the project uses `unittest`, use `python -m unittest discover` with the repository's configured test path. For Django projects, make framework settings explicit through environment variables and committed test config files rather than relying on shell-only state.
+
+When converting Python framework results into the standard report shape,
+preserve setup/collection errors as `error`. Assertion failures are
+`failed`; import errors, configuration errors, and runner crashes are not.
+
+Python patching notes:
+
+- Keep `PYTHONPATH` explicit when tests import in-tree packages.
+- Prefer editable installs for source-under-test.
+- If a compatibility shim is needed for the historical milestone, create it in the Dockerfile flow, commit it, and retag the milestone end state.

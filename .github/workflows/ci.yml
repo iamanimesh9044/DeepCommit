@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Least privilege: read-only token for the whole workflow (no PR writes here).
+permissions:
+  contents: read
+
+# Cancel an in-flight run when a new commit lands on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Make set/dict iteration order reproducible across all jobs (belt-and-braces;
+# tests also assert on sorted/canonical shapes).
+env:
+  PYTHONHASHSEED: "0"
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+      - run: sudo apt-get update && sudo apt-get install -y libgit2-dev
+      - run: uv sync --dev
+      - name: Secret scan (gitleaks, working tree — fast, no history)
+        run: |
+          GL=8.21.2
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GL}/gitleaks_${GL}_linux_x64.tar.gz" | tar -xz gitleaks
+          ./gitleaks dir . -c .gitleaks.toml --redact --exit-code 1
+      - name: No machine-absolute paths / secrets in active tests/config (single source of truth)
+        run: uv run pytest tests/unit/test_repo_hygiene.py -q
+      - name: Collection is clean (no import-time crash)
+        run: uv run pytest --collect-only -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+      - run: sudo apt-get update && sudo apt-get install -y libgit2-dev
+      - run: uv sync --dev
+      # Blocking: deepcommit/ and tests/unit/ are both ruff-clean now (legacy debt
+      # was auto-fixed + the residual judgment cases baselined with in-line # noqa).
+      - run: uv run ruff check deepcommit/ tests/unit/ tests/golden/
+      - run: uv run ruff format --check deepcommit/ tests/unit/ tests/golden/
+
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+      - run: sudo apt-get update && sudo apt-get install -y libgit2-dev
+      - run: uv sync --dev
+      # Blocking: the test_runner/core slice is now type-clean. Scoped here (not the
+      # whole never-typed tree) on purpose — widen the scope as more modules get typed.
+      - run: uv run mypy deepcommit/harness/test_runner/core tests/unit
+
+  unit-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+      - run: sudo apt-get update && sudo apt-get install -y libgit2-dev
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --dev --python ${{ matrix.python-version }}
+      - name: Unit tests + coverage
+        run: >
+          uv run --python ${{ matrix.python-version }} pytest tests/ -v
+          -m "not integration and not agent"
+          --cov=deepcommit --cov-report=term-missing --cov-report=xml
+      - uses: actions/upload-artifact@v7
+        if: matrix.python-version == '3.12'
+        with:
+          name: coverage-xml
+          path: coverage.xml

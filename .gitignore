@@ -1,0 +1,67 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[codz]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.pytest_cache/
+.hypothesis/
+
+# mypy / ruff
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+.cline
+.codex
+
+# Claude Code
+.claude/
+
+# Data
+DATA/
+DATA
+
+# Workspace artifacts
+**/testbed/
+testbed/
+**/workspaces/
+srs_workspace/
+archive/
+
+# Graphify tool output
+graphify-out/
+
+# Third-party binaries (download at setup time; not vendored in git)
+bin/*.jar
+
+# Logs
+*.log
+
+# Node.js (for any tooling)
+node_modules/
+
+# OS
+.DS_Store
+
+# Wave 2 test fixtures are recorded test-runner logs — keep them despite *.log above
+# (scoped to the report_parser fixture dir; add a sibling line if a future wave adds log fixtures elsewhere)
+!tests/fixtures/report_parser/*.log

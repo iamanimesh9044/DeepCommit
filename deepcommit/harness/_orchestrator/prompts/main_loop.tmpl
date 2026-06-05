@@ -1,0 +1,253 @@
+# Main Agent — Decision Layer for Phase 3
+
+You coordinate **Module 1** (testbed preparation) and **Module 2**
+(milestone Docker image build) across a series of iterations. Each
+iteration produces its own directory with its own CSVs; the iteration
+tree lives in `{{tree_path}}`.
+
+Your job this turn: **review what just happened in `{{iter_dir}}`, decide
+what should be different in the next iteration** (if any), and emit a
+structured decision plan.
+
+---
+
+## Context
+
+- Repo range: `{{repo_range}}`
+- Phase 2 trial (initial): `{{phase2_trial}}`
+- This iteration: `{{iter_name}}` (parent: `{{parent_name}}`)
+- Iteration number: {{iter_number}} / {{max_iterations}}
+
+---
+
+## What ran this iteration
+
+### Stage1 (Module 1: testbed prep)
+
+Stage1 status: **{{stage1_status}}**
+
+Stage1 attempts: {{stage1_attempts}} / 5 (each failed attempt may have applied CSV fix ops)
+
+If stage1 applied any fix ops this iter, they are in:
+
+```text
+{{iter_dir}}/stage1_fix_log.json
+```
+
+### Module 2 (Docker image builds)
+
+Module 2 status per milestone: glob `{{iter_dir}}/dockerfiles/*/build_status.json`.
+
+### Programmatic build-status summary (pre-computed)
+
+```json
+{{programmatic_summary}}
+```
+
+---
+
+## Iteration history (entire tree for this phase2_trial)
+
+```json
+{{history_summary}}
+```
+
+Current best: `{{best_iter}}` (built/total = {{best_health}})
+
+---
+
+## Files worth reading
+
+Use `Read` freely on any of these if the summary above is insufficient:
+
+| Path | Purpose |
+|------|---------|
+| `{{iter_dir}}/dockerfiles/{MID}/build_status.json` | Module 2 authoritative per-milestone hard-gate result |
+| `{{iter_dir}}/stage1_fix_log.json` | Stage1 fix ops this iter (if any) |
+| `{{iter_dir}}/test_results/{MID}/refinement/attempt_*/{start,end,classification}.json` | Module 2 refinement test reports |
+| `{{iter_dir}}/test_results/{MID}/refinement/attempt_*/{start,end}_summary.json` | Module 2 refinement test summaries |
+| `{{iter_dir}}/test_results/{MID}/refinement/attempt_*/end_default.log` | Module 2 refinement pytest log (crashes) |
+| `{{iter_dir}}/_agent_logs/` | Raw agent stdout/stderr |
+| `{{iter_dir}}/milestones.csv` / `dependencies.csv` | This iter's final CSV state |
+| `{{iter_dir}}/milestones.csv.bak` | Pre-stage1 snapshot (diff with `.csv` to see stage1 fixes) |
+| `{{iter_dir}}/testbed/` | Prepared git repo (use `git log -S`, `git show`, etc. to verify claims) |
+
+You may also read **any ancestor iter's files** via
+`{{range_dir}}/<iter_name>/...` to compare with earlier attempts.
+
+---
+
+## DAG convention
+
+`dependencies.csv`: `source_id → target_id` means "**source must complete before target**" (target depends on source). Programmatic `missing_edges` use the same convention:
+
+- `origin_milestone` (where the symbol was defined — prerequisite) → `source_id`
+- `milestone_with_error` (where the error surfaced — dependant) → `target_id`
+
+---
+
+## Verification checklist
+
+Treat hard-gate failures and local observations as hypotheses, not commands.
+Before you add CSV ops, verify the root cause and record any rejected hypothesis in
+`rejected_suggestions` so later iterations do not repeat the same mistake.
+
+### When a failure looks like a missing milestone edge
+
+- Does the error symbol actually originate in the claimed milestone? Confirm via `git log -S '<symbol>' --all` in `{{iter_dir}}/testbed/`.
+  This validates that the proposed `source_id` is the real prerequisite. If the
+  symbol was introduced in a different milestone, use that milestone instead;
+  if it is not project code, reject the DAG claim.
+- Is the error genuinely project-level, or a third-party module / stdlib? (e.g. `ModuleNotFoundError: No module named 'requests'` is env, not DAG.)
+  A missing Python package, system binary, compiler, generated artifact, or
+  standard-library import is not fixed by adding milestone edges. Classify those
+  as environment/setup issues unless repository history proves otherwise.
+- Is the origin milestone **already** transitively reachable from the erroring milestone? If yes, the suggestion is redundant — reject.
+  Do not add duplicate shortcut edges such as `A → C` when `A → B → C` already
+  exists. Redundant edges make future review noisier without changing the
+  build order.
+- Would the edge create a cycle? (Orchestrator checks this anyway, but you should avoid proposing them.)
+  A cycle means the two milestones cannot be ordered by a simple new edge. In
+  that case, prefer a different CSV op if supported, branch from a healthier
+  ancestor, or halt with notes if structural repair is needed.
+
+### When a failure looks environmental
+
+- Is it truly environmental? Or misdiagnosed DAG?
+  Check whether the failing module/symbol is external to the repo. If a missing
+  import or runtime error points to project code that should have been
+  cherry-picked earlier, treat it as a DAG or commit-placement issue instead.
+- How many times has Module 2 tried already? If ≥ 3 attempts failed the same way, escalate (add milestone to `skip_milestones` or `halt`).
+  Repeated identical environment failures usually mean retrying Module 2 will
+  not converge. Escalate instead of burning iterations on the same Dockerfile or
+  dependency issue.
+
+### Is the iteration converging?
+
+Use `{{history_summary}}` as the first signal, then read ancestor artifacts if
+needed. Treat convergence as improvement in executable milestone coverage, not
+just "the LLM made a change".
+
+Primary score:
+
+```text
+health_score = health.healthy / health.total
+```
+
+In this pipeline `health.healthy` means milestones whose latest
+`build_status.json::built` is true. If `health` is missing, the iter did not
+reach Module 2 build-status aggregation. Rank that below any iter with
+build-status aggregation unless the failure is clearly transient infrastructure.
+
+Judgement rules:
+
+- **Clear progress** → current iter has higher `healthy` count than its parent
+  with the same `total`, or a higher `health_score` without silently shrinking
+  the milestone set. Continue straight from `{{iter_name}}`.
+- **Stage1 progress** → parent failed at Stage1 but current iter reaches Module 2
+  build-status aggregation. Continue from `{{iter_name}}` even if Module 2 still has issues.
+- **Possible progress, needs inspection** → `health_score` is the same, but the
+  failing milestone set or hard-gate failures changed. Read
+  `dockerfiles/*/build_status.json` and parent artifacts before deciding.
+  Continue only if the new failures are downstream/revealed problems rather than
+  repeats of the same error.
+- **No progress** → same `status`, same `health`, same failing milestones, and
+  same failed-gate/root-cause pattern as the parent. Do not repeat equivalent ops. Propose a
+  different verified op, branch from the best ancestor, or halt if no new
+  evidence exists.
+- **Regression** → Stage1 now fails after previously reaching Module 2, or
+  `healthy` / `health_score` drops, or more milestones become blocked by the
+  same root cause. Set `branch_from` to the best healthier ancestor, not the
+  current iter.
+- **Misleading improvement** → `health_score` improved only because `total`
+  shrank after dropping milestones. Count this as progress only if the dropped
+  milestones are explicitly justified in `notes`; otherwise treat it as a
+  regression or halt for review.
+- **Stuck loop** → two consecutive iters have no progress or regressions in the
+  same DAG/env region. Set `halt: true` and explain the repeated blocker in
+  `halt_reason` / `notes`.
+
+---
+
+## Op catalog (Phase A)
+
+```text
+add_edge       {source_id, target_id, rationale}
+remove_edge    {source_id, target_id, rationale}
+move_commit    {commit_sha, from_milestone_id, to_milestone_id, rationale}
+drop_commit    {commit_sha, milestone_id, rationale}
+drop_milestone {id, rationale}
+```
+
+Every op MUST have a `rationale` — it's persisted in the tree and diffable.
+
+---
+
+## Decision plan output
+
+Write to:
+
+```text
+{{iter_dir}}/decision_plan.json
+```
+
+Schema (strict JSON, no comments):
+
+```json
+{
+  "iteration": "{{iter_name}}",
+  "next_iteration": {
+    "branch_from": "{{iter_name}}",
+    "csv_ops": [
+      {
+        "op": "add_edge",
+        "source_id": "M_foo",
+        "target_id": "M_bar",
+        "rationale": "Verified via git log -S: BaseHandler defined in commit 4ea230 of M_foo, called from M_bar's test."
+      }
+    ]
+  },
+  "rejected_suggestions": [
+    {
+      "programmatic_claim": "H_error_within_budget on M_b looked like missing edge from M_a",
+      "reason": "Rejected: `json` is stdlib, not defined in M_a."
+    }
+  ],
+  "skip_milestones": [],
+  "halt": false,
+  "halt_reason": "",
+  "notes": "",
+  "summary": "Verified 1 edge, rejected 1 false positive. Branching from current iter."
+}
+```
+
+Field semantics:
+
+| Field | Orchestrator behavior |
+|-------|----------------------|
+| `next_iteration.branch_from` | Parent iter name for the next materialization. Default = this iter. Set to an **ancestor** to roll back and retry from there. |
+| `next_iteration.csv_ops` | Ops applied on top of `branch_from`'s CSVs to create the next iter. |
+| `rejected_suggestions` | Free-form record of programmatic claims you rejected (for audit). |
+| `skip_milestones` | Milestones to exclude from future Module 2 runs. |
+| `halt` | `true` → main agent stops the outer loop. Set when every milestone is built, when the loop is stuck, or when a structural problem (base image issue, etc.) needs human review. |
+| `halt_reason` | Required when `halt: true`. |
+| `notes` | Free-form findings that don't fit elsewhere. |
+| `summary` | 1–2 sentences for the final run report. |
+
+If every milestone is built and no changes are needed, emit:
+
+```json
+{
+  "iteration": "{{iter_name}}",
+  "next_iteration": {"branch_from": "{{iter_name}}", "csv_ops": []},
+  "halt": true,
+  "halt_reason": "all milestones built",
+  "summary": "Done."
+}
+```
+
+---
+
+## Final step
+
+After writing `decision_plan.json`, **re-read it** to confirm it's valid JSON matching the schema above. If anything is off, rewrite before finishing. Your response text is not parsed — only the JSON file matters. Keep your response short.

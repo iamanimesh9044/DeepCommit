@@ -1,0 +1,17 @@
+Use the repository's Java build metadata first: `pom.xml`, `build.gradle`, `settings.gradle`, wrapper scripts, and lock/config files.
+
+Common commands to test locally inside the image:
+
+```bash
+./mvnw test
+mvn test
+./gradlew test
+gradle test
+```
+
+Java patching notes:
+
+- Prefer repository wrapper scripts when present.
+- Make the JDK version explicit.
+- Keep Maven or Gradle caches separate from source edits.
+- Treat compilation and classpath failures as environment errors until tests start normally.

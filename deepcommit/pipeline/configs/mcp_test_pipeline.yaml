@@ -1,0 +1,7 @@
+# MCP Test Pipeline Configuration
+# Minimal pipeline with only Stage 0 for testing MCP tool accessibility
+
+stages:
+  - stage_id: "stage0_mcp_test"
+    stage_impl: "stage0_mcp_test.py"
+    stage_config: "stage0_mcp_test.yaml"

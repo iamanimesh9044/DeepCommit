@@ -1,0 +1,67 @@
+## Final Checklist
+
+Pipeline-verified items:
+
+- [ ] Dockerfile has no block-level lint violations. `[verified by hard_gate: B_lint_block_clean]`
+- [ ] Dockerfile uses the expected base image. `[verified by hard_gate: B_base_image_consistent]`
+- [ ] Final milestone image exists. `[verified by hard_gate: B_image_exists]`
+- [ ] START and END refs are checkoutable, and the image defaults to START. `[verified by hard_gate: B_state_tags_consistent]`
+- [ ] Latest agent attempt completed normally. `[verified by hard_gate: B_agent_completed]`
+- [ ] Test runner completed and produced parseable start, end, and classification reports. `[verified by hard_gate: B_tests_ran_successfully]`
+- [ ] Commit-related patched tests are complete or waived. `[verified by hard_gate: H_patched_completeness]`
+- [ ] Patched tests expose clean behavior signal. `[verified by hard_gate: H_patched_clean_signal]`
+- [ ] Stable pass-to-pass signal is healthy. `[verified by hard_gate: H_pass_to_pass_majority]`
+- [ ] At least one whole-suite test transitions to pass (`fail_to_pass`, `none_to_pass`, `error_to_pass`, or `skipped_to_pass`). `[verified by hard_gate: H_none_error_fail_to_pass_present]`
+- [ ] START and END collection totals are not significantly below base. `[verified by hard_gate: H_total_not_below_base]`
+- [ ] Stable assertion failures are not significantly above base. `[verified by hard_gate: H_f2f_not_above_base]`
+- [ ] Runtime errors are within the configured budget. `[verified by hard_gate: H_error_within_budget]`
+- [ ] Stable skips are not significantly above base. `[verified by hard_gate: H_s2s_not_above_base]`
+- [ ] Aggregate anomaly transitions are within budget. `[verified by hard_gate: H_anomaly_aggregate]`
+
+Process-only items:
+
+- [ ] Phase 0 detected language and test framework from repository files. `[process only]`
+- [ ] Testbed replacement is present: `RUN rm -rf /testbed` and `COPY . /testbed/`. `[process only]`
+- [ ] Both START and END states pass test collection locally. `[process only]`
+- [ ] `test_config.json` was generated at `{{ output_dir }}/test_config.json` with the correct command for the detected framework. `[process only]`
+- [ ] Full tests were run using the test runner with detected `--language` and `--test-framework`. `[process only]`
+- [ ] Any custom runner bridge maps assertion failures to `failed` and setup/collection/import errors to `error`; it does not collapse framework `ERROR` into `failed`. `[process only]`
+- [ ] No resolvable environment-related skips remain in local analysis. `[process only]`
+- [ ] Environment patches are minimal, committed, and tagged. `[process only]`
+- [ ] No tests or source files were deleted to silence failures. `[process only]`
+- [ ] `skip_analysis.md` was generated when local test results were available. `[process only]`
+- [ ] Cleaned up: `docker rmi test-milestone-{{ m_id }}-temp`. `[process only]`
+- [ ] `[ENV-PATCH]` prefix was used in commit messages and skip reasons for tracking. `[process only]`
+- [ ] Retry diagnostics were used when available. `[process only]`
+- [ ] The final artifact is left for the pipeline to validate. `[process only]`
+- [ ] `bound_waivers[]` entries each attach to a specific gate, carry verifiable evidence, and pass machine validation. `[verified by hard_gate: H_patched_completeness / H_error_within_budget]`
+- [ ] `unbound_issues[]` entries record structural problems outside Module 2 scope; they do not affect gate pass/fail but help Module 3. `[process only]`
+- [ ] `commit_signals[]` entries (if any, in `{{ module2_signals_path }}`) each name an `anchor_test`, a `resolving_commit` that pipeline can verify as a future commit (not reachable from `{{ end_state }}`), and the sandbox cherry-pick outcome. The production Dockerfile is unchanged. `[process only — pipeline checks SHA structure but does not affect gates]`
+- [ ] `agent_sufficient.value=true`, if used, is justified by `bound_waivers` + `unbound_issues` + `commit_signals` covering all remaining unfixable issues, and no plausible Module 2 fix remains. `[process only]`
+
+## COMMON PITFALLS TO AVOID
+
+Quick reminders before submitting. Items overlapping with hard gates note the gate in parentheses; the authoritative definition lives in `Validation Contract`.
+
+- Do not apply patches without committing and moving tags. (verified by `B_state_tags_consistent`)
+- Do not forget to verify patches persist across `git checkout`.
+- Do not modify files in `{{ repo_path }}` directly.
+- Do not skip Phase 0; command and report format depend on framework detection.
+- Do not proceed to the next phase before the current phase has a normal test signal.
+- Do not add artificial skips to make a result look clean. (caught by `H_s2s_not_above_base` / `H_patched_clean_signal`)
+- Do not delete files or use file-level checkout to hide setup failures. (blocked by `B_lint_block_clean::no_delete` / `no_checkout_file`)
+- Do not narrow `test_config.json` to make a waiver appear valid.
+- Do not run self-checks through `trial_space` or any older copied runner; use the current `python -m {{ test_runner_script }}` command.
+- Do not append source declarations whose bodies contain executable logic (apply the attribution test in `patching.md.j2` Boundary rule). Identifier-only edits and load-time-invariant restorations are allowed; anything that answers the test's behavioral question is not. Caught by `B_lint_block_clean::large_src_append`; if a fix needs more than a shim, use a `bound_waiver`.
+- Do not replace existing source function bodies to extend behavior. (caught by `B_lint_block_clean::src_function_replaced`; always fails the attribution test in `patching.md.j2`)
+- Do not implement framework features yourself in patch code. The benchmark measures milestone src commits, not your implementations. (Kind 2 in `patching.md.j2` Boundary rule)
+- Do not modify files whose role is asserting test outcomes — assertions, parametrize data, expected-value tables, skip markers added to satisfy a hard gate. Runner harness scripts and conftest fixtures are HOW-layer regardless of path; role determines layer. (See `patching.md.j2` Boundary rule.)
+- Do not add `pytest_collection_modifyitems` skip logic to conftest, or equivalent collection-modifying hooks in other frameworks, that silently drop tests. Hooks that route or organize tests without dropping any are HOW-layer. (See `patching.md.j2`.)
+- Do not silently drop tests via `--ignore`, `-k`, `addopts` filters, or package excludes. The same flags are HOW-layer when used to route excluded tests into a separate `test_config.json` mode — document the routing in `unbound_issues.evidence`. (See `patching.md.j2`.)
+
+Positive checks:
+
+- Commit patches with an `[ENV-PATCH]` prefix.
+- Test both START and END states after patching.
+- Document patched files and the reason for each patch.
+- Let the pipeline decide final acceptance through `{{ build_status_path }}`.

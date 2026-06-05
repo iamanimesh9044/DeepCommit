@@ -1,0 +1,47 @@
+{
+  "suites": [
+    {
+      "title": "Login",
+      "file": "tests/login.spec.ts",
+      "specs": [
+        {
+          "title": "works",
+          "file": "tests/login.spec.ts",
+          "tests": [
+            {
+              "projectName": "chromium",
+              "status": "expected",
+              "results": [
+                {
+                  "status": "passed",
+                  "duration": 100
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "breaks",
+          "file": "tests/login.spec.ts",
+          "tests": [
+            {
+              "projectName": "chromium",
+              "status": "unexpected",
+              "results": [
+                {
+                  "status": "failed",
+                  "duration": 50,
+                  "error": {
+                    "message": "boom"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "suites": []
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,31 @@
+{
+  "_framework": "maven",
+  "_parse_mode": "console_log",
+  "collectors": [],
+  "duration": 1.1,
+  "summary": {
+    "error": 1,
+    "failed": 2,
+    "passed": 1,
+    "skipped": 1,
+    "total": 4
+  },
+  "tests": [
+    {
+      "nodeid": "com.example.AppTest",
+      "outcome": "failed"
+    },
+    {
+      "nodeid": "com.example.ErrTest",
+      "outcome": "error"
+    },
+    {
+      "nodeid": "com.example.GoodTest",
+      "outcome": "passed"
+    },
+    {
+      "nodeid": "com.example.SkipTest",
+      "outcome": "skipped"
+    }
+  ]
+}

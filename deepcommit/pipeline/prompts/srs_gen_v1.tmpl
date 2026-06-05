@@ -1,0 +1,116 @@
+# SRS Generation Principles
+
+## Design Philosophy
+
+A good SRS should simulate real-world development scenarios where engineers receive requirements and must independently research, analyze code, and design solutions. The SRS must be **realistic**, **challenging**, and **well-defined**.
+
+### Core Principles
+
+1. **Realism**: Mimic actual issue statements and requirements from production environments
+   - Base problems on real user reports and symptoms
+   - Avoid artificial or overly academic problem descriptions
+   - Use concrete error messages and failure scenarios when available
+
+2. **Agent Autonomy**: Test comprehensive engineering capabilities
+   - Agent must research domain knowledge (RFCs, standards, documentation)
+   - Agent must analyze codebase to find root causes
+   - Agent must design implementation approach independently
+   - Frame requirements around desired outcomes, not prescribed edits
+   - **Do NOT over-specify**: No implementation hints, no file paths, no code snippets
+
+3. **Sufficiency**: Provide clear and complete problem definitions
+   - Problem symptoms must be specific and observable
+   - Requirements must define **what** to achieve, not **how**
+   - Acceptance criteria must be verifiable (preferably via tests)
+   - Use gold-patch and test suite to validate completeness
+   - Maintain clarity to avoid ambiguity while keeping the task challenging—do not simplify implementation choices
+
+---
+
+## Format Requirements
+
+### Document Structure
+
+Every SRS must include:
+
+1. **Overview Section**: High-level summary of all requirements
+2. **Requirements Sections**: Individual functional requirements (FR1, FR2, ...)
+
+### Individual Requirement Format
+
+```markdown
+### FRX: [Requirement Title]
+
+**Problem**: [One-sentence symptom description. Describe what fails, not why.]
+
+**User Report** (optional - only when real user issue exists):
+```
+[Brief excerpt from actual issue: error messages, reproduction steps, impact]
+```
+
+**Requirements**:
+- [Functional requirement 1 - what to achieve]
+- [Functional requirement 2]
+- ...
+
+**Acceptance**:
+- [Prefer scenario-style observable outcome, e.g., “When <action>, <result>”; if not feasible, clearly state the observable outcome]
+- [Additional observable outcome]
+- ...
+```
+
+### What to INCLUDE
+
+✅ **Overview section**:
+- Brief summary of all requirements (numbered list)
+- Affected modules/files
+- High-level problem domain
+- Include only the context necessary to eliminate ambiguity; avoid extra guidance that makes implementation trivial
+- **Omit** issue/PR numbers and implementation details
+
+✅ **Problem section**:
+- Observable symptoms and error messages
+- Failure scenarios and reproduction context
+- Impact on users or system functionality
+- Key technical terms (e.g., "TLS 1.3 PHA", "FIPS", "OpenSSL 3.2.0")
+
+✅ **User Report** (when available):
+- Actual error messages from issue
+- User's reproduction steps
+- User's description of impact
+- Keep concise (3-5 lines max)
+- **Omit** issue/PR numbers
+
+✅ **Requirements**:
+- What functionality to implement
+- What behavior to fix or improve
+- What compatibility to maintain
+- Describe desired end state or constraints; avoid mandating specific functions, methods, or code edits
+- Provide extra context only when required to prevent misinterpretation, not to ease implementation
+- Keep implementation-agnostic
+
+✅ **Acceptance**:
+- Prefer scenario-style observable outcomes (“When <action>, <result>”); if that’s not feasible, clearly state the observable result
+- Test scenarios that must pass (refer to existing tests by behavior, not implementation steps)
+- Backward compatibility requirements
+- Non-breaking change requirements
+
+### What to EXCLUDE
+
+❌ **Do NOT include**:
+- Technical background tutorials (e.g., "TLS 1.3 PHA allows...")
+- Root cause analysis (e.g., "The bug is in line 42 because...")
+- Implementation details (e.g., "Use lazy loading by...")
+- Prescriptive changes (e.g., "Delete `selected_npn_protocol()`" or "Call function X")
+- Code snippets (before/after examples)
+- File paths and line numbers
+- Step-by-step implementation guides
+- Historical context (e.g., "accidentally broken during refactoring")
+- Issue/PR/Changelog references (e.g., "Issue #1234", "PR #5678")
+
+❌ **Do NOT add separate sections**:
+- "Background", "Root Cause", "Technical Context"
+- "Implementation Plan", "Solution Approach"
+- "Implementation References"
+
+**End of Template**

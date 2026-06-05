@@ -1,0 +1,716 @@
+### Boundary rule — Module 2 decision framework
+
+This is the prompt's defining invariant. The benchmark exists to measure
+what milestone src commits do; any agent shortcut that bypasses milestone
+src changes destroys that measurement. Tests must pass because milestone
+src commits change behavior, not because the agent rewrote the test or
+implemented the missing feature.
+
+Every test failure walks through three questions in order:
+
+```text
+Q1. What kind of failure is this?     → Kind 1 (evaluation repair) or Kind 2 (behavior substitution)
+Q2. Who is responsible for fixing it? → L1 (Agent writes shim) or L2 (Agent steps back)
+Q3. What concrete action do I take?   → Smallest shim, or one of four exits
+```
+
+Apply these questions in strict order to avoid common traps.
+
+#### Terminology
+
+The framework uses two orthogonal axes for file role:
+
+- **Top axis: HOW (environment) vs WHY (test code).** HOW = system
+  packages, environment variables, runtime configuration, test runner
+  parameterization, fixtures and mocks. WHY = anything that asserts a
+  test outcome.
+- **Refinement within WHY: Test Infrastructure vs Test Content.** Test
+  Infrastructure = setup hooks, scaffolding fixtures, runner harness
+  — modifiable like HOW. Test Content = assertions, parametrize data,
+  expected-value tables, the assertion-target fixture models —
+  immutable.
+
+Older mentions in this codebase use "HOW-layer / WHY-layer" as an alias
+for the top axis; both names refer to the same distinction.
+
+---
+
+## Q1. What kind of failure is this? (Attribution boundary)
+
+Older sections may call this the "outcome test"; in this prompt that
+means the attribution test below.
+
+Two kinds. Classify by **what the patch is allowed to do for Module
+2**, not by patch location, syntax size, or transition labels.
+
+Module 2 owns **evaluability**: building an environment where tests can
+ask the milestone src what it actually does. Module 2 does not own
+**behavior repair**: making future functionality work before the
+milestone DAG includes the commits that implement it.
+
+**Kind 1 — Evaluation-enabling shim.** A Kind 1 shim restores the
+suite's ability to evaluate the milestone src. It bypasses crashes
+caused by test/src interface skew: missing imports, missing symbols,
+missing attributes, constructor-shape mismatch, collection / fixture /
+setup crashes, runner compile failures, or framework load-time
+assumptions. It may provide names, empty declarations, inert defaults,
+or placeholders whose meaning is still "this API is absent at this
+milestone." It must not make the missing feature behave as if it
+exists. After a Kind 1 shim, test outcomes are still attributable to
+milestone src rather than to the shim.
+
+**Kind 2 — Behavior-substituting patch.** A Kind 2 patch supplies or
+changes the behavior the test is trying to measure. It implements a
+future feature, returns usable values, delegates a new API to an old
+API, changes validation results, changes dispatch keys, relaxes test
+isolation, changes assertions, or otherwise determines why a test
+passes or fails. Kind 2 is outside Module 2 scope: do not build it into
+the environment. Record the gap through `bound_waivers`,
+`unbound_issues`, and when applicable `commit_signals`, because the
+correct repair is a milestone DAG / commit-order adjustment by Module
+3.
+
+#### Attribution test (the actual rule)
+
+Ask this before any source-affecting patch:
+
+```text
+After this patch unblocks the suite, are pass/fail/error outcomes still
+caused by the milestone src?
+```
+
+- **Yes** → Kind 1, if the patch only restores evaluability.
+- **No** → Kind 2, because the patch has become part of the behavior
+  under test.
+
+A Kind 1 shim makes references or setup paths resolvable. It does not
+change the business behavior a test observes — including how many times
+a test runs. Replacing a parametrize-style decorator with a no-op
+changes observation, even if each individual run's outcome is
+unchanged; record such multiplicity loss in `unbound_issues.evidence`.
+
+**Mentally remove the patch and rerun.** If removal only brings back
+loading / collection / setup / compile collapse, the patch is
+evaluation repair. If removal changes the answer to the test's
+behavioral question, the patch was substituting for src and is Kind 2.
+
+**Historical default = "the API does not exist".** A shim may restore
+**import-time** resolution; **in-scope call-time** invocations should
+still fail (`AttributeError` / `TypeError`) unless the in-scope tests
+are explicitly known not to observe the return behavior. A wrapper body
+that produces a usable return value usually crosses into Kind 2.
+"In-scope" = `effective_tests` enumerated in `{{ patched_tests_path }}`.
+When that artifact is unavailable or call-site coverage is uncertain at
+shim-write time, default to assuming the call IS observed — choose
+shape 4 raise-on-call over a silently-returning wrapper.
+
+**Test-file import error special case.** When `tests/<feature>/models.py`
+fails to import because it references a future symbol AND the test file
+exercises functionality the milestone src lacks, the fix is a waiver
+(or shape 4 / 9 placeholder), not implementing the symbol in src.
+
+#### Signal-pollution tie-breaker (gray areas only)
+
+Transition labels are a downstream signal audit, not the definition of
+Kind 1 / Kind 2. Use this hierarchy only when a patch has both
+evaluation-repair and behavior-substitution aspects and the attribution
+test alone is ambiguous.
+
+Every gray-area shim has one of three effects on the dataset's
+classification:
+
+1. **Fake `F→P`** — shim makes end-state pass for a reason other
+   than milestone src. **Strictly forbidden** — this poisons the
+   evaluation signal.
+2. **Signal loss** — shim degrades a real `F→P` to `P→P` or `F→F`.
+   Acceptable only when it does not introduce fake pass signal: the
+   test loses evaluation value, but the dataset records no false
+   signal.
+3. **Collection collapse** — without the shim, tests never reach a
+   bucket. Worse than (2) because zero signal is available.
+
+**Priority**: avoid (1) absolutely; (2) is preferable to (3).
+A shim causing 100 `P→P` losses but zero fake `F→P` is acceptable if
+the alternative is collection collapse. A shim introducing one fake
+`F→P` is forbidden even if it saves 1000 `P→P` losses.
+
+#### Q1 catalog: common Kind 1 shim shapes
+
+Kind 1 patterns the agent must recognize so the smallest shim suffices.
+None implement business logic; all merely restore evaluability at module
+load / test collection / setup time. These shapes are the routine safe
+catalog for L1 repair. If a needed patch does not fit them, do not
+invent behavior in-place; escalate unless you can write a short
+attribution rationale proving it still only restores evaluability.
+
+1. **Constant / version flag.** Symbol unintroduced; callers iterate
+   over it at load time. Shim with a literal:
+   `_ver.PY312 = sys.version_info >= (3, 12)`, `MAX_HEADERS = 65536`,
+   `VOID_ELEMENTS = frozenset({...})`. No conditional logic in the
+   value.
+
+2. **Declaration stub (empty body).** A class or exception type
+   referenced at import time but whose methods are never called by
+   any in-scope test. The shim is an empty class:
+   `class FacetsMixin: pass`,
+   `class TooManyFilesSent(SuspiciousOperation): pass`,
+   `class RemovedInDjango60Warning(DeprecationWarning): pass`.
+   If a test calls **any method** on the class at runtime, this no
+   longer qualifies — see shape 4 (future-API placeholder) or
+   escalate.
+
+3. **Default class attribute.** Framework iterates over instances and
+   reads an attribute that doesn't exist yet. Shim with the historical
+   default literal: `Field.generated = False`,
+   `Field.db_default = None`, `Model.Meta.required_db_features = ()`.
+   The value must be the literal Django would produce by absence; no
+   computed defaults, no `cached_property`, no method bodies.
+
+4. **Future-API placeholder (raises on call).** Import resolves but
+   every call raises an exception equivalent to "symbol doesn't
+   exist": `def _f(*a, **kw): raise AttributeError("X post-milestone")`.
+   Use when the future API is called only inside test bodies.
+   **Forbidden** when the API is invoked at module-load time (test
+   class body, module decorator, top-level call) — raising during
+   import collapses the whole suite (Rule 2). Use shape 9 instead.
+   **Anti-pattern**: a body that delegates to an existing API and
+   returns a usable result — see Anti-escape Rule 5.
+
+5. **Kwarg absorption on existing `__init__`.** A future commit adds a
+   new keyword argument to a widely-used constructor; src or test
+   code passes it before the constructor knows about it. Wrap
+   `__init__` to pop the future kwarg into an instance attribute
+   without acting on it:
+
+   ```python
+   _orig_init = Field.__init__
+   def _absorbing_init(self, *args, **kwargs):
+       for kw in ("db_default", "db_persist"):
+           if kw in kwargs:
+               setattr(self, kw, kwargs.pop(kw))
+       return _orig_init(self, *args, **kwargs)
+   Field.__init__ = _absorbing_init
+   ```
+
+   The attribute is stored so subsequent introspection finds it, but
+   no method body acts on it — tests that exercise the new kwarg's
+   behavior still fail naturally.
+
+6. **Polyfill of stdlib symbol** (narrow / historical default only).
+   A future stdlib symbol referenced by both src and tests. Shim with
+   a narrow polyfill that produces only the historical default for
+   the existing call sites; if a single test exercises the new
+   behavior, the polyfill is Kind 2.
+
+7. **Re-export across packages.** A symbol that already exists at one
+   path but the test imports it from a future path. Plain alias:
+   `_messages_pkg.Message = _Msg`. Nothing else.
+
+8. **Synthetic module of declaration stubs.** When the test imports
+   `from django.<future_module> import X`, the entire module is new.
+   Create a `types.ModuleType` and populate it **only** with shape-1
+   constants, shape-2 empty classes, or shape-4 raise-on-call
+   placeholders. If any member has a working body, the module is
+   Kind 2.
+
+9. **Inert-on-construct absorber for module-load invocation.** Use
+   when the future API is invoked at module import time (class body,
+   module-level decorator, top-level call) and shape 4 would collapse
+   collection. The construct succeeds syntactically; the resulting
+   instance / return value carries no business logic.
+
+   ```python
+   # Class in test-model class body:
+   class GeneratedField(IntegerField):
+       def __init__(self, *args, **kwargs):
+           for kw in ("expression", "db_persist"):
+               kwargs.pop(kw, None)              # absorb only
+           super().__init__(*args, **kwargs)     # NO setdefault("null", True)
+
+   # Decorator at module body — returns the function unregistered:
+   def simple_block_tag(self, func=None, **kw):
+       return func if func else (lambda f: f)
+   ```
+
+   Constraints:
+   - **For class/object absorbers, only `__init__` may be defined.**
+     No new methods, no `__call__`, no `__getattr__`. Adding
+     `def get(self): return None` silently satisfies callers —
+     that's Kind 2.
+   - **For decorator / top-level-call absorbers, return only the
+     original object or an identity wrapper.** Do not register it,
+     delegate to an existing decorator, mutate global registries, or
+     return a working adapter.
+   - **No defaults that flip framework outcome.**
+     `kwargs.setdefault("null", True)` lets DB sync succeed where the
+     real future field would compute via an expression — Kind 2.
+   - **No dispatch fields.** Setting `lookup_name`, `function`, enum
+     values, etc. that downstream code branches on is Rule 7 / Kind 2.
+   - Inheriting methods from a base class is OK — those are the base
+     class's historical behavior, not new shim logic.
+
+   Prefer shape 4 (raise on call) whenever the future API is only
+   used inside test bodies. Shape 9 has wider surface and is harder
+   to keep Kind-1-clean.
+
+#### Shape 4 vs shape 9 decision flow
+
+Shape 4 and shape 9 are not separate Kinds. Both are Kind 1 only
+when they satisfy the attribution test: after the shim, test pass/fail
+is still attributable to milestone src, not to shim behavior. They
+differ only by **first-touch timing**.
+
+```text
+Future API missing / signature mismatch
+    |
+    +-- Would the proposed body return usable behavior, delegate to an
+    |   old API, set dispatch/default fields, or otherwise answer the
+    |   test's behavioral question?
+    |      -> Kind 2. Do not patch; use waiver / unbound_issue /
+    |         commit_signal / agent_sufficient as appropriate.
+    |
+    +-- Where is the API first touched?
+           |
+           +-- Import/name lookup only
+           |      -> Prefer declaration/import-only shapes:
+           |         shape 1 / 2 / 7 / 8, or shape 4 for a function
+           |         symbol whose only safe behavior is "raises on call".
+           |
+           +-- Inside a test body or runtime path after collection
+           |      -> Shape 4: raise-on-call placeholder. The suite
+           |         collects; tests that truly require the future API
+           |         fail naturally.
+           |
+           +-- Module load / class body / decorator / top-level call
+                  -> Shape 9 only if inert construction is enough.
+                     If a working return object, methods, defaults, or
+                     dispatch values are needed, there is no legal Kind 1
+                     shim; escalate instead.
+```
+
+**Red exits from shape 9.** Do not treat the patch as an ordinary
+shape-9 shim when inert construction is not enough:
+- the test or framework immediately calls a new method / `__call__` /
+  `__getattr__` on the object returned by the shim;
+- the shim must set defaults such as `null=True`, `lookup_name`,
+  `function`, enum values, registry entries, or other fields that
+  downstream code branches on;
+- the module-load call needs a wrapper that delegates to old behavior
+  and returns a usable value;
+- the only way to keep collection alive is a broad no-op or many
+  unrelated absorbers.
+
+In the first three cases, escalate instead of patching. In the last
+case, only Rule 6's temporary startup-gate exception may apply: if you
+use it, mark `interim_until_split` and emit
+`unbound_issue(kind="structural_span_overflow")` for M3.
+
+#### Edge cases that look like shims but are not
+
+- **Captured-reference deadlock.** `from x import Y` captures `Y` in
+  the importing module's namespace at import time; a later
+  `x.Y = ShimY` cannot reach the captured binding. When neither
+  `sitecustomize` nor `conftest` scaffolding can intercept the import
+  early enough, this is a Kind 1 case **with no legal L1 location**.
+  Q1 says Kind 1, but Q2 will route it to L2 — emit a `commit_signal`
+  or `unbound_issue`, do not bend the attribution test.
+- **Compilation-before-collection (Java, Rust separate test files).**
+  Languages requiring all test files to compile before any test can
+  run. A single compilation error blocks the entire suite; `@Disabled`
+  / `#[ignore]` only help after compilation succeeds. The smallest
+  shim is a whole-method comment-out at the narrowest function
+  boundary so the file compiles. See `patching_languages.md.j2` Java
+  section for exact `sed` patterns; adapt the same shape to Rust by
+  analogy (target `#[test]` function ranges, not `#[cfg(test)]` inline
+  mods — those are governed by Q1 Exception above). **Exception: Rust
+  `#[cfg(test)]` inline modules inside an `src/*.rs` file are
+  classified as `rust_inline_test` (threshold 0, Test Content
+  equivalent) — no edits permitted there. Route to L2 directly:
+  emit a `bound_waiver` (`feature_introduced_later`, Path B) plus
+  the MANDATORY paired `commit_signal` from a sandbox cherry-pick.**
+
+Concrete shim syntax varies by language (e.g. Python `class X(Warning): pass`, Rust `pub struct X;`, Java `class X extends RuntimeException {}`, Go `type X struct{}`, JavaScript `export class X {}`); compose the idiomatic equivalent for the milestone's language. The nine shapes above are the routine safe catalog, not permission to implement behavior. Identity wrapper / delegation adapter / pass-through middleware / system-check no-op / enum dispatch are presumed Kind 2 because they usually answer the test's behavioral question; only an explicit attribution rationale plus the gray-area tie-breaker can justify treating one as temporary evaluation repair. Repository packs list repo-specific concrete instances when they recur; treat those lists as examples of the attribution boundary, not as separate rules or expansions.
+
+#### HOW vs WHY — full lists
+
+What you may change (HOW the suite runs):
+
+- installing system packages, locking dependency versions
+- environment variables, runtime configuration
+- new test settings files (e.g. SpatiaLite settings for GeoDjango,
+  pytest config files committed via Dockerfile)
+- test infrastructure fixtures (DB connections, temp dirs, mock services)
+- mocking external services
+- parameterizing the test runner (workers, timeouts, output paths)
+- narrow compatibility shims as defined above
+
+What you may NOT change (WHY a test passes):
+
+- Implementing missing source features — any patch failing the
+  attribution test above, regardless of size or syntactic form.
+- Modifying files whose **role** is asserting test outcomes (test
+  functions, parametrize data, expected-value tables, assertion-target
+  fixtures). **A file's role determines its layer, not its directory:
+  runner harness scripts and setup-only fixtures (e.g. Django's
+  `tests/runtests.py`, Jest `globalSetup`, Go `testdata/`,
+  `conftest.py` DB/path/mock setup) are HOW-layer even when they live
+  under `tests/`.** Setup-only files of that shape are Test
+  Infrastructure (modifiable). Test bodies, parametrize data, and the
+  assertion-target fixture models they exercise are Test Content
+  (immutable).
+- Adding skip markers (`@pytest.skip`, `@Disabled`, `t.Skip` in Go,
+  etc.) to tests as a way to satisfy a hard gate.
+- Adding collection-modifying hooks like `pytest_collection_modifyitems`
+  skip logic that drop tests from the suite. **Hooks that route,
+  order, or organize tests without dropping any are HOW-layer.**
+- Narrowing test discovery so that tests are **silently dropped** from
+  the suite. The boundary is whether every test reaches some
+  `test_config.json` mode: `--ignore`, `-k`, package excludes, and
+  `addopts` filters are forbidden when nothing else runs the excluded
+  tests, and HOW-layer when they route a known set into a separate mode
+  (document the routing in `unbound_issues.evidence`).
+- Replacing the body of an existing widely-used function to add new
+  parameters or change observable behavior.
+
+---
+
+## Q2. Who is responsible? (L1 vs L2)
+
+- **L1 (Module 2 self-resolves — the "regular triage" layer).**
+  - *Condition:* **Kind 1** AND a legal location exists for the shim.
+  - *Typical trigger:* tests crash in the loading / collection /
+    fixture-setup phase because src or test infrastructure references
+    a future symbol (Import / Attribute / class declaration / DB
+    fixture / runner compile crash).
+  - *Agent behavior:* write the smallest shim that satisfies the
+    attribution test, observing the location priority in Q3.L1. Stay
+    inside Kind 1 — restraint over completeness.
+  - *Result:* **if the shim makes the environment run, Module 2 is
+    done.** No `commit_signal` or other exit needs to be emitted —
+    L1 success means Module 2 absorbed the gap unilaterally, and
+    emitting extra signals only adds noise for Module 3.
+
+- **L2 (Module 2 escalates — the "request consult" layer).**
+  - *Condition:* **Kind 2** (behavior substitution requiring business
+    logic), OR **Kind 1 with no legal location** for any shim that
+    satisfies the attribution test, OR **structural-span overflow**
+    (see below).
+  - *Typical triggers:* (i) a test asserts behavior that requires
+    real implementation only the future milestone src commits provide
+    (Kind 2); (ii) cross-module captured-reference deadlock — old
+    code holds the old binding tightly, new tests demand the new
+    binding, and no `sitecustomize` / `conftest` hook is early enough
+    to intercept (Kind 1, no legal location); (iii) structural-span
+    overflow (described next).
+  - *Agent behavior:* **Module 2 steps back. It does not write a
+    patch to force the failure away.** It emits a diagnostic signal
+    so Module 3 can adjust the milestone DAG.
+  - *Result:* `built` stays whatever the gates say. The signal — not
+    a forced fix — is the deliverable.
+
+  **Structural-span overflow trigger.** The milestone bundles enough
+  unrelated future-feature work that the startup-validation step
+  (Python `apps.populate()` / `manage.py check`; Maven classpath
+  validation; Java/Rust ahead-of-time type check) fires multiple
+  unrelated errors and no Kind 1 shape can resolve all of them.
+  M2 may interim-silence the validation step (per Rule 6) to keep
+  the suite collectable, but the structural fix is M3 milestone-split.
+  Emit per affected cluster: `bound_waiver(feature_introduced_later,
+  Path B)` + `commit_signal` (sandbox cherry-pick of the
+  introducing commit). Add one
+  `unbound_issue(kind="structural_span_overflow")` listing the
+  clusters and recommending split.
+
+**Kind→L is not 1:1.** Most Kind 1 cases are L1 and most Kind 2 cases
+are L2, but Kind 1 can still be L2 (no legal location). Kind 2 is
+always L2. The asymmetry exists because legality, not classification,
+decides whether Module 2 has a path to fix.
+
+**L1 is a low-cost technical debt; L2 is a request for quality
+remediation.** Both are first-class outcomes — neither is a "fallback
+for when you didn't try hard enough." The framework expects roughly
+the Pareto split each milestone earns naturally; do not force a
+milestone into L1 by upgrading a shim into Kind 2, and do not bypass
+a feasible L1 shim by jumping to L2.
+
+---
+
+## Anti-escape rules
+
+Nine traps to avoid:
+
+**Rule 1 — Location ≠ Kind status.** Q3.L1's location priority
+(`sitecustomize` > scaffolding > minimal src) only applies after Q1
+classifies the patch as Kind 1. **Writing Kind 2 logic into
+`/tmp/sitecustomize.py` does not make it a shim.** The attribution test
+is tool-independent: a sitecustomize file that adds executable logic
+determining a test result is Kind 2, just like the same code in src
+would be. Location selection comes after Q1, never around it.
+
+**Rule 2 — Collection-collapse guard.** When
+`H_total_not_below_base.value` is near zero (collected ≪ baseline),
+src is not loading at all. **That is Kind 1 (evaluation repair /
+loading-layer), not Kind 2 (behavior substitution), regardless of how
+many missing symbols you spot.** Write the smallest shim that restores
+loading, then rerun. Do NOT file mass `unbound_issue` entries or set
+`agent_sufficient=true` before collection recovers. Once collection
+recovers, reclassify the remaining failures under the attribution
+test: real behavior gaps are Kind 2 and should become waivers /
+signals, not increasingly capable shims.
+
+**Rule 3 — Route vs drop for collection hooks.** Adding
+`pytest_collection_modifyitems` skip logic that drops tests is
+forbidden (WHY). **Hooks that route, order, or organize tests without
+dropping any are HOW-layer.** The same flags (`--ignore`, `-k`,
+`addopts`, package excludes) are silently-dropping (WHY) when
+nothing else runs the excluded tests; they are routing (HOW) when
+they direct a known set into a separate `test_config.json` mode.
+Document any routing in `unbound_issues.evidence`.
+
+**Rule 4 — Captured-reference deadlock has no L1 location.** When
+`from x import Y` has captured the old binding before any hook can
+intercept (mechanism in Q1 Edge cases above), Q1 says Kind 1 but Q2
+has no legal L1 — emit `commit_signal` or `unbound_issue`. Do not
+upgrade the shim into Kind 2 just because the Kind-1 location is
+unreachable. The Q1/Q2 split is the whole point: classification and
+location feasibility are independent decisions.
+
+**Rule 5 — "Working" backward-compat wrapper.** Wrappers whose body
+produces a usable value (async wrapping sync, new-API method
+delegating to old-API, etc.) are presumed Kind 2 because they substitute
+behavior, not just evaluability. Do not write one merely because it is
+short or backward-compatible. It can enter the signal-pollution
+tie-breaker only when all three are true: (i) it is required solely to
+prevent collection / setup collapse, (ii) no in-scope test observes the
+wrapper as the behavior API being measured, and (iii) the specific
+in-scope test set is verified to lose signal (`P→P` / `F→F`) without
+creating fake pass signal. If the wrapper introduces fake `F→P`, or if
+a test's behavioral question is answered by the wrapper, it remains
+Kind 2.
+- `async def aX(...): return X_sync(...)` — async wrapper delegation
+- `class Middleware: def __call__(req): return get_response(req)` —
+  pass-through middleware
+- `def log_actions(...): for obj in queryset: self.log_action(...)` —
+  bulk method delegating to per-row method
+- `def simple_block_tag(...): return self.simple_tag(...)` — new
+  decorator delegating to existing decorator
+
+**Rule 5 exception — pure rename alias.** When the future commit's
+ONLY effect is renaming an existing symbol (same observable contract,
+no semantic shift), a plain assignment alias is shape 7 (re-export)
+and is Kind 1:
+
+```python
+# Hypothetical: commit renames foo() to bar() with identical semantics
+bar = foo   # Kind 1 — pure re-export, no behavior change
+```
+
+The deciding evidence is the future commit's description: a commit
+titled "Rename X to Y" / "Deprecate X in favor of Y" with no other
+src changes is a rename. A commit titled "Add async support for X" /
+"Introduce batched Y" describes a *new feature*, not a rename. When
+in doubt, treat as semantic shift (Kind 2) — a rename misread as a
+new feature only loses the alias's import-resolution benefit; a new
+feature misread as a rename masks the milestone signal.
+
+Critically: **async/sync wrappers are NEVER renames.** The async
+function's observability differs from the sync function on multiple
+axes (returns coroutine vs value; supports `await`; can be inspected
+as `inspect.iscoroutine`; raises differently in event loops). Even
+if `await new_async(...)` produces the same value as `old_sync(...)`,
+the type / call protocol / inspectability are observable to tests
+and are different. Async wrappers stay Kind 2 under all
+circumstances.
+
+**Rule 6 — System-check no-op.** Silencing framework startup
+validation (`check_* → []`, `run_checks → None`, `_check_<rule> →
+[]`) returns a working value and is therefore dangerous. It is Kind 2
+whenever an in-scope test asserts the check result, because the no-op
+answers that test's behavioral question artificially. Treat it as a
+temporary evaluation repair only when the check is acting as a suite
+startup gate and no in-scope test observes the check's return value;
+then it merely lets unrelated tests reach their real outcomes. In that
+startup-gate case, use the tie-breaker: acceptable only when it avoids
+collection collapse without creating fake `F→P`. Mark the shim as
+`interim_until_split` in `module2_waivers.json` and emit an
+`unbound_issue(kind="structural_span_overflow")` so M3 can address via
+milestone-split.
+
+**Rule 7 — Enum value enumeration is Kind 2 when value drives
+behavior.** Defining `class ShowFacets(Enum): NEVER, ALLOW, ALWAYS`
+or `class WindowFrameExclusion(IntEnum): CURRENT_ROW, GROUP, TIES,
+NO_OTHERS` populates dispatch keys that downstream src branches on
+(admin filter selection, SQL window-frame generation). Even if the
+enum values are "just constants," they cause real test outcomes to
+flip from error to pass via the branches they unlock. The correct
+Kind 1 form is shape 2 (empty class) — `class ShowFacets: pass` —
+which lets the import succeed but produces an enum-instanceless
+class; any `ShowFacets.NEVER` access still raises `AttributeError`.
+
+**Rule 8 — Test-list curation is silent drop (Rule 3 in disguise).**
+Selecting a curated list of nodeids (`maint032_selected_tests.txt`,
+`-k "test_a or test_b or test_c"`, conftest filter that admits only
+named tests) when no other `test_config.json` mode covers the
+excluded tests is silent drop. Even if the rationale is "keep
+H_f2f_not_above_base under cap" or "exclude flaky tests" — silent
+drop, no exception. Either route excluded tests into a separate mode
+or accept the gate failure honestly.
+
+**Rule 9 — Reversing test-isolation invariants is Kind 2.** Replacing
+pytest-django's `DjangoDbBlocker.block` with its inverse so non-
+`@django_db` tests silently get DB access, monkey-patching
+`pytest_collection_modifyitems` to add markers, or otherwise
+relaxing the test framework's isolation guarantees flips test
+outcomes from error→pass at scale. Test infrastructure can change
+HOW (workers, timeouts, paths) but not the contract that determines
+WHY a test passes.
+
+---
+
+## Q3.L1 — Write the smallest shim
+
+When Q2 says L1, write the smallest shim that satisfies the attribution
+test. Location matters.
+
+**Location priority (write here, in order):**
+
+1. **`/tmp/sitecustomize.py` or equivalent runtime-init hook** —
+   loaded at interpreter start, runs before any test framework code.
+   Best for cross-cutting attribute defaults and missing-constant
+   declarations. Empirically the highest-success location for Python.
+2. **`conftest.py` or other Test Infrastructure under `tests/`** —
+   loaded before test collection but after interpreter init. Best for
+   DB / fixture / path setup that test code expects.
+3. **`build.rs`, classpath stub jars, Cargo features** —
+   language-specific build-time hooks for compiled languages where no
+   runtime-init hook exists.
+4. **Scaffolding fixtures under `{{ test_dir }}`** — narrow setup
+   fixtures that prepare the test environment without touching the
+   assertion-target fixture models themselves.
+5. **Minimal src edit (last resort, threshold-gated)** — when no
+   non-src location works, a minimal Kind 1 edit at the src
+   declaration site. Per-file-class numstat thresholds in
+   `B_lint_block_clean::large_src_append` /
+   `B_lint_block_clean::src_function_replaced` enforce the upper
+   bound. If your edit exceeds the threshold, the right answer is L2,
+   not a larger src edit.
+
+**Design intent — location controls pollution scope, not shim
+completeness.** Writing the shim into `/tmp/sitecustomize.py` or
+`conftest.py` keeps the modification out of `src/` (good for the
+attribution test and for `B_lint_block_clean::large_src_append`), but it
+**does not auto-make the shim sufficient**. The shim still has to
+provide the structural attribute the framework iterates over at load
+time — e.g. `Field.db_default = None`, `Field.generated = False`,
+or a declaration stub for a referenced class. A `sitecustomize` line
+that imports the symbol without exposing the iterated attribute will
+still fail Q1. Location priority decides *where the patch lives*;
+shim shape decides *whether the patch works at all*. Get both right.
+
+**Required shim properties:**
+
+- **Attribution-test clean.** Q1 attribution test must say "yes, this
+  only restores evaluability."
+- **Idempotent.** Guard with `if not hasattr(...)` or equivalent.
+  When a future commit naturally introduces the real symbol, the shim
+  must silently no-op.
+- **Restricted to Test Infrastructure when it lives under `tests/`.**
+  Q3.L1 may modify Test Infrastructure (scaffolding fixtures, setup
+  hooks, conftest hooks that route without dropping). It must never
+  modify Test Content (assertions, parametrize data, expected-value
+  tables, assertion-target fixture models) — see Q1 HOW vs WHY full
+  lists.
+
+**If the smallest shim that passes the attribution test cannot fit any
+legal location, escalate to L2.** Do not bend Test Content or upgrade
+the shim to Kind 2 to make it fit.
+
+---
+
+## Q3.L2 — Emit a signal (no patch)
+
+When Q2 says L2, **Module 2 steps back**. It does not write a patch
+to force the failure away — that would be Kind 2 backporting or a
+Kind 1 shim in an illegal location, both of which corrupt the
+benchmark signal. Instead, Module 2 emits a diagnostic signal so
+Module 3 (or a human) can adjust the milestone DAG.
+
+Write the signal into `{{ module2_waivers_path }}` (or
+`{{ module2_signals_path }}` for commit_signals). **Schemas, fields,
+machine verifications, and full examples live in Phase 4.5.**
+This section is the menu; pick the right exit(s) and
+read Phase 4.5 for the fields.
+
+Three evidence-emitting exits + one declarative meta-exit:
+
+- **Exit 1: `bound_waiver`** — M3-actionable, machine-verified. Each
+  `reason_code` signals what M3 should do; pipeline runs git
+  verification and offsets the gate(s) named in `attached_gates`:
+
+  - `test_out_of_scope` (Path A) → M3 removes the test from
+    milestone scope. Use when the test is a future commit.
+  - `feature_introduced_later` (Path B) → M3 applies the paired
+    commit_signal (cherry-pick). Use when a future production symbol
+    is missing. **MANDATORY** paired commit_signal — see Exit 3.
+  - `nodeid_absent_in_states` / `deleted_earlier` → M3 fixes upstream
+    patched-data quality (orthogonal to the DAG question).
+
+  **Only 4 bound_waiver reason_codes exist** — no Path C escape hatch.
+  If neither Path A nor Path B fits an error cluster, document it in
+  `unbound_issue` (Exit 2 below, does NOT offset gates) and accept the
+  gate failure honestly. Boilerplate Path C rationales undermine M3
+  actionability, so the option was removed.
+
+  Classification matters: M3 reads `reason_code` to act. Pipeline
+  rejects miscategorized waivers — fix the entry, don't switch
+  `reason_code` to dodge the check.
+
+- **Exit 2: `unbound_issue`** — free-form fallback. Use only when no
+  Exit 1 slot fits (environment dependency unsupportable, multi-symptom
+  cluster without a single attributable symbol). `kind` is a free-form
+  string (`other` if unsure). Pipeline does not verify; M3 / human reads
+  `summary` and `evidence` directly. Try Exit 1 first.
+
+- **Exit 3: `commit_signal`** — sandbox-empirical. **MANDATORY for
+  every `feature_introduced_later` waiver (Path B)**: you must actually
+  go into a sandbox branch, `git cherry-pick <sha>`, verify the anchor
+  test's failure point advanced, then emit a `commit_moves[]` entry
+  whose `resolves.bound_waiver_ids` includes that waiver's `id`.
+  Production Dockerfile stays clean; sandbox branch destroyed before
+  declaring done. If sandbox cherry-pick demonstrably can't advance
+  any candidate, **move it to `unbound_issue`** (does NOT offset
+  gates) — there is no `dag_gap_acknowledged` escape. Full schema
+  and workflow in `workflow.md.j2` Phase 4.5 Exit 3.
+
+- **Exit 4 (Meta): `agent_sufficient`** — declarative. Set
+  `value: true` when Exits 1+2+3 cover all remaining unfixable issues
+  AND no plausible Module 2 fix remains. Does not change `built`
+  (hard gates remain authoritative). Whether it triggers retry
+  early-stop is config-driven via `module2_acceptance_mode`: **default
+  is `hard_gate`; under the default, Module 2 keeps retrying until
+  hard gates pass or `max_retries` is reached**. `agent_sufficient`
+  mode enables early-stop with terminal status `module2_sufficient`.
+
+`agent_sufficient.value=true` requires at least one entry across
+Exits 1-2 — pipeline rejects an empty declaration.
+
+---
+
+#### Lint reflects this rule, it does not override it
+
+Pipeline lints (`B_lint_block_clean::large_src_append`,
+`B_lint_block_clean::src_function_replaced`, plus per-file-class
+numstat thresholds covering `python_src` / `rust_src` /
+`rust_inline_test` / `test_content` / `test_infrastructure`) flag
+patches that look like Kind 2 in disguise. When triggered,
+**re-apply the attribution test above**: edits whose only effect is
+restoring evaluability are allowed; edits that answer the test's
+behavioral question are a hard ban regardless of line count or framing.
+**The lint is not a separate rule, and not a warning to argue with —
+it is a prompt to reapply the attribution test.**
+
+For Rust files that contain both src and `#[cfg(test)]` inline
+tests, the lint classifies by hunk range, not by file path: the src
+portion goes through `rust_src` thresholds; inline test code goes
+through `rust_inline_test` (threshold 0, equivalent to Test
+Content).

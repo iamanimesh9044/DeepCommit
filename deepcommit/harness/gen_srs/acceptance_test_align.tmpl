@@ -1,0 +1,119 @@
+# Task: Align SRS Acceptance Criteria with Fail-to-Pass Tests
+
+## Objective
+Identify where SRS acceptance criteria are **insufficiently specific** to remove API ambiguity, and add **minimum necessary details** about interfaces and contracts—while avoiding test implementation leakage and preserving agent's ability to infer from code context.
+
+**Task Output**: Modify the SRS Document with minimal necessary changes. Only update the **Acceptance** sections (and **Requirements** if absolutely needed) to include specific API contracts required by the f2p tests. Do not rewrite the entire document—make surgical edits only where ambiguity exists.
+
+## Inputs
+- **SRS Document**: {{ srs_path }}
+- **Stable F2P Test List**: {{ test_metadata }} (from `stable_classification.fail_to_pass`)
+- **Full Test List File**: {{ f2p_tests_list_file }}
+- **Docker Container**: {{ milestone_container }}
+- **Code Changes**: {{ start_commit }}..{{ end_commit }}
+
+**Note**: Test list is from stable classification - verified fail-to-pass tests after filtering out flaky tests.
+
+{%- if show_all_tests and f2p_test_count > 0 %}
+**Complete F2P Test List ({{ f2p_test_count }} tests)**:
+{%- for test in f2p_tests_preview %}
+- {{ test.test_id }}
+{%- endfor %}
+{%- elif f2p_test_count > 0 %}
+**Note**: {{ f2p_test_count }} tests total. See full list in `{{ f2p_tests_list_file }}`.
+{%- endif %}
+
+**How to Access Code in Container**:
+
+The milestone container has the complete git repository (working directory: `/testbed`) already checked out to commit `{{ end_commit }}`.
+
+To view files in the container:
+```bash
+docker exec {{ milestone_container }} cat <file_path>
+```
+
+To run git commands:
+```bash
+docker exec {{ milestone_container }} git <git-command>
+```
+
+**How to Access Test Code**:
+- The classification file contains stable fail-to-pass test IDs (filtered from multiple test runs)
+- Each test ID follows the format: `<file_path>::<ClassName>::<method_name>` or `<file_path>::<function_name>`
+- To view test implementation in the container:
+  ```bash
+  docker exec {{ milestone_container }} cat test/test_response.py
+  ```
+
+## Core Principle: Remove Ambiguity, Not Agency
+
+The goal is to identify misalignments where:
+- **SRS says**: "Response objects must carry version information"
+- **Test requires**: `BaseHTTPResponse(version_string="HTTP/1.1", ...)`
+- **Problem**: Agent doesn't know the parameter must be named `version_string`
+
+### Add Only When Necessary to Remove Ambiguity
+
+**✅ Add if tests require specific naming/interfaces**:
+- Parameter names (when tests directly use them)
+- Attribute names (when tests access them)
+- Module constants (when tests import them)
+- Required vs. optional parameters
+- Default values for optional parameters
+
+**❌ Don't add (avoid test leakage)**:
+- Test assertion values or expected outcomes
+- Test-specific scenarios or data flows
+- Implementation logic or algorithms
+- Details derivable from existing codebase
+- Anything beyond API surface contracts
+
+### Litmus Test
+Ask: "If the agent sees the SRS but not the tests, will they know:"
+- The exact parameter name? (if not, add it)
+- Whether it's required or optional? (if not, add it)
+- What type it should be? (if not, add it)
+
+But also ask:
+- "Can the agent figure this out from the code diff?" (if yes, maybe omit)
+- "Is this an API contract or test expectation?" (only add if API contract)
+
+## Cascading Failure Detection
+
+**Before analyzing**, check for **Cascading Failures**: clusters of tests sharing the same **Error Signature** (Exception + `file:line`).
+
+1. **If Cascading Failure Found**:
+   - Identify the single root cause API contract.
+   - Add **ONE** acceptance criterion to the SRS.
+   - **SKIP** individual analysis for the rest of the cluster.
+
+2. **If Independent Failures**:
+   - Analyze each test individually.
+
+---
+
+## Instructions
+
+1. **Analyze**: For each f2p test, identify what API contracts it requires (parameter names, attributes, constants). Check if current SRS acceptance criteria specify these unambiguously.
+
+2. **Enhance**: Modify **Acceptance** sections (and **Requirements** if needed) to include necessary API specifics. You may keep high-level acceptance bullets and add specific ones, or integrate specifics into existing bullets. Do not create new sections.
+
+3. **Verify**: Check that the enhanced SRS provides sufficient minimum necessary information about API contracts without leaking test implementation details.
+
+## Example
+
+**Before** (too vague):
+```markdown
+**Acceptance**:
+- Response objects carry version metadata for logging
+```
+
+**After** (specific API contracts):
+```markdown
+**Acceptance**:
+- `BaseHTTPResponse.__init__()` must accept parameter `version_string: str` (required)
+- `HTTPResponse.__init__()` must accept parameter `version_string: str = "HTTP/?"`
+- Response objects must expose `version_string` as an instance attribute
+```
+
+Key point: Specify parameter/attribute **names** and **signatures**, but not implementation values or logic (agent infers from code diff).

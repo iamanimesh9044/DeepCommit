@@ -1,0 +1,48 @@
+# Rust Macro-based Test Detection Rules for ast-grep
+# Detects test macros that generate #[test] functions
+# Multiple rules separated by ---
+
+# ripgrep's rgtest! macro
+id: rgtest_macro
+language: rust
+rule:
+  kind: macro_invocation
+  has:
+    kind: identifier
+    regex: ^rgtest$
+---
+# test_case! macro (common parameterized test macro)
+id: test_case_macro
+language: rust
+rule:
+  kind: macro_invocation
+  has:
+    kind: identifier
+    regex: ^test_case$
+---
+# quickcheck! macro
+id: quickcheck_macro
+language: rust
+rule:
+  kind: macro_invocation
+  has:
+    kind: identifier
+    regex: ^quickcheck$
+---
+# proptest! macro
+id: proptest_macro
+language: rust
+rule:
+  kind: macro_invocation
+  has:
+    kind: identifier
+    regex: ^proptest$
+---
+# criterion_group! macro (benchmarks)
+id: criterion_group_macro
+language: rust
+rule:
+  kind: macro_invocation
+  has:
+    kind: identifier
+    regex: ^criterion_group$

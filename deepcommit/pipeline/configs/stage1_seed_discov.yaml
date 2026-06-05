@@ -1,0 +1,15 @@
+prompt_file: stage_breakdown_v1/seed_discovery.md
+
+mcp_tools:
+  git_analysis:
+    - get_commit_context
+    - search_entities
+
+input:
+  directory: input
+  children:
+
+output:
+  directory: output
+  children:
+    milestone_seeds: milestone_seeds.jsonl

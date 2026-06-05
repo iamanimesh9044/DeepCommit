@@ -1,0 +1,957 @@
+{
+  "nodes": {
+    "80808b04bfa68fbd099828848c96ee25df185f1d": {
+      "sha": "80808b04bfa68fbd099828848c96ee25df185f1d",
+      "subject": "Fix docs build on Python 3.12 (#3144)"
+    },
+    "ae0668899a144edb06c4d2ca9cec96b760a93e6a": {
+      "sha": "ae0668899a144edb06c4d2ca9cec96b760a93e6a",
+      "subject": "Drop support for Python 3.7 (#3143)"
+    },
+    "312a47b596859fe8ae1cea228e4525f2d0345a75": {
+      "sha": "312a47b596859fe8ae1cea228e4525f2d0345a75",
+      "subject": "Drop support for SecureTransport (#3146)"
+    },
+    "11f5f5e19bfaab9cdfa2ce9223e62b8f05dd2a99": {
+      "sha": "11f5f5e19bfaab9cdfa2ce9223e62b8f05dd2a99",
+      "subject": "Drop support for urllib3[secure] extra (#3147)"
+    },
+    "4e98d57809dacab1cbe625fddeec1a290c478ea9": {
+      "sha": "4e98d57809dacab1cbe625fddeec1a290c478ea9",
+      "subject": "Bring 2.0.7 & 1.26.18 to main (#3161)"
+    },
+    "ff764a01499203a7c6fbe2e6c0a5a670cf26745c": {
+      "sha": "ff764a01499203a7c6fbe2e6c0a5a670cf26745c",
+      "subject": "Allow loading CA certificates from memory for proxies (#3150)"
+    },
+    "5fc48e711b33c08eea1c1ea8209870f45e8baf05": {
+      "sha": "5fc48e711b33c08eea1c1ea8209870f45e8baf05",
+      "subject": "Treat x-gzip content encoding as gzip"
+    },
+    "69be2992f8a25a1f27e49f339e4d5b98dec07462": {
+      "sha": "69be2992f8a25a1f27e49f339e4d5b98dec07462",
+      "subject": "Release 2.1.0"
+    },
+    "4dd4a824e60ba3bb81f319cf2b8e320aa8a87dc6": {
+      "sha": "4dd4a824e60ba3bb81f319cf2b8e320aa8a87dc6",
+      "subject": "Document the parameters for `urllib3.request()`"
+    },
+    "e29f5049a6061025086b2043c71b1ed6d658d017": {
+      "sha": "e29f5049a6061025086b2043c71b1ed6d658d017",
+      "subject": "Fix hostname matching of FQDN with proxies (#3183)"
+    },
+    "8afb98b3cede2ac14f7d20b3d9ac290cf57fa72d": {
+      "sha": "8afb98b3cede2ac14f7d20b3d9ac290cf57fa72d",
+      "subject": "Do not modify passed HTTP-header dicts in-place (#3203)"
+    },
+    "ac6ca9983b7d3c7e4e9f21554157e559b8f842a1": {
+      "sha": "ac6ca9983b7d3c7e4e9f21554157e559b8f842a1",
+      "subject": "Add support for read1 in HTTPResponse (#3186)"
+    },
+    "4ece59b2d438f605dcb9a2448e1155075cd2fe07": {
+      "sha": "4ece59b2d438f605dcb9a2448e1155075cd2fe07",
+      "subject": "Begin requiring error codes in all `# type: ignore` (#3134)"
+    },
+    "a19ee0a796920d1310e70849a6f4e6004013a2a2": {
+      "sha": "a19ee0a796920d1310e70849a6f4e6004013a2a2",
+      "subject": "Change dependency warning link for PySocks (#2964)"
+    },
+    "1812eac7115b3a4e9a5feece5fae0c9cffe8c585": {
+      "sha": "1812eac7115b3a4e9a5feece5fae0c9cffe8c585",
+      "subject": "Add native Emscripten support"
+    },
+    "b660f61968579daba1ffb91731b04450a5b46d3d": {
+      "sha": "b660f61968579daba1ffb91731b04450a5b46d3d",
+      "subject": "Migrate emscripten test server to Hypercorn (#3230)"
+    },
+    "8359450f8c57678c327ed85b8ba0eee1308c4ea5": {
+      "sha": "8359450f8c57678c327ed85b8ba0eee1308c4ea5",
+      "subject": "Make `BytesQueueBuffer.get_all` more memory efficient (#3236)"
+    },
+    "c7b9adcbbe911bec9249cb78111fa2561238dd70": {
+      "sha": "c7b9adcbbe911bec9249cb78111fa2561238dd70",
+      "subject": "Fix TestBrokenPipe on macOS"
+    },
+    "59c122730badac2426dfbdecfe6be8afe0cd21c2": {
+      "sha": "59c122730badac2426dfbdecfe6be8afe0cd21c2",
+      "subject": "Bump RECENT_DATE"
+    },
+    "e470d3b72429e95077ecd1015f029e1eec6df819": {
+      "sha": "e470d3b72429e95077ecd1015f029e1eec6df819",
+      "subject": "Fix handling of OpenSSL 3.2.0 new error message \"record layer failure\""
+    },
+    "3ca46ea7155139aafd3e3e6f73567a55a3ea2b35": {
+      "sha": "3ca46ea7155139aafd3e3e6f73567a55a3ea2b35",
+      "subject": "Set proper `proxy_is_verified` value after connecting to proxy (#3266)"
+    },
+    "745b002e3476f6c4ab707a2b1c82875038249be0": {
+      "sha": "745b002e3476f6c4ab707a2b1c82875038249be0",
+      "subject": "Remove watcher thread suggestion from docs (#3264)"
+    },
+    "bbba48753448a9e9b642cf32efe041683f3324f8": {
+      "sha": "bbba48753448a9e9b642cf32efe041683f3324f8",
+      "subject": "Set HTTPSConnection.is_verified to False when using a forwarding proxy"
+    },
+    "4e7be193564ffb21078453adb4e34dda780aa8a1": {
+      "sha": "4e7be193564ffb21078453adb4e34dda780aa8a1",
+      "subject": "Add rudimentary HTTP/2 connection and response"
+    },
+    "6b2b377d9acc996f3cd8296af3b5d5cf7a255a09": {
+      "sha": "6b2b377d9acc996f3cd8296af3b5d5cf7a255a09",
+      "subject": "Make `HTTPResponse.read1` close response when all data is read (#3235)"
+    },
+    "26a07dbd3267b174439f1fca0ab473dc79f473dc": {
+      "sha": "26a07dbd3267b174439f1fca0ab473dc79f473dc",
+      "subject": "Make BaseHTTPResponse a base class of HTTP2Response (#3311)"
+    },
+    "8c8e26dab401121e9fccc8e8e8958609ccb045f5": {
+      "sha": "8c8e26dab401121e9fccc8e8e8958609ccb045f5",
+      "subject": "Hide H2Connection inside _LockedObject (#3318)"
+    },
+    "d7bb83b48c23d8dd429c20a43ac3da74ea6e9df0": {
+      "sha": "d7bb83b48c23d8dd429c20a43ac3da74ea6e9df0",
+      "subject": "Fix TLS 1.3 post-handshake auth"
+    },
+    "6d2f0f63b066ce6064b16ba97dc5cf3f70d5d44a": {
+      "sha": "6d2f0f63b066ce6064b16ba97dc5cf3f70d5d44a",
+      "subject": "Annotate response attribute `length_remaining` in BaseHTTPResponse (#3317)"
+    },
+    "04df048cf4b1c3790c56e26c659db764aad62d6f": {
+      "sha": "04df048cf4b1c3790c56e26c659db764aad62d6f",
+      "subject": "Release 2.2.0"
+    },
+    "60c464726e7ce8c6c26d6166e68f5274f2ead0e2": {
+      "sha": "60c464726e7ce8c6c26d6166e68f5274f2ead0e2",
+      "subject": "Update mypy library version to 1.8.0 (#3314)"
+    },
+    "6ffe55bcd745e9105da5a954e1e6691a14711eb0": {
+      "sha": "6ffe55bcd745e9105da5a954e1e6691a14711eb0",
+      "subject": "Send a clearer error message if response is truncated before a chunk"
+    },
+    "c42b4bacd86daf715e27d369cbd575acdde2e703": {
+      "sha": "c42b4bacd86daf715e27d369cbd575acdde2e703",
+      "subject": "Add CPython 3.13 to CI (#3156)"
+    },
+    "23f2287eb526d9384dddeedb6f6345e263bb9b86": {
+      "sha": "23f2287eb526d9384dddeedb6f6345e263bb9b86",
+      "subject": "Remove TODO about informational responses (#3319)"
+    },
+    "cfe52f96fb65fe2269981d6bba4f22c2bce00b2d": {
+      "sha": "cfe52f96fb65fe2269981d6bba4f22c2bce00b2d",
+      "subject": "Fix InsecureRequestWarning for HTTPS Emscripten requests (#3333)"
+    },
+    "fa541793ad42f2f49846de0a9808ee0a484c53cf": {
+      "sha": "fa541793ad42f2f49846de0a9808ee0a484c53cf",
+      "subject": "Distinguish between truncated and excess content in response (#3273)"
+    },
+    "e22f651079ae65d06efbb28222c27000256ce7a5": {
+      "sha": "e22f651079ae65d06efbb28222c27000256ce7a5",
+      "subject": "Fix docstring of retries parameter"
+    },
+    "49b2ddaf07ec9ef65ef12d0218117f20e739ee6e": {
+      "sha": "49b2ddaf07ec9ef65ef12d0218117f20e739ee6e",
+      "subject": "Stop casting request headers to HTTPHeaderDict (#3344)"
+    },
+    "54d6edf2a671510a5c029d3b76ffe71a5b07147a": {
+      "sha": "54d6edf2a671510a5c029d3b76ffe71a5b07147a",
+      "subject": "Release 2.2.1"
+    },
+    "db8691302b24d3e2ae5e279d38ba2fdb40b85987": {
+      "sha": "db8691302b24d3e2ae5e279d38ba2fdb40b85987",
+      "subject": "Update docs for `.json()`"
+    },
+    "0628b6b290e52ef9a8b01c49f49dd218d2ee4fe2": {
+      "sha": "0628b6b290e52ef9a8b01c49f49dd218d2ee4fe2",
+      "subject": "Fix type checking when zstandard is installed"
+    },
+    "8bbc3db69eb05ec6cce8b3599c2d81b50dbffebf": {
+      "sha": "8bbc3db69eb05ec6cce8b3599c2d81b50dbffebf",
+      "subject": "Allow passing negative integers as `amt` to read methods (#3356)"
+    },
+    "cc892b0b81fdb63dc2bf0e99264dfbc8fb21410c": {
+      "sha": "cc892b0b81fdb63dc2bf0e99264dfbc8fb21410c",
+      "subject": "Change method return types to `Self` where suitable (#3364)"
+    },
+    "da892d67c083d354cf5c96fb543dd920f7ec82bb": {
+      "sha": "da892d67c083d354cf5c96fb543dd920f7ec82bb",
+      "subject": "Use `typing.Literal` available in Python 3.8+ (#3365)"
+    },
+    "52392654b30183129cf3ec06010306f517d9c146": {
+      "sha": "52392654b30183129cf3ec06010306f517d9c146",
+      "subject": "Fix HTTP version in debug log (#3316)"
+    },
+    "accff72ecc2f6cf5a76d9570198a93ac7c90270e": {
+      "sha": "accff72ecc2f6cf5a76d9570198a93ac7c90270e",
+      "subject": "Merge pull request from GHSA-34jh-p97f-mpxf"
+    },
+    "27e2a5c5a7ab6a517252cc8dcef3ffa6ffb8f61a": {
+      "sha": "27e2a5c5a7ab6a517252cc8dcef3ffa6ffb8f61a",
+      "subject": "Release 2.2.2 (#3406)"
+    },
+    "2beb67e95a7fd908cd75648817c1ab99b1a4588e": {
+      "sha": "2beb67e95a7fd908cd75648817c1ab99b1a4588e",
+      "subject": "Define version with hatch-vcs (#3412)"
+    },
+    "528b0b69d2b66c4c7b99a5f13c314001b0bd91fa": {
+      "sha": "528b0b69d2b66c4c7b99a5f13c314001b0bd91fa",
+      "subject": "Add support for sending a request body with HTTP/2"
+    },
+    "07f236ba64a635d01498cc6ec17d471cc594a100": {
+      "sha": "07f236ba64a635d01498cc6ec17d471cc594a100",
+      "subject": "Changed default encoding of chunked request bodies to UTF-8"
+    },
+    "b7b811597aaad0cdcb78aef800e4eb04c5efee0a": {
+      "sha": "b7b811597aaad0cdcb78aef800e4eb04c5efee0a",
+      "subject": "Fix a crash where certain hash functions are absent (#3434)"
+    },
+    "9316764e90aea8d193cd8f03b0caccdf02af3ba0": {
+      "sha": "9316764e90aea8d193cd8f03b0caccdf02af3ba0",
+      "subject": "Probe and cache HTTP/2 support per-origin"
+    },
+    "d494c47cbd6a82a94de02621426c973b562ceb86": {
+      "sha": "d494c47cbd6a82a94de02621426c973b562ceb86",
+      "subject": "Exclude Transfer-Encoding: chunked header with HTTP/2 (#3441)"
+    },
+    "9af8d60d98282dd995d046db1667ab121e7a882e": {
+      "sha": "9af8d60d98282dd995d046db1667ab121e7a882e",
+      "subject": "Add check for correct h2 version range"
+    },
+    "349a00fcbcce94ed7bd9c46ae4a8e213d30621a9": {
+      "sha": "349a00fcbcce94ed7bd9c46ae4a8e213d30621a9",
+      "subject": "Fix request and request_encode_url fields docs (#3446)"
+    },
+    "be24439e281eb4b87e290108898cbd674276a93e": {
+      "sha": "be24439e281eb4b87e290108898cbd674276a93e",
+      "subject": "Fix ResourceWarning on CONNECT with Python < 3.11.4 (#3252)"
+    },
+    "aa668c2f96a67dba066e35452bea165ef6dcf875": {
+      "sha": "aa668c2f96a67dba066e35452bea165ef6dcf875",
+      "subject": "Fix mypy error when adding to default socket options (#3448)"
+    },
+    "cd75cbd7e0a0ee1bd644e1a1e0b69e909bf455fb": {
+      "sha": "cd75cbd7e0a0ee1bd644e1a1e0b69e909bf455fb",
+      "subject": "Rely on OpenSSL ALPN support (#3450)"
+    },
+    "9b1d26966444a7994d22183b2c88d0ab8a335f90": {
+      "sha": "9b1d26966444a7994d22183b2c88d0ab8a335f90",
+      "subject": "Disable tunnel for http2 requests (#3321)"
+    },
+    "d48061505e72271116c5a33b04dbca6273f2a737": {
+      "sha": "d48061505e72271116c5a33b04dbca6273f2a737",
+      "subject": "Add TLS settings for HTTP/2 (#3456)"
+    },
+    "1e94feb2a671bf28721114dfea1105a2c1f91788": {
+      "sha": "1e94feb2a671bf28721114dfea1105a2c1f91788",
+      "subject": "Revert \"Add TLS settings for HTTP/2 (#3456)\" (#3466)"
+    },
+    "bca319601ad1d124bfda913eae30c24dc862d174": {
+      "sha": "bca319601ad1d124bfda913eae30c24dc862d174",
+      "subject": "Update accept_encoding=True documentation for Zstandard (#3479)"
+    },
+    "97edbfa47fa238fcbeac0b81f14a84d470cd1681": {
+      "sha": "97edbfa47fa238fcbeac0b81f14a84d470cd1681",
+      "subject": "Add pickling support to NewConnectionError and NameResolutionError (#3480)"
+    },
+    "7783dbd8e1f17e4fa32f65e49ff09fb0aa31000d": {
+      "sha": "7783dbd8e1f17e4fa32f65e49ff09fb0aa31000d",
+      "subject": "Add `proxy_is_tunneling` to `HTTPConnection` and `HTTPSConnection` (#3459)"
+    },
+    "f9d37add7983d441b151146db447318dff4186c9": {
+      "sha": "f9d37add7983d441b151146db447318dff4186c9",
+      "subject": "Fix HTTP/1.1 debug log"
+    },
+    "bd71bcb3f22359c31ce29bd6c723acff1e347a07": {
+      "sha": "bd71bcb3f22359c31ce29bd6c723acff1e347a07",
+      "subject": "Drop support for EOL Python 3.8 (#3492)"
+    },
+    "8b2474d32b57f096a815ab52f9b54a843d68c140": {
+      "sha": "8b2474d32b57f096a815ab52f9b54a843d68c140",
+      "subject": "Add support for JavaScript Promise Integration (#3427)"
+    },
+    "905549d64a948abd4b6962edecb8dd5569166275": {
+      "sha": "905549d64a948abd4b6962edecb8dd5569166275",
+      "subject": "Upgrade Python pre-commit tools (#3529)"
+    },
+    "f7bcf6986fa9c43fc7884b648f66688db593b491": {
+      "sha": "f7bcf6986fa9c43fc7884b648f66688db593b491",
+      "subject": "Add HTTPResponse.shutdown() to stop blocking reads (#3527)"
+    }
+  },
+  "edges": [
+    {
+      "src": "ae0668899a144edb06c4d2ca9cec96b760a93e6a",
+      "dst": "312a47b596859fe8ae1cea228e4525f2d0345a75",
+      "kind": [
+        "file",
+        "line"
+      ]
+    },
+    {
+      "src": "80808b04bfa68fbd099828848c96ee25df185f1d",
+      "dst": "312a47b596859fe8ae1cea228e4525f2d0345a75",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "ae0668899a144edb06c4d2ca9cec96b760a93e6a",
+      "dst": "4e98d57809dacab1cbe625fddeec1a290c478ea9",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "4e98d57809dacab1cbe625fddeec1a290c478ea9",
+      "dst": "ff764a01499203a7c6fbe2e6c0a5a670cf26745c",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "312a47b596859fe8ae1cea228e4525f2d0345a75",
+      "dst": "5fc48e711b33c08eea1c1ea8209870f45e8baf05",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "11f5f5e19bfaab9cdfa2ce9223e62b8f05dd2a99",
+      "dst": "69be2992f8a25a1f27e49f339e4d5b98dec07462",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "4e98d57809dacab1cbe625fddeec1a290c478ea9",
+      "dst": "69be2992f8a25a1f27e49f339e4d5b98dec07462",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "69be2992f8a25a1f27e49f339e4d5b98dec07462",
+      "dst": "4dd4a824e60ba3bb81f319cf2b8e320aa8a87dc6",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "312a47b596859fe8ae1cea228e4525f2d0345a75",
+      "dst": "e29f5049a6061025086b2043c71b1ed6d658d017",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "4dd4a824e60ba3bb81f319cf2b8e320aa8a87dc6",
+      "dst": "8afb98b3cede2ac14f7d20b3d9ac290cf57fa72d",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "5fc48e711b33c08eea1c1ea8209870f45e8baf05",
+      "dst": "ac6ca9983b7d3c7e4e9f21554157e559b8f842a1",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "e29f5049a6061025086b2043c71b1ed6d658d017",
+      "dst": "4ece59b2d438f605dcb9a2448e1155075cd2fe07",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "4e98d57809dacab1cbe625fddeec1a290c478ea9",
+      "dst": "4ece59b2d438f605dcb9a2448e1155075cd2fe07",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "ae0668899a144edb06c4d2ca9cec96b760a93e6a",
+      "dst": "a19ee0a796920d1310e70849a6f4e6004013a2a2",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "4dd4a824e60ba3bb81f319cf2b8e320aa8a87dc6",
+      "dst": "1812eac7115b3a4e9a5feece5fae0c9cffe8c585",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "4ece59b2d438f605dcb9a2448e1155075cd2fe07",
+      "dst": "1812eac7115b3a4e9a5feece5fae0c9cffe8c585",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "ac6ca9983b7d3c7e4e9f21554157e559b8f842a1",
+      "dst": "1812eac7115b3a4e9a5feece5fae0c9cffe8c585",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "1812eac7115b3a4e9a5feece5fae0c9cffe8c585",
+      "dst": "b660f61968579daba1ffb91731b04450a5b46d3d",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "1812eac7115b3a4e9a5feece5fae0c9cffe8c585",
+      "dst": "8359450f8c57678c327ed85b8ba0eee1308c4ea5",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "1812eac7115b3a4e9a5feece5fae0c9cffe8c585",
+      "dst": "c7b9adcbbe911bec9249cb78111fa2561238dd70",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "4ece59b2d438f605dcb9a2448e1155075cd2fe07",
+      "dst": "59c122730badac2426dfbdecfe6be8afe0cd21c2",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "59c122730badac2426dfbdecfe6be8afe0cd21c2",
+      "dst": "e470d3b72429e95077ecd1015f029e1eec6df819",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "e470d3b72429e95077ecd1015f029e1eec6df819",
+      "dst": "3ca46ea7155139aafd3e3e6f73567a55a3ea2b35",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "ae0668899a144edb06c4d2ca9cec96b760a93e6a",
+      "dst": "745b002e3476f6c4ab707a2b1c82875038249be0",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "3ca46ea7155139aafd3e3e6f73567a55a3ea2b35",
+      "dst": "bbba48753448a9e9b642cf32efe041683f3324f8",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "c7b9adcbbe911bec9249cb78111fa2561238dd70",
+      "dst": "bbba48753448a9e9b642cf32efe041683f3324f8",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "8359450f8c57678c327ed85b8ba0eee1308c4ea5",
+      "dst": "6b2b377d9acc996f3cd8296af3b5d5cf7a255a09",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "4e7be193564ffb21078453adb4e34dda780aa8a1",
+      "dst": "26a07dbd3267b174439f1fca0ab473dc79f473dc",
+      "kind": [
+        "line",
+        "container",
+        "file"
+      ]
+    },
+    {
+      "src": "26a07dbd3267b174439f1fca0ab473dc79f473dc",
+      "dst": "8c8e26dab401121e9fccc8e8e8958609ccb045f5",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "312a47b596859fe8ae1cea228e4525f2d0345a75",
+      "dst": "d7bb83b48c23d8dd429c20a43ac3da74ea6e9df0",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "bbba48753448a9e9b642cf32efe041683f3324f8",
+      "dst": "6d2f0f63b066ce6064b16ba97dc5cf3f70d5d44a",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "6b2b377d9acc996f3cd8296af3b5d5cf7a255a09",
+      "dst": "6d2f0f63b066ce6064b16ba97dc5cf3f70d5d44a",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "69be2992f8a25a1f27e49f339e4d5b98dec07462",
+      "dst": "04df048cf4b1c3790c56e26c659db764aad62d6f",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "a19ee0a796920d1310e70849a6f4e6004013a2a2",
+      "dst": "60c464726e7ce8c6c26d6166e68f5274f2ead0e2",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "8c8e26dab401121e9fccc8e8e8958609ccb045f5",
+      "dst": "60c464726e7ce8c6c26d6166e68f5274f2ead0e2",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "6d2f0f63b066ce6064b16ba97dc5cf3f70d5d44a",
+      "dst": "60c464726e7ce8c6c26d6166e68f5274f2ead0e2",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "60c464726e7ce8c6c26d6166e68f5274f2ead0e2",
+      "dst": "6ffe55bcd745e9105da5a954e1e6691a14711eb0",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "60c464726e7ce8c6c26d6166e68f5274f2ead0e2",
+      "dst": "c42b4bacd86daf715e27d369cbd575acdde2e703",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "c42b4bacd86daf715e27d369cbd575acdde2e703",
+      "dst": "23f2287eb526d9384dddeedb6f6345e263bb9b86",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "b660f61968579daba1ffb91731b04450a5b46d3d",
+      "dst": "cfe52f96fb65fe2269981d6bba4f22c2bce00b2d",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "6ffe55bcd745e9105da5a954e1e6691a14711eb0",
+      "dst": "fa541793ad42f2f49846de0a9808ee0a484c53cf",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "6d2f0f63b066ce6064b16ba97dc5cf3f70d5d44a",
+      "dst": "e22f651079ae65d06efbb28222c27000256ce7a5",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "e22f651079ae65d06efbb28222c27000256ce7a5",
+      "dst": "49b2ddaf07ec9ef65ef12d0218117f20e739ee6e",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "04df048cf4b1c3790c56e26c659db764aad62d6f",
+      "dst": "54d6edf2a671510a5c029d3b76ffe71a5b07147a",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "fa541793ad42f2f49846de0a9808ee0a484c53cf",
+      "dst": "db8691302b24d3e2ae5e279d38ba2fdb40b85987",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "db8691302b24d3e2ae5e279d38ba2fdb40b85987",
+      "dst": "0628b6b290e52ef9a8b01c49f49dd218d2ee4fe2",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "0628b6b290e52ef9a8b01c49f49dd218d2ee4fe2",
+      "dst": "8bbc3db69eb05ec6cce8b3599c2d81b50dbffebf",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "49b2ddaf07ec9ef65ef12d0218117f20e739ee6e",
+      "dst": "cc892b0b81fdb63dc2bf0e99264dfbc8fb21410c",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "ff764a01499203a7c6fbe2e6c0a5a670cf26745c",
+      "dst": "cc892b0b81fdb63dc2bf0e99264dfbc8fb21410c",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "cc892b0b81fdb63dc2bf0e99264dfbc8fb21410c",
+      "dst": "da892d67c083d354cf5c96fb543dd920f7ec82bb",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "8bbc3db69eb05ec6cce8b3599c2d81b50dbffebf",
+      "dst": "da892d67c083d354cf5c96fb543dd920f7ec82bb",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "d7bb83b48c23d8dd429c20a43ac3da74ea6e9df0",
+      "dst": "da892d67c083d354cf5c96fb543dd920f7ec82bb",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "da892d67c083d354cf5c96fb543dd920f7ec82bb",
+      "dst": "52392654b30183129cf3ec06010306f517d9c146",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "23f2287eb526d9384dddeedb6f6345e263bb9b86",
+      "dst": "52392654b30183129cf3ec06010306f517d9c146",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "cc892b0b81fdb63dc2bf0e99264dfbc8fb21410c",
+      "dst": "accff72ecc2f6cf5a76d9570198a93ac7c90270e",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "54d6edf2a671510a5c029d3b76ffe71a5b07147a",
+      "dst": "27e2a5c5a7ab6a517252cc8dcef3ffa6ffb8f61a",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "27e2a5c5a7ab6a517252cc8dcef3ffa6ffb8f61a",
+      "dst": "2beb67e95a7fd908cd75648817c1ab99b1a4588e",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "52392654b30183129cf3ec06010306f517d9c146",
+      "dst": "528b0b69d2b66c4c7b99a5f13c314001b0bd91fa",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "0628b6b290e52ef9a8b01c49f49dd218d2ee4fe2",
+      "dst": "07f236ba64a635d01498cc6ec17d471cc594a100",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "da892d67c083d354cf5c96fb543dd920f7ec82bb",
+      "dst": "b7b811597aaad0cdcb78aef800e4eb04c5efee0a",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "528b0b69d2b66c4c7b99a5f13c314001b0bd91fa",
+      "dst": "9316764e90aea8d193cd8f03b0caccdf02af3ba0",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "9316764e90aea8d193cd8f03b0caccdf02af3ba0",
+      "dst": "d494c47cbd6a82a94de02621426c973b562ceb86",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "9316764e90aea8d193cd8f03b0caccdf02af3ba0",
+      "dst": "9af8d60d98282dd995d046db1667ab121e7a882e",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "8afb98b3cede2ac14f7d20b3d9ac290cf57fa72d",
+      "dst": "349a00fcbcce94ed7bd9c46ae4a8e213d30621a9",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "9316764e90aea8d193cd8f03b0caccdf02af3ba0",
+      "dst": "be24439e281eb4b87e290108898cbd674276a93e",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "b7b811597aaad0cdcb78aef800e4eb04c5efee0a",
+      "dst": "cd75cbd7e0a0ee1bd644e1a1e0b69e909bf455fb",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "d494c47cbd6a82a94de02621426c973b562ceb86",
+      "dst": "9b1d26966444a7994d22183b2c88d0ab8a335f90",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "cd75cbd7e0a0ee1bd644e1a1e0b69e909bf455fb",
+      "dst": "d48061505e72271116c5a33b04dbca6273f2a737",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "d48061505e72271116c5a33b04dbca6273f2a737",
+      "dst": "1e94feb2a671bf28721114dfea1105a2c1f91788",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "07f236ba64a635d01498cc6ec17d471cc594a100",
+      "dst": "bca319601ad1d124bfda913eae30c24dc862d174",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "fa541793ad42f2f49846de0a9808ee0a484c53cf",
+      "dst": "97edbfa47fa238fcbeac0b81f14a84d470cd1681",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "be24439e281eb4b87e290108898cbd674276a93e",
+      "dst": "7783dbd8e1f17e4fa32f65e49ff09fb0aa31000d",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "52392654b30183129cf3ec06010306f517d9c146",
+      "dst": "f9d37add7983d441b151146db447318dff4186c9",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "349a00fcbcce94ed7bd9c46ae4a8e213d30621a9",
+      "dst": "bd71bcb3f22359c31ce29bd6c723acff1e347a07",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "7783dbd8e1f17e4fa32f65e49ff09fb0aa31000d",
+      "dst": "bd71bcb3f22359c31ce29bd6c723acff1e347a07",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "97edbfa47fa238fcbeac0b81f14a84d470cd1681",
+      "dst": "bd71bcb3f22359c31ce29bd6c723acff1e347a07",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "aa668c2f96a67dba066e35452bea165ef6dcf875",
+      "dst": "bd71bcb3f22359c31ce29bd6c723acff1e347a07",
+      "kind": [
+        "line",
+        "file"
+      ]
+    },
+    {
+      "src": "1e94feb2a671bf28721114dfea1105a2c1f91788",
+      "dst": "bd71bcb3f22359c31ce29bd6c723acff1e347a07",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "60c464726e7ce8c6c26d6166e68f5274f2ead0e2",
+      "dst": "8b2474d32b57f096a815ab52f9b54a843d68c140",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "bd71bcb3f22359c31ce29bd6c723acff1e347a07",
+      "dst": "905549d64a948abd4b6962edecb8dd5569166275",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "f9d37add7983d441b151146db447318dff4186c9",
+      "dst": "905549d64a948abd4b6962edecb8dd5569166275",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "cfe52f96fb65fe2269981d6bba4f22c2bce00b2d",
+      "dst": "905549d64a948abd4b6962edecb8dd5569166275",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "bca319601ad1d124bfda913eae30c24dc862d174",
+      "dst": "905549d64a948abd4b6962edecb8dd5569166275",
+      "kind": [
+        "file"
+      ]
+    },
+    {
+      "src": "905549d64a948abd4b6962edecb8dd5569166275",
+      "dst": "f7bcf6986fa9c43fc7884b648f66688db593b491",
+      "kind": [
+        "file"
+      ]
+    }
+  ],
+  "levels": {
+    "80808b04bfa68fbd099828848c96ee25df185f1d": 0,
+    "ae0668899a144edb06c4d2ca9cec96b760a93e6a": 0,
+    "11f5f5e19bfaab9cdfa2ce9223e62b8f05dd2a99": 0,
+    "4e7be193564ffb21078453adb4e34dda780aa8a1": 0,
+    "aa668c2f96a67dba066e35452bea165ef6dcf875": 0,
+    "312a47b596859fe8ae1cea228e4525f2d0345a75": 1,
+    "4e98d57809dacab1cbe625fddeec1a290c478ea9": 1,
+    "a19ee0a796920d1310e70849a6f4e6004013a2a2": 1,
+    "745b002e3476f6c4ab707a2b1c82875038249be0": 1,
+    "26a07dbd3267b174439f1fca0ab473dc79f473dc": 1,
+    "5fc48e711b33c08eea1c1ea8209870f45e8baf05": 2,
+    "e29f5049a6061025086b2043c71b1ed6d658d017": 2,
+    "d7bb83b48c23d8dd429c20a43ac3da74ea6e9df0": 2,
+    "ff764a01499203a7c6fbe2e6c0a5a670cf26745c": 2,
+    "69be2992f8a25a1f27e49f339e4d5b98dec07462": 2,
+    "8c8e26dab401121e9fccc8e8e8958609ccb045f5": 2,
+    "ac6ca9983b7d3c7e4e9f21554157e559b8f842a1": 3,
+    "4ece59b2d438f605dcb9a2448e1155075cd2fe07": 3,
+    "4dd4a824e60ba3bb81f319cf2b8e320aa8a87dc6": 3,
+    "04df048cf4b1c3790c56e26c659db764aad62d6f": 3,
+    "59c122730badac2426dfbdecfe6be8afe0cd21c2": 4,
+    "8afb98b3cede2ac14f7d20b3d9ac290cf57fa72d": 4,
+    "1812eac7115b3a4e9a5feece5fae0c9cffe8c585": 4,
+    "54d6edf2a671510a5c029d3b76ffe71a5b07147a": 4,
+    "e470d3b72429e95077ecd1015f029e1eec6df819": 5,
+    "349a00fcbcce94ed7bd9c46ae4a8e213d30621a9": 5,
+    "b660f61968579daba1ffb91731b04450a5b46d3d": 5,
+    "8359450f8c57678c327ed85b8ba0eee1308c4ea5": 5,
+    "c7b9adcbbe911bec9249cb78111fa2561238dd70": 5,
+    "27e2a5c5a7ab6a517252cc8dcef3ffa6ffb8f61a": 5,
+    "3ca46ea7155139aafd3e3e6f73567a55a3ea2b35": 6,
+    "cfe52f96fb65fe2269981d6bba4f22c2bce00b2d": 6,
+    "6b2b377d9acc996f3cd8296af3b5d5cf7a255a09": 6,
+    "2beb67e95a7fd908cd75648817c1ab99b1a4588e": 6,
+    "bbba48753448a9e9b642cf32efe041683f3324f8": 7,
+    "6d2f0f63b066ce6064b16ba97dc5cf3f70d5d44a": 8,
+    "60c464726e7ce8c6c26d6166e68f5274f2ead0e2": 9,
+    "e22f651079ae65d06efbb28222c27000256ce7a5": 9,
+    "6ffe55bcd745e9105da5a954e1e6691a14711eb0": 10,
+    "c42b4bacd86daf715e27d369cbd575acdde2e703": 10,
+    "8b2474d32b57f096a815ab52f9b54a843d68c140": 10,
+    "49b2ddaf07ec9ef65ef12d0218117f20e739ee6e": 10,
+    "fa541793ad42f2f49846de0a9808ee0a484c53cf": 11,
+    "23f2287eb526d9384dddeedb6f6345e263bb9b86": 11,
+    "cc892b0b81fdb63dc2bf0e99264dfbc8fb21410c": 11,
+    "db8691302b24d3e2ae5e279d38ba2fdb40b85987": 12,
+    "97edbfa47fa238fcbeac0b81f14a84d470cd1681": 12,
+    "accff72ecc2f6cf5a76d9570198a93ac7c90270e": 12,
+    "0628b6b290e52ef9a8b01c49f49dd218d2ee4fe2": 13,
+    "8bbc3db69eb05ec6cce8b3599c2d81b50dbffebf": 14,
+    "07f236ba64a635d01498cc6ec17d471cc594a100": 14,
+    "da892d67c083d354cf5c96fb543dd920f7ec82bb": 15,
+    "bca319601ad1d124bfda913eae30c24dc862d174": 15,
+    "52392654b30183129cf3ec06010306f517d9c146": 16,
+    "b7b811597aaad0cdcb78aef800e4eb04c5efee0a": 16,
+    "528b0b69d2b66c4c7b99a5f13c314001b0bd91fa": 17,
+    "f9d37add7983d441b151146db447318dff4186c9": 17,
+    "cd75cbd7e0a0ee1bd644e1a1e0b69e909bf455fb": 17,
+    "9316764e90aea8d193cd8f03b0caccdf02af3ba0": 18,
+    "d48061505e72271116c5a33b04dbca6273f2a737": 18,
+    "d494c47cbd6a82a94de02621426c973b562ceb86": 19,
+    "9af8d60d98282dd995d046db1667ab121e7a882e": 19,
+    "be24439e281eb4b87e290108898cbd674276a93e": 19,
+    "1e94feb2a671bf28721114dfea1105a2c1f91788": 19,
+    "9b1d26966444a7994d22183b2c88d0ab8a335f90": 20,
+    "7783dbd8e1f17e4fa32f65e49ff09fb0aa31000d": 20,
+    "bd71bcb3f22359c31ce29bd6c723acff1e347a07": 21,
+    "905549d64a948abd4b6962edecb8dd5569166275": 22,
+    "f7bcf6986fa9c43fc7884b648f66688db593b491": 23
+  },
+  "external_deps": [],
+  "cycles": []
+}

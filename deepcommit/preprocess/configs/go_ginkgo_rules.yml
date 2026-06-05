@@ -1,0 +1,117 @@
+# Ginkgo BDD Test Detection Rules for ast-grep
+# Detects Ginkgo/Gomega test patterns commonly used in Go projects
+# Multiple rules separated by ---
+
+# It() - Primary test case definition
+id: ginkgo_it
+language: go
+rule:
+  pattern: It($DESC, func() { $$$ })
+---
+# It() with Focus (FIt) - Focused test
+id: ginkgo_fit
+language: go
+rule:
+  pattern: FIt($DESC, func() { $$$ })
+---
+# It() with Pending (PIt) - Pending test
+id: ginkgo_pit
+language: go
+rule:
+  pattern: PIt($DESC, func() { $$$ })
+---
+# Specify() - Alias for It()
+id: ginkgo_specify
+language: go
+rule:
+  pattern: Specify($DESC, func() { $$$ })
+---
+# FSpecify() - Focused Specify
+id: ginkgo_fspecify
+language: go
+rule:
+  pattern: FSpecify($DESC, func() { $$$ })
+---
+# PSpecify() - Pending Specify
+id: ginkgo_pspecify
+language: go
+rule:
+  pattern: PSpecify($DESC, func() { $$$ })
+---
+# Describe() - Test suite/group
+id: ginkgo_describe
+language: go
+rule:
+  pattern: Describe($DESC, func() { $$$ })
+---
+# FDescribe() - Focused Describe
+id: ginkgo_fdescribe
+language: go
+rule:
+  pattern: FDescribe($DESC, func() { $$$ })
+---
+# PDescribe() - Pending Describe
+id: ginkgo_pdescribe
+language: go
+rule:
+  pattern: PDescribe($DESC, func() { $$$ })
+---
+# Context() - Context grouping
+id: ginkgo_context
+language: go
+rule:
+  pattern: Context($DESC, func() { $$$ })
+---
+# FContext() - Focused Context
+id: ginkgo_fcontext
+language: go
+rule:
+  pattern: FContext($DESC, func() { $$$ })
+---
+# PContext() - Pending Context
+id: ginkgo_pcontext
+language: go
+rule:
+  pattern: PContext($DESC, func() { $$$ })
+---
+# When() - Alias for Context
+id: ginkgo_when
+language: go
+rule:
+  pattern: When($DESC, func() { $$$ })
+---
+# Entry() - Table-driven test entry (used with DescribeTable)
+id: ginkgo_entry
+language: go
+rule:
+  pattern: Entry($DESC, $$$ARGS)
+---
+# FEntry() - Focused Entry
+id: ginkgo_fentry
+language: go
+rule:
+  pattern: FEntry($DESC, $$$ARGS)
+---
+# PEntry() - Pending Entry
+id: ginkgo_pentry
+language: go
+rule:
+  pattern: PEntry($DESC, $$$ARGS)
+---
+# DescribeTable() - Table-driven tests
+id: ginkgo_describe_table
+language: go
+rule:
+  pattern: DescribeTable($DESC, $$$ARGS)
+---
+# FDescribeTable() - Focused DescribeTable
+id: ginkgo_fdescribe_table
+language: go
+rule:
+  pattern: FDescribeTable($DESC, $$$ARGS)
+---
+# PDescribeTable() - Pending DescribeTable
+id: ginkgo_pdescribe_table
+language: go
+rule:
+  pattern: PDescribeTable($DESC, $$$ARGS)

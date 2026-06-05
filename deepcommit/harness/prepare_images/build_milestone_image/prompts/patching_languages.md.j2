@@ -1,0 +1,68 @@
+## LANGUAGE-SPECIFIC PATCHING
+
+### Non-Java languages (Python / Go / Rust / JavaScript)
+
+Reapply Q3.L1 location priority from `_partials/boundary_rule.md.j2` — the location ladder (`sitecustomize` / `conftest` / `build.rs` / Cargo features / scaffolding fixtures / minimal src) already encodes the right shape for these languages. Tactical notes:
+
+- **Python**: wrap missing optional imports only when the repository historically allowed that optional path; add conditional checks for autouse fixtures only when they block collection.
+- **Go**: build constraints / feature flags only when matching repo conventions; prefer narrow adapter types / type assertions for interface drift; never exclude whole packages to hide import errors.
+- **Rust**: `#[cfg]` attributes only when they mirror real feature availability; Cargo features for optional deps; native library / toolchain failures are environment errors.
+- **JavaScript**: wrap optional `require` only when optional behavior is expected; conditional exports for missing optional modules; keep lockfile behavior deterministic.
+
+Common across all: do not add skip markers (`@pytest.skip`, `@Disabled`, `t.Skip`, `it.skip`, `#[ignore]`) to hide behavior — let tests fail naturally and let the gates record the signal.
+
+### Java
+
+Java requires compilation before tests can run. A single compilation error can block the entire suite.
+
+Goal: comment out or shim the minimal amount of code that prevents compilation, so the maximum number of tests can run.
+
+This is compile containment, not behavior repair. Use it only when a
+compilation error prevents the suite from reaching any useful test
+signal. If the affected test would otherwise compile and merely fail,
+do not comment it out; let the failure stand or use the Boundary rule's
+L2 exits. Any contained test method that disappears from results must
+surface through the normal patched-test completeness gates / waivers,
+not through silent exclusion.
+
+`@Disabled` only helps after compilation succeeds. It does not solve missing classes, incompatible signatures, or broken imports.
+
+| Situation | Action |
+|-----------|--------|
+| Specific methods have compilation errors | Contain only those methods, after reapplying the attribution test |
+| Class-level imports, fields, or constructors fail | Patch the narrowest class/file boundary and document why method-level containment is impossible |
+| Build profile is wrong | Fix through Maven/Gradle command, profile, or environment |
+
+Common compilation error patterns:
+
+| Error Pattern | Cause | Likely Scope |
+|---------------|-------|--------------|
+| `cannot find symbol` in a method body | Method uses missing API | Method-level patch |
+| `cannot find symbol` in import or field | Class-level dependency missing | Class/file-level patch |
+| `incompatible types` | API signature changed | Method or adapter patch |
+| `package X does not exist` | Missing module | Dependency or narrow class patch |
+
+Document every Java patch in Dockerfile comments.
+
+When commenting Java code is unavoidable, prefer method-level comments:
+
+```dockerfile
+RUN cd /testbed && \
+    sed -i '45i\\/*' path/to/SomeTest.java && \
+    sed -i '60a\\*/' path/to/SomeTest.java
+```
+
+For a named method, locate the exact method range and comment out only that method:
+
+```dockerfile
+RUN cd /testbed && \
+    sed -i '/@Test/,/^    \\}$/{H;$!d}; x; /testFillZero/s/^/\\/\\* /; s/$/ \\*\\//; p' path/to/SomeTest.java
+```
+
+Only use a file-level block comment for class-level errors that prevent compilation before test methods are reachable, and document that reason next to the command.
+
+```dockerfile
+RUN cd /testbed && \
+    sed -i '1i\\/*' path/to/ProblematicTest.java && \
+    sed -i '$a\\*/' path/to/ProblematicTest.java
+```

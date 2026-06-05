@@ -1,0 +1,15 @@
+Use the repository's Rust metadata first: `Cargo.toml`, `Cargo.lock`, workspace config, toolchain files, and feature flags.
+
+Common commands to test locally inside the image:
+
+```bash
+cargo fetch
+cargo test --no-fail-fast
+cargo test --all --no-fail-fast
+```
+
+Rust patching notes:
+
+- Keep toolchain selection explicit through `rust-toolchain` or the Dockerfile.
+- Preserve feature flags used by the repository.
+- Treat compile errors, missing native libraries, and cargo metadata failures as environment errors until tests run normally.

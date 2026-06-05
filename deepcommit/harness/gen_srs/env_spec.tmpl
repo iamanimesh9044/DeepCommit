@@ -1,0 +1,68 @@
+# Environment Specification Comparison Task
+
+## Objective
+Compare two test environments and identify **dependency changes only**. Output a minimal list of environment differences, excluding all code-related information.
+
+## Input Materials
+- **Base Dockerfile**: `{{ base_dockerfile }}`
+- **Milestone Dockerfile**: `{{ milestone_dockerfile }}`
+- **Base Container**: `{{ base_container }}`
+- **Milestone Container**: `{{ milestone_container }}`
+- **Git Repository**: `{{ git_repo }}` (for reference only, DO NOT analyze code changes)
+
+## Critical Constraints
+
+**Include**: Language package changes (Python/Node/Go/etc), system packages (APT/YUM), environment variables, base image differences.
+
+**Exclude**: Git commits, source code changes, API/function additions, business logic, test results.
+
+## Analysis Workflow
+
+### Step 1: Static Analysis
+Compare Dockerfiles to identify differences in:
+- Package install commands (pip, npm, apt-get, etc.)
+- Base images (FROM statements)
+- Environment variables (ENV statements)
+
+### Step 2: Dynamic Verification
+Use `docker exec` to compare runtime environments:
+- Language packages: `pip list`, `npm list`, etc.
+- System packages: `dpkg -l`, `rpm -qa`, etc.
+- Environment: `env`
+
+## Output Format
+
+Save to: `{{ output_file }}`
+
+```markdown
+# Environment Dependency Changes (relative to Base Env)
+
+## Python Packages
+- <package1> <version> added
+- <package2> upgraded to <version>
+- <package3> removed
+
+## System Packages
+- <package1> added
+- <package2> upgraded to <version>
+
+## Environment Variables
+- <VAR_NAME> set to <value>
+- <OLD_VAR> removed
+
+## Base Image
+- Base image: <image:tag>
+```
+
+**Rules**:
+- Omit sections with no changes
+- One line per change, natural language format
+- Only list final state (Milestone version), not base version
+- If identical: output "No changes detected."
+
+## Quality Checklist
+
+Before submitting:
+- ✅ No git SHAs, code diffs, or source file paths
+- ✅ Only third-party dependency packages listed
+- ✅ Concise: one line per change

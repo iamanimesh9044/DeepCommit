@@ -1,0 +1,66 @@
+cff-version: 1.2.0
+title: DeepCommit
+message: "If you use this software, please cite the paper below (preferred-citation)."
+type: software
+# Software authors = the code contributors. The full paper author list is under
+# preferred-citation. Add more contributors here as the project grows.
+authors:
+  - given-names: Gangda
+    family-names: Deng
+    email: gangdade@usc.edu
+    affiliation: University of Southern California
+  - given-names: Zhaoling
+    family-names: Chen
+    email: zhaolingc00@gmail.com
+repository-code: "https://github.com/DeepCommit-ai/DeepCommit"
+abstract: >-
+  DeepCommit is an automated agentic pipeline for reconstructing verifiable software
+  evolution itineraries from raw git commit histories. It powers the EvoClaw benchmark
+  for evaluating AI agents on continuous software evolution.
+keywords:
+  - git
+  - software-evolution
+  - commit-history
+  - benchmark
+  - agentic-pipeline
+  - ai-agents
+license: Apache-2.0
+version: "0.1.0"
+preferred-citation:
+  type: article
+  title: "EvoClaw: Evaluating AI Agents on Continuous Software Evolution"
+  year: 2026
+  url: "https://arxiv.org/abs/2603.13428"
+  identifiers:
+    - type: other
+      value: "arXiv:2603.13428"
+      description: arXiv preprint
+  authors:
+    - given-names: Gangda
+      family-names: Deng
+    - given-names: Zhaoling
+      family-names: Chen
+    - given-names: Zhongming
+      family-names: Yu
+    - given-names: Haoyang
+      family-names: Fan
+    - given-names: Yuhong
+      family-names: Liu
+    - given-names: Yuxin
+      family-names: Yang
+    - given-names: Dhruv
+      family-names: Parikh
+    - given-names: Rajgopal
+      family-names: Kannan
+    - given-names: Le
+      family-names: Cong
+    - given-names: Mengdi
+      family-names: Wang
+    - given-names: Qian
+      family-names: Zhang
+    - given-names: Viktor
+      family-names: Prasanna
+    - given-names: Xiangru
+      family-names: Tang
+    - given-names: Xingyao
+      family-names: Wang

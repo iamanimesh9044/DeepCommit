@@ -1,0 +1,48 @@
+# Go Test Detection Rules for ast-grep
+# Detects Go test functions following the testing package conventions
+# Multiple rules separated by ---
+
+# Test functions: func TestXxx(t *testing.T)
+id: go_test_fn
+language: go
+rule:
+  kind: function_declaration
+  has:
+    kind: identifier
+    regex: ^Test[A-Z]
+---
+# Benchmark functions: func BenchmarkXxx(b *testing.B)
+id: go_benchmark_fn
+language: go
+rule:
+  kind: function_declaration
+  has:
+    kind: identifier
+    regex: ^Benchmark[A-Z]
+---
+# Example functions: func ExampleXxx() or func Example()
+id: go_example_fn
+language: go
+rule:
+  kind: function_declaration
+  has:
+    kind: identifier
+    regex: ^Example([A-Z_]|$)
+---
+# Fuzz functions: func FuzzXxx(f *testing.F) - Go 1.18+
+id: go_fuzz_fn
+language: go
+rule:
+  kind: function_declaration
+  has:
+    kind: identifier
+    regex: ^Fuzz[A-Z]
+---
+# TestMain function (test setup, not a test itself)
+id: go_test_main
+language: go
+rule:
+  kind: function_declaration
+  has:
+    kind: identifier
+    regex: ^TestMain$

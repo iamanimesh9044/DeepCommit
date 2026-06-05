@@ -1,0 +1,77 @@
+# Build Testbed
+
+你需要帮我构建 {{repo_id}} 的 testbed。
+
+## 构建命令
+
+```bash
+python harness/prepare_repo/build_milestone_testbed.py \
+    --milestone-csv milestones.csv \
+    --dependencies-csv dependencies.csv \
+    --config config/{{repo_range}}.yaml \
+    --incremental \
+    --verify
+```
+
+注意: `--incremental` 支持断点续传，会跳过已成功构建的 milestone tags。
+
+## 工作目录
+
+当前工作目录: {{workspace_root}}
+
+目录结构:
+- milestones.csv - 里程碑定义 (可修改)
+- dependencies.csv - 依赖关系 (可修改)
+- config/{{repo_range}}.yaml - 仓库配置
+- harness/ - 构建脚本目录
+
+注意: build_milestone_testbed.py 会自动从 config 文件名推断仓库路径并克隆到 testbed/
+
+## 任务说明
+
+1. 执行构建命令
+2. 如果构建失败，分析错误并智能修复
+
+## 修复策略 (按优先级)
+
+### 优先级 1: 添加跨里程碑依赖 (dependencies.csv)
+
+可以智能修改 DAG 依赖关系。**每次修改前深入思考**。
+
+**依赖方向说明**:
+- `A->B` 表示先 apply A 再 apply B，即 **B 依赖 A**
+- 如果已存在 `A->B->C`，则 `A->C` 是一条**冗余边**，应避免添加
+
+**操作建议**:
+- 批量分析所有冲突，一次性添加多条依赖
+- 检查是否引入环路 (cycle)
+- 检查是否添加了冗余边
+- 修改完成后再运行构建测试
+
+### 优先级 2: 改进 milestone 划分 (milestones.csv)
+
+如果添加依赖无法解决问题，可以调整 milestone 划分。
+
+**操作建议**:
+- 尽量不要修改/删除 commits
+- 可以合并相互依赖的 milestones
+- 可以拆分过大的 milestone
+
+### 优先级 3: 剔除问题 milestone 或 commit (最后手段)
+
+如果以上方法都无法解决，可以:
+- 删除导致冲突的整个 milestone
+- 从 milestone 中移除特定的 commit
+
+**注意**: 这是最后手段，会丢失部分数据。
+
+## 成功标准
+
+- testbed/ 目录创建成功
+- metadata.json 生成
+- --verify 检查通过
+- 所有 milestone 的 start/end tags 都已创建
+
+## 最终目标
+
+确保 milestones.csv 和 dependencies.csv 足够干净，能够用 build_milestone_testbed.py 脚本**完全自动构建成功**。

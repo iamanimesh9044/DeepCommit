@@ -1,0 +1,42 @@
+{
+  "include": [
+    "deepcommit"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.venv",
+    "**/.env",
+    "**/node_modules",
+    "DATA"
+  ],
+  "defineConstant": {
+    "DEBUG": true
+  },
+  "stubPath": "",
+  "venv": ".venv",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+  "typeCheckingMode": "basic",
+  "useLibraryCodeForTypes": true,
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": false,
+  "reportGeneralTypeIssues": "warning",
+  "reportUndefinedVariable": false,
+  "reportOptionalMemberAccess": false,
+  "reportOptionalCall": false,
+  "reportOptionalIterable": false,
+  "reportOptionalContextManager": false,
+  "reportOptionalOperand": false,
+  "executionEnvironments": [
+    {
+      "root": "deepcommit",
+      "pythonVersion": "3.11",
+      "extraPaths": [
+        "deepcommit/collect",
+        "deepcommit/collect/repo",
+        "deepcommit/collect/tools",
+        "deepcommit/collect/collectors"
+      ]
+    }
+  ]
+}

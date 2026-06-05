@@ -1,0 +1,26 @@
+[
+  {
+    "SuitePath": "/p",
+    "SuiteDescription": "S",
+    "SuiteSucceeded": false,
+    "SpecReports": [
+      {
+        "ContainerHierarchyTexts": [
+          "A",
+          "B"
+        ],
+        "LeafNodeText": "works",
+        "State": "passed",
+        "RunTime": 1000000
+      },
+      {
+        "ContainerHierarchyTexts": [
+          "A"
+        ],
+        "LeafNodeText": "fails",
+        "State": "failed",
+        "RunTime": 2000000
+      }
+    ]
+  }
+]

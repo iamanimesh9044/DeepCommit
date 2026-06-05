@@ -1,0 +1,37 @@
+## Troubleshooting Guide
+
+Diagnose in this order. This is a debugging order, not an acceptance standard.
+
+### CAUSE A: Historical DAG or real version-gap signal
+
+This is Kind 2 (behavior substitution / real behavior gap) in `patching.md.j2` Boundary rule. The tests may be asking the START state to use behavior or symbols that only exist later. Do not patch Dockerfile around this unless the latest artifacts show an environment error rather than a real historical gap.
+
+- Likely gates or signals: no dedicated hard gate; look for normal `fail` results with low or zero `error`, with `H_error_within_budget` passing or nearly passing.
+- Check: latest attempt summaries, framework reports, and git history for the missing symbol or behavior.
+- Decision: if tests run normally and assertions fail because behavior changed later, preserve the `fail` signal.
+
+### CAUSE B: Previous attempt modified source or tests
+
+A retry may have hidden the signal by deleting files, reverting files, over-commenting tests, or patching source/test code too broadly.
+
+- Likely gates: `B_lint_block_clean`, `B_state_tags_consistent`, `H_patched_completeness`, `H_patched_clean_signal`.
+- Check: Dockerfile commands touching source/test paths, warn-level lint output, and the patched tests artifact.
+- Decision: remove broad edits; keep only narrow, committed environment patches that preserve test discovery.
+
+### CAUSE C: `test_config.json` over-filters the suite
+
+The environment may be fine, but the runner command may execute only a small filtered subset of collected tests.
+
+- Likely gates: `H_total_not_below_base`, `H_patched_completeness`, and sometimes `B_tests_ran_successfully`.
+- Check: `test_config.json` for `-k`, `--deselect`, `--ignore`, `--lf`, `--ff`, package filters, or framework-specific include/exclude flags.
+- Decision: remove hidden filters unless they are an intentional repository test mode with clear coverage.
+
+### CAUSE D: Runtime, import, setup, or runner crash
+
+This is Kind 1 (evaluation repair / loading-layer failure) in `patching.md.j2` Boundary rule. Tests are not running normally because the framework, dependency graph, service setup, or runner process fails before assertions can produce signal. Apply the smallest shim that passes the attribution test (typical shapes: single attribute default, stub declaration, missing constant — see the catalog) — this is Module 2's job.
+
+- Likely gates: `B_tests_ran_successfully`, `H_error_within_budget`, sometimes `B_image_exists` or `B_agent_completed`.
+- Check: runner diagnostic, latest attempt reports, collection errors, setup errors, and stderr tails.
+- Decision: fix missing dependencies, settings, environment variables, native libraries, or runner command shape until errors become normal pass/fail results.
+
+Prefer the latest `{{ build_status_path }}` and attempt artifacts when they exist. If they do not exist yet, use runner stdout/stderr, framework reports, and the patched-test artifacts as raw debugging context.

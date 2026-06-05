@@ -1,0 +1,13 @@
+prerequisite_id,dependant_id,dependency_primary_type,dependency_secondary_types,dependency_strength,dependency_tags,dependency_notes
+M2,M11,NFR,,weak,,Type annotations reference types introduced in new features; weak dependency allows parallel development
+M3,M11,NFR,,weak,,Type annotations reference types introduced in new features; weak dependency allows parallel development
+M4,M11,NFR,,weak,,Type annotations reference types introduced in new features; weak dependency allows parallel development
+M2,M7,FUNC,,weak,REGRESSION,Release checkpoints integrate completed features and validate system stability
+M3,M7,FUNC,,weak,REGRESSION,Release checkpoints integrate completed features and validate system stability
+M10,M8,FUNC,,strong,TEXTUAL_CONFLICT,M8's _tunnel() fix depends on M10's OpenSSL error handling in connection.py; shared file modifications require sequential application
+M6,M8,FUNC,,strong,TEXTUAL_CONFLICT,M8's _tunnel() implementation depends on M6's proxy_is_forwarding property and proxy state management in connection.py
+M2,M8,NFR,,weak,TEXTUAL_CONFLICT,M8 depends on M2's mypy version update for type checking in connection.py
+M11,M8,NFR,,weak,TEXTUAL_CONFLICT,M8 depends on M11's Literal type annotations in connection.py
+M3,M8,FUNC,,weak,TEXTUAL_CONFLICT,M8's _tunnel() method coexists with M3's HTTP/2 probe modifications in connection.py
+M4,M1,FUNC,,strong,CODE_DEPENDENCY,M1's BytesQueueBuffer.get_all() optimization requires M4's creation of this method; M1 modifies code introduced by M4
+M9,M12,FUNC,,strong,,M12's proxy_is_tunneling property is developed on top of M9; 7783dbd parent commit is 97edbfa (M9)

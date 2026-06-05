@@ -1,0 +1,26 @@
+{
+  "_framework": "mocha",
+  "collectors": [],
+  "duration": 0.12,
+  "summary": {
+    "error": 0,
+    "failed": 1,
+    "passed": 1,
+    "skipped": 1,
+    "total": 3
+  },
+  "tests": [
+    {
+      "nodeid": "S a",
+      "outcome": "passed"
+    },
+    {
+      "nodeid": "S b",
+      "outcome": "failed"
+    },
+    {
+      "nodeid": "S c",
+      "outcome": "skipped"
+    }
+  ]
+}

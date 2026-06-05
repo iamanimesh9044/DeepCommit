@@ -1,0 +1,76 @@
+# Refine Context
+
+{% if operator_directive %}
+## Refine Directive (read this FIRST)
+
+This directive comes from the orchestrator/operator, not from the pipeline's
+hard-gate diagnostic. Treat it as the primary objective for this refine run.
+Address it explicitly; the diagnostic context below is supporting evidence,
+not a competing goal.
+
+{% if operator_directive_source %}
+Source: `{{ operator_directive_source }}`
+
+{% endif %}
+{{ operator_directive }}
+
+---
+
+{% endif %}
+Existing milestone artifacts are present. Refine them in place instead of starting from a blank design.
+
+Artifact directory:
+
+```text
+{{ docker_dir }}
+```
+
+Primary status file:
+
+```text
+{{ build_status_path }}
+```
+
+Read the existing `Dockerfile`, `test_config.json`, and status file first. `build_status.json` is the authority for both acceptance and the latest hard-gate attempt.
+
+Also read `module2_waivers.json` if it exists. If it already contains `agent_sufficient.value=true`, do not accept that judgment blindly: verify the root-cause evidence, check whether broad filters or artificial skips hide tests, and continue fixing if a Dockerfile/test_config/environment change is still plausible. Keep or refine `agent_sufficient` only when remaining blockers are outside Module 2 scope.
+
+{% if build_status_exists %}
+Status summary:
+
+- built: `{{ built }}`
+- failed gates: {% if failed_gates %}`{{ failed_gates | join("`, `") }}`{% else %}(none listed){% endif %}
+{% if latest_attempt %}
+- latest hard-gate attempt: `{{ latest_attempt }}` from `{{ latest_attempt_source }}`
+
+Use this exact attempt artifact directory when inspecting validation reports:
+
+```text
+{{ latest_attempt_dir }}
+```
+
+Read `start.json`, `end.json`, `classification.json`, and summaries from that directory. Do not use older attempt directories from agent self-checks unless this status file explicitly points to them.
+{% else %}
+- latest hard-gate attempt: not available. That means no authoritative test attempt was produced for the current status; do not reuse an older attempt as evidence.
+{% endif %}
+{% else %}
+No `build_status.json` is available yet. Use the raw diagnostic context below as a hint only; any existing attempt directory is not authoritative until the pipeline writes a status file.
+{% if latest_attempt %}
+
+Latest discovered attempt directory for raw debugging only:
+
+```text
+{{ latest_attempt_dir }}
+```
+{% endif %}
+{% endif %}
+
+{% if diagnosis_text %}
+Raw diagnostic context:
+
+```text
+{{ diagnosis_text }}
+```
+{% endif %}
+
+---

@@ -1,0 +1,369 @@
+# Symbol Extraction Configuration
+# AST-grep patterns for extracting symbols from code patches
+
+# Definition patterns for symbol extraction
+# Format: pattern_name: [ast_pattern, regex_pattern]
+# - ast_pattern: AST-grep pattern to find the symbol
+# - regex_pattern: Regex to extract the symbol name from matched text
+definition_patterns:
+  python:
+    function: ["def $_($$$)", "def\\s+(\\w+)\\s*\\("]
+    class: ["class $_($$$)", "class\\s+(\\w+)"]
+
+  java:
+    # Class patterns - handle extends/implements variations
+    class_public: ["public class $NAME {$$$}", "class\\s+(\\w+)"]
+    class_default: ["class $NAME {$$$}", "class\\s+(\\w+)"]
+    class_extends: ["class $NAME extends $_ {$$$}", "class\\s+(\\w+)"]
+    class_public_extends: ["public class $NAME extends $_ {$$$}", "class\\s+(\\w+)"]
+    class_implements: ["class $NAME implements $_ {$$$}", "class\\s+(\\w+)"]
+    class_public_implements: ["public class $NAME implements $_ {$$$}", "class\\s+(\\w+)"]
+    class_extends_implements: ["class $NAME extends $_ implements $_ {$$$}", "class\\s+(\\w+)"]
+    class_public_extends_implements: ["public class $NAME extends $_ implements $_ {$$$}", "class\\s+(\\w+)"]
+    # Interface patterns
+    interface_public: ["public interface $NAME {$$$}", "interface\\s+(\\w+)"]
+    interface_default: ["interface $NAME {$$$}", "interface\\s+(\\w+)"]
+    interface_extends: ["interface $NAME extends $_ {$$$}", "interface\\s+(\\w+)"]
+    interface_public_extends: ["public interface $NAME extends $_ {$$$}", "interface\\s+(\\w+)"]
+    # Enum patterns
+    enum_public: ["public enum $NAME {$$$}", "enum\\s+(\\w+)"]
+    enum_default: ["enum $NAME {$$$}", "enum\\s+(\\w+)"]
+    # Method patterns
+    method_public: ["public $_ $_($$$) {$$$}", "\\s(\\w+)\\s*\\("]
+    method_void: ["void $_($$$) {$$$}", "void\\s+(\\w+)\\s*\\("]
+    # Test method patterns (JUnit 5 style)
+    test_method: ["@Test\nvoid $_() {$$$}", "void\\s+(\\w+)\\s*\\("]
+    test_method_public: ["@Test\npublic void $_() {$$$}", "void\\s+(\\w+)\\s*\\("]
+    # Test method patterns with throws clause
+    test_method_throws: ["@Test\nvoid $_() throws $_ {$$$}", "void\\s+(\\w+)\\s*\\("]
+    test_method_public_throws: ["@Test\npublic void $_() throws $_ {$$$}", "void\\s+(\\w+)\\s*\\("]
+    # Test method patterns with preceding annotation (e.g., @SuppressWarnings)
+    test_method_with_anno: ["@$_($$$)\n@Test\nvoid $_() {$$$}", "void\\s+(\\w+)\\s*\\("]
+    test_method_with_anno_throws: ["@$_($$$)\n@Test\nvoid $_() throws $_ {$$$}", "void\\s+(\\w+)\\s*\\("]
+    # ParameterizedTest patterns (JUnit 5) - typically has @MethodSource/@ValueSource etc before it
+    parameterized_test: ["@ParameterizedTest\n@$_($$$)\nvoid $_($$$) {$$$}", "void\\s+(\\w+)\\s*\\("]
+    parameterized_test_public: ["@ParameterizedTest\n@$_($$$)\npublic void $_($$$) {$$$}", "void\\s+(\\w+)\\s*\\("]
+    parameterized_test_throws: ["@ParameterizedTest\n@$_($$$)\nvoid $_($$$) throws $_ {$$$}", "void\\s+(\\w+)\\s*\\("]
+    # ParameterizedTest with source annotation first (e.g., @MethodSource before @ParameterizedTest)
+    parameterized_test_source_first: ["@$_($$$)\n@ParameterizedTest\nvoid $_($$$) {$$$}", "void\\s+(\\w+)\\s*\\("]
+    parameterized_test_source_first_throws: ["@$_($$$)\n@ParameterizedTest\nvoid $_($$$) throws $_ {$$$}", "void\\s+(\\w+)\\s*\\("]
+    # RepeatedTest patterns (JUnit 5)
+    repeated_test: ["@RepeatedTest($$$)\nvoid $_() {$$$}", "void\\s+(\\w+)\\s*\\("]
+    repeated_test_public: ["@RepeatedTest($$$)\npublic void $_() {$$$}", "void\\s+(\\w+)\\s*\\("]
+    repeated_test_throws: ["@RepeatedTest($$$)\nvoid $_() throws $_ {$$$}", "void\\s+(\\w+)\\s*\\("]
+    # TestFactory patterns (JUnit 5) - returns Stream/Collection of DynamicTest
+    test_factory: ["@TestFactory\n$_ $_() {$$$}", "\\s(\\w+)\\s*\\(\\s*\\)"]
+    test_factory_public: ["@TestFactory\npublic $_ $_() {$$$}", "\\s(\\w+)\\s*\\(\\s*\\)"]
+    # TestTemplate patterns (JUnit 5)
+    test_template: ["@TestTemplate\nvoid $_($$$) {$$$}", "void\\s+(\\w+)\\s*\\("]
+    test_template_public: ["@TestTemplate\npublic void $_($$$) {$$$}", "void\\s+(\\w+)\\s*\\("]
+
+  go:
+    function: ["func $_($$$) $$$", "func\\s+(\\w+)\\s*\\("]
+    method: ["func ($_ $_) $_($$$) $$$", "func\\s*\\([^)]+\\)\\s+(\\w+)\\s*\\("]
+    struct: ["type $_ struct {$$$}", "type\\s+(\\w+)\\s+struct"]
+    interface: ["type $_ interface {$$$}", "type\\s+(\\w+)\\s+interface"]
+
+  rust:
+    # ========== Basic declarations ==========
+    function: ["fn $_($$$) $$$", "fn\\s+(\\w+)\\s*[<\\(]"]
+    function_pub: ["pub fn $_($$$) $$$", "fn\\s+(\\w+)\\s*[<\\(]"]
+    function_async: ["async fn $_($$$) $$$", "fn\\s+(\\w+)\\s*[<\\(]"]
+    function_pub_async: ["pub async fn $_($$$) $$$", "fn\\s+(\\w+)\\s*[<\\(]"]
+    struct: ["struct $_ {$$$}", "struct\\s+(\\w+)"]
+    trait: ["trait $_ {$$$}", "trait\\s+(\\w+)"]
+    impl: ["impl $_ {$$$}", "impl\\s+(\\w+)"]
+    mod: ["mod $_ {$$$}", "mod\\s+(\\w+)"]
+    # ========== Standard test attribute #[test] ==========
+    test_fn: ["#[test]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    test_fn_pub: ["#[test]\npub fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # #[test] with #[should_panic]
+    test_should_panic: ["#[test]\n#[should_panic]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    test_should_panic_pub: ["#[test]\n#[should_panic]\npub fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    test_should_panic_expected: ["#[test]\n#[should_panic($$$)]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # #[test] with #[ignore]
+    test_ignore: ["#[test]\n#[ignore]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    test_ignore_pub: ["#[test]\n#[ignore]\npub fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    test_ignore_reason: ["#[test]\n#[ignore = $$$]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # Attribute order variants (ignore/should_panic before test)
+    test_attr_before: ["#[$_]\n#[test]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    test_attr_before_pub: ["#[$_]\n#[test]\npub fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    test_attr_before_args: ["#[$_($$$)]\n#[test]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # ========== Async tests (tokio) ==========
+    tokio_test: ["#[tokio::test]\nasync fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    tokio_test_pub: ["#[tokio::test]\npub async fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    tokio_test_config: ["#[tokio::test($$$)]\nasync fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    tokio_test_config_pub: ["#[tokio::test($$$)]\npub async fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # ========== Async tests (async_std) ==========
+    async_std_test: ["#[async_std::test]\nasync fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    async_std_test_pub: ["#[async_std::test]\npub async fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # ========== Async tests (actix_rt) ==========
+    actix_test: ["#[actix_rt::test]\nasync fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    actix_test_pub: ["#[actix_rt::test]\npub async fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # ========== Parameterized tests (rstest) ==========
+    rstest_fn: ["#[rstest]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    rstest_fn_pub: ["#[rstest]\npub fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    rstest_case: ["#[rstest]\n#[case($$$)]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    rstest_async: ["#[rstest]\nasync fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    rstest_tokio: ["#[rstest]\n#[tokio::test]\nasync fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # ========== Benchmark tests ==========
+    bench_fn: ["#[bench]\nfn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    bench_fn_pub: ["#[bench]\npub fn $_($$$) {$$$}", "fn\\s+(\\w+)"]
+    # ========== Test module ==========
+    test_mod: ["#[cfg(test)]\nmod $_ {$$$}", "mod\\s+(\\w+)"]
+
+  javascript:
+    function: ["function $_($$$) {$$$}", "function\\s+(\\w+)\\s*\\("]
+    class: ["class $_ {$$$}", "class\\s+(\\w+)"]
+
+  typescript:
+    function: ["function $_($$$): $_ {$$$}", "function\\s+(\\w+)\\s*[<\\(]"]
+    class: ["class $_ {$$$}", "class\\s+(\\w+)"]
+    interface: ["interface $_ {$$$}", "interface\\s+(\\w+)"]
+
+# Language file extensions
+language_extensions:
+  python: [".py"]
+  javascript: [".js", ".jsx"]
+  typescript: [".ts", ".tsx"]
+  go: [".go"]
+  rust: [".rs"]
+  java: [".java"]
+  c: [".c", ".h"]
+  cpp: [".cpp", ".cc", ".cxx", ".hpp"]
+
+# AST-grep patterns for symbol extraction
+astgrep_patterns:
+  python:
+    function: |
+      def $FUNC($$$ARGS):
+        $$$BODY
+
+    class: |
+      class $CLASS($$$BASES):
+        $$$BODY
+
+    method: |
+      def $METHOD(self, $$$ARGS):
+        $$$BODY
+
+    import: "import $MODULE"
+
+    from_import: "from $MODULE import $NAME"
+
+    function_call: "$FUNC($$$ARGS)"
+
+    method_call: "$OBJ.$METHOD($$$ARGS)"
+
+    attribute_access: "$OBJ.$ATTR"
+
+  javascript:
+    function: "function $FUNC($$$ARGS) { $$$BODY }"
+    class: "class $CLASS { $$$BODY }"
+    method: "$METHOD($$$ARGS) { $$$BODY }"
+    import: "import { $$$ITEMS } from '$MODULE'"
+    function_call: "$FUNC($$$ARGS)"
+    method_call: "$OBJ.$METHOD($$$ARGS)"
+    attribute_access: "$OBJ.$ATTR"
+
+  typescript:
+    function: "function $FUNC($$$ARGS): $TYPE { $$$BODY }"
+    class: "class $CLASS { $$$BODY }"
+    interface: "interface $INTERFACE { $$$BODY }"
+    method: "$METHOD($$$ARGS): $TYPE { $$$BODY }"
+    type_alias: "type $TYPE = $DEF"
+    function_call: "$FUNC($$$ARGS)"
+    method_call: "$OBJ.$METHOD($$$ARGS)"
+    attribute_access: "$OBJ.$ATTR"
+
+  go:
+    # ========== FUNCTION DECLARATIONS ==========
+    # Function with return type
+    function_with_return: "func $FUNC($$$ARGS) $$$RETURN { $$$BODY }"
+    # Function without return type
+    function_no_return: "func $FUNC($$$ARGS) { $$$BODY }"
+
+    # ========== METHOD DECLARATIONS ==========
+    # Method with return type (typed receiver)
+    method_with_return: "func ($RECV $TYPE) $METHOD($$$ARGS) $$$RETURN { $$$BODY }"
+    # Method without return type (typed receiver)
+    method_no_return: "func ($RECV $TYPE) $METHOD($$$ARGS) { $$$BODY }"
+
+    # ========== TYPE DECLARATIONS ==========
+    struct: "type $STRUCT struct { $$$FIELDS }"
+    interface: "type $INTERFACE interface { $$$METHODS }"
+    # Type alias (catches both aliases and type definitions)
+    type_decl: "type $NAME $TYPE"
+
+    # ========== CONSTANT/VARIABLE DECLARATIONS ==========
+    const_block: "const ($$$CONSTS)"
+    var_decl: "var $NAME = $VALUE"
+    short_var_decl: "$NAME := $VALUE"
+
+    # ========== EXPRESSIONS ==========
+    function_call: "$FUNC($$$ARGS)"
+    attribute_access: "$OBJ.$ATTR"
+
+  rust:
+    function: "fn $FUNC($$$ARGS) -> $RETURN { $$$BODY }"
+    struct: "struct $STRUCT { $$$FIELDS }"
+    trait: "trait $TRAIT { $$$METHODS }"
+    function_call: "$FUNC($$$ARGS)"
+    method_call: "$OBJ.$METHOD($$$ARGS)"
+    attribute_access: "$OBJ.$ATTR"
+
+  java:
+    # ========== CLASS DECLARATIONS ==========
+    class: "public class $CLASS { $$$BODY }"
+    class_extends: "public class $CLASS extends $PARENT { $$$BODY }"
+    class_simple: "class $CLASS { $$$BODY }"
+
+    # ========== INTERFACE DECLARATIONS ==========
+    interface: "public interface $INTERFACE { $$$BODY }"
+    interface_simple: "interface $INTERFACE { $$$BODY }"
+
+    # ========== ENUM DECLARATIONS ==========
+    enum: "enum $ENUM { $$$VALUES }"
+
+    # ========== ANNOTATION TYPE DECLARATIONS ==========
+    annotation_type: "@interface $ANNOTATION { $$$BODY }"
+
+    # ========== METHOD DECLARATIONS ==========
+    method_public: "public $TYPE $METHOD($$$PARAMS) { $$$BODY }"
+    method_static: "static $TYPE $METHOD($$$PARAMS) { $$$BODY }"
+    method_void: "void $METHOD($$$PARAMS) { $$$BODY }"
+    method_any: "$TYPE $METHOD($$$PARAMS) { $$$BODY }"
+    # Simplified method pattern for test methods
+    method_declaration: "$$$MOD $TYPE $METHOD($$$) { $$$ }"
+
+    # ========== IMPORT STATEMENTS ==========
+    import: "import $PACKAGE;"
+    static_import: "import static $PACKAGE;"
+
+    # ========== ANNOTATION USAGE ==========
+    annotation: "@$ANNOTATION"
+    annotation_with_args: "@$ANNOTATION($$$ARGS)"
+
+    # ========== EXPRESSIONS ==========
+    function_call: "$FUNC($$$ARGS)"
+    method_call: "$OBJ.$METHOD($$$ARGS)"
+    constructor_call: "new $CLASS($$$ARGS)"
+    attribute_access: "$OBJ.$ATTR"
+
+# Regex patterns for extracting symbol names from matched lines
+# These are applied after ast-grep finds matches
+regex_patterns:
+  function_call:
+    python: '\w+(?=\s*\()'
+    javascript: '\w+(?=\s*\()'
+    typescript: '\w+(?=\s*\()'
+    go: '\w+(?=\s*\()'
+    rust: '\w+(?=\s*\()'
+    java: '\w+(?=\s*\()'
+    default: '(\w+)\s*\('
+
+  method_call:
+    python: '\.(\w+)\s*\('
+    javascript: '\.(\w+)\s*\('
+    typescript: '\.(\w+)\s*\('
+    go: '\.(\w+)\s*\('
+    rust: '\.(\w+)\s*\('
+    java: '\.(\w+)\s*\('
+    default: '\.(\w+)\s*\('
+
+  attribute_access:
+    python: '\.(\w+)\b'
+    javascript: '\.(\w+)\b'
+    typescript: '\.(\w+)\b'
+    go: '\.(\w+)\b'
+    rust: '\.(\w+)\b'
+    java: '\.(\w+)\b'
+    default: '\.(\w+)\b'
+
+  # Go-specific patterns for new symbol types
+  function_with_return:
+    go: 'func\s+(\w+)\s*\('
+    default: 'func\s+(\w+)\s*\('
+
+  function_no_return:
+    go: 'func\s+(\w+)\s*\('
+    default: 'func\s+(\w+)\s*\('
+
+  method_with_return:
+    go: 'func\s*\([^)]+\)\s+(\w+)\s*\('
+    default: 'func\s*\([^)]+\)\s+(\w+)\s*\('
+
+  method_no_return:
+    go: 'func\s*\([^)]+\)\s+(\w+)\s*\('
+    default: 'func\s*\([^)]+\)\s+(\w+)\s*\('
+
+  type_decl:
+    go: 'type\s+(\w+)'
+    default: 'type\s+(\w+)'
+
+  const_block:
+    go: 'const\s*\('
+    default: 'const\s*\('
+
+  var_decl:
+    go: 'var\s+(\w+)'
+    default: 'var\s+(\w+)'
+
+  short_var_decl:
+    go: '(\w+)\s*:='
+    default: '(\w+)\s*:='
+
+  # Java-specific patterns
+  constructor_call:
+    java: 'new\s+(\w+)\s*\('
+    default: 'new\s+(\w+)\s*\('
+
+  annotation:
+    java: '@(\w+)'
+    default: '@(\w+)'
+
+  annotation_with_args:
+    java: '@(\w+)\s*\('
+    default: '@(\w+)\s*\('
+
+  import:
+    java: 'import\s+(?:static\s+)?([^\s;]+)'
+    default: 'import\s+([^\s;]+)'
+
+  static_import:
+    java: 'import\s+static\s+([^\s;]+)'
+    default: 'import\s+static\s+([^\s;]+)'
+
+  # Class name patterns
+  class:
+    java: 'class\s+(\w+)'
+    default: 'class\s+(\w+)'
+
+  class_simple:
+    java: 'class\s+(\w+)'
+    default: 'class\s+(\w+)'
+
+  class_extends:
+    java: 'class\s+(\w+)'
+    default: 'class\s+(\w+)'
+
+  # Method name patterns
+  method_any:
+    java: '\b(\w+)\s*\([^)]*\)\s*\{'
+    default: '\b(\w+)\s*\([^)]*\)\s*\{'
+
+  method_public:
+    java: 'public\s+\w+\s+(\w+)\s*\('
+    default: 'public\s+\w+\s+(\w+)\s*\('
+
+  method_static:
+    java: 'static\s+\w+\s+(\w+)\s*\('
+    default: 'static\s+\w+\s+(\w+)\s*\('
+
+  method_void:
+    java: 'void\s+(\w+)\s*\('
+    default: 'void\s+(\w+)\s*\('
+
+  method_declaration:
+    java: '\b(\w+)\s*\([^)]*\)\s*\{'
+    default: '\b(\w+)\s*\([^)]*\)\s*\{'

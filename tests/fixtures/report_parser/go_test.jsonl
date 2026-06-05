@@ -1,0 +1,3 @@
+{"Action": "pass", "Package": "pkg", "Test": "TestA", "Elapsed": 0.1}
+{"Action": "fail", "Package": "pkg", "Test": "TestB", "Elapsed": 0.2}
+{"Action": "skip", "Package": "pkg", "Test": "TestC", "Elapsed": 0.0}

@@ -1,0 +1,8 @@
+   Running unittests src/lib.rs (target/debug/deps/mycrate-abc123)
+
+running 3 tests
+test tests::test_a ... ok
+test tests::test_b ... FAILED
+test tests::test_c ... ignored
+
+test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s

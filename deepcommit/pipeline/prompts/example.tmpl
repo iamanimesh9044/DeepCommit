@@ -1,0 +1,25 @@
+# Milestone DAG Extraction — Minimal Prompt
+
+## Inputs
+- repo_git_path: {{repo_git_path}}
+- start_tag: {{start_tag}}
+- end_tag: {{end_tag}}
+
+## Task
+- Identify a concise set of milestones (3–10) and directed dependencies (edges) that describe the project’s evolution within the given time window.
+- Prefer tool-driven evidence (commits, PRs, file co-change) when available; otherwise, provide short rationale.
+
+## Tools (if available)
+- MCP tools
+- Local git commands within repo_git_path
+
+## Outputs
+- {{result_path}}/milestones.csv
+  - Columns: id,title
+- {{result_path}}/dependencies.csv
+  - Columns: prerequisite_id,dependant_id
+
+## Notes
+- If tools are unavailable, continue with a fallback method and note assumptions succinctly.
+- Keep outputs UTF-8, newline as "\n".
+

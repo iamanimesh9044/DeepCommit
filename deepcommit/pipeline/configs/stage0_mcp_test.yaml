@@ -1,0 +1,16 @@
+prompt_file: stage_breakdown_v1/mcp_test.md
+
+mcp_tools:
+  git_analysis:
+    - get_commit_context
+    - search_entities
+    - check_dependency
+
+input:
+  directory: input
+  children:
+
+output:
+  directory: output
+  children:
+    test_result: test_result.json

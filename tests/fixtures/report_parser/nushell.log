@@ -1,0 +1,3 @@
+=== TEST FILE: tests/test_a.nu ===
+=== TEST FILE: tests/test_b.nu ===
+FAILED: tests/test_b.nu

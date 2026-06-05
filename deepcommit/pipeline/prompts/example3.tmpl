@@ -1,0 +1,86 @@
+# Recovery Mechanism Test — Intentional Error Scenario
+
+## Inputs
+- repo_git_path: {{repo_path}}
+- result_path: {{result_path}}
+
+## Task Overview
+This prompt tests the recovery mechanism by creating a scenario likely to trigger validation errors on first attempt.
+
+## Actual CSV Format Requirements (from models.py and full_dag_v2.tmpl)
+
+### milestones.csv
+Required columns: `id,title,commits,mini_srs,category`
+- `id`: non-empty string (e.g., "M1", "M2", "M3")
+- `title`: non-empty milestone title
+- `commits`: semicolon-separated commit SHA7 list (can be empty)
+- `mini_srs`: mini-SRS requirement specification (can be empty)
+- `category`: milestone category (can be empty, suggested: "feature", "bugfix", "refactor")
+
+### dependencies.csv
+Required columns: `prerequisite_id,dependant_id,dependency_primary_type,dependency_secondary_types,dependency_strength,dependency_tags,dependency_notes`
+- `prerequisite_id`: must match an existing milestone id
+- `dependant_id`: must match an existing milestone id (prerequisite_id ≠ dependant_id)
+- `dependency_primary_type`: ARCH/FUNC/NFR (can be empty)
+- `dependency_secondary_types`: semicolon-separated types (can be empty)
+- `dependency_strength`: strong/weak (can be empty)
+- `dependency_tags`: VERIFY/REGRESSION/etc (can be empty)
+- `dependency_notes`: notes (can be empty)
+
+## Phase 1: Initial Attempt (designed to potentially fail)
+1. Get 3 recent commits from the repository
+2. Create output with STRICT requirements:
+   - Generate exactly 3 milestones in `milestones.csv`
+   - Each milestone MUST have non-empty `id` and `title`
+   - Generate at least 2 dependencies in `dependencies.csv`
+   - Each dependency MUST reference valid milestone IDs
+   - No self-dependencies (prerequisite_id ≠ dependant_id)
+
+## Common Validation Errors to Watch For
+- Missing CSV files → VALIDATION ERROR
+- Wrong column names or missing required columns → VALIDATION ERROR
+- Empty `id` or `title` in milestones → VALIDATION ERROR
+- Dependencies referencing non-existent milestone IDs → VALIDATION ERROR
+- Self-loop dependencies (M1 → M1) → VALIDATION ERROR
+- Duplicate milestone IDs → VALIDATION ERROR
+- No data rows (only header) → VALIDATION ERROR
+
+## Testing Strategy
+**First attempt**: You may intentionally or accidentally make mistakes such as:
+- Using wrong column names (e.g., "milestone_id" instead of "id")
+- Missing required columns
+- Missing files entirely
+- Invalid ID references in dependencies
+- Self-referencing dependencies
+- Empty required fields
+
+**On recovery**: When validation fails and you receive error messages:
+1. Read the specific error messages carefully
+2. Fix ONLY the reported issues
+3. Ensure correct column headers match the requirements
+4. Verify all ID references are valid
+5. Ensure no self-loops in dependencies
+
+## Output Files Examples
+Write to `{{result_path}}`:
+
+**milestones.csv**:
+```
+id,title,commits,mini_srs,category
+M1,Initial repository setup,abc1234,Setup basic project structure and configuration,feature
+M2,Core feature implementation,def5678;ghi9012,Implement main feature with unit tests,feature
+M3,Documentation and cleanup,jkl3456,Add documentation and code cleanup,refactor
+```
+
+**dependencies.csv**:
+```
+prerequisite_id,dependant_id,dependency_primary_type,dependency_secondary_types,dependency_strength,dependency_tags,dependency_notes
+M1,M2,ARCH,,strong,,M2 requires M1's infrastructure
+M2,M3,FUNC,,weak,,M3 documents M2's features
+```
+
+## Success Criteria
+- First attempt: May fail validation (expected for testing recovery)
+- After recovery: All validation passes, both CSV files correct with proper columns
+
+Return brief summary: "Generated 3 milestones and N dependencies. Validation: [PASS/FAIL]"

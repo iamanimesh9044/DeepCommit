@@ -1,0 +1,32 @@
+prompt_file: stage_breakdown_v1/milestone_decompose.md
+subagent_prompt_file: stage_breakdown_v1/milestone_decompose_subagent.md
+deep_analysis_subagent_prompt_file: stage_breakdown_v1/milestone_deep_analysis_subagent.md
+
+mcp_tools:
+  git_analysis:
+    - get_commit_context
+    - calculate_commits_src_loc_tool
+    - analyze_dag_conflicts
+    - validate_milestone_partitioning
+
+# Scripts used by this stage
+scripts:
+  identify_imbalances: deepcommit/tools/milestone_balancing/identify_imbalances.py
+  metadata_script: deepcommit/tools/milestone_balancing/generate_split_metadata.py
+
+input:
+  directory: input
+  children:
+    # Auto-linked from previous stages by main_multi_stage.py
+    milestone_csv: milestones.csv       # From stage2 output (via stage3)
+    dependencies_csv: dependencies.csv  # From stage3 output
+    # Note: main_commits, commit_dag, patches come from shared.yaml (proc_data/)
+    # Note: repo_path is auto-added by context.py
+
+output:
+  directory: output
+  children:
+    milestone_csv: milestones.csv       # Updated (balanced) -> overwrites global
+    dependencies_csv: dependencies.csv  # Updated (balanced) -> overwrites global
+    balancing_report: milestone_balancing_report.json
+    commit_splits: commit_splits        # Directory for split artifacts (METADATA.json, patches/)

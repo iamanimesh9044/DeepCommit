@@ -1,0 +1,26 @@
+## SUPPORTED LANGUAGES AND TEST FRAMEWORKS
+
+| Language | Framework | Test Collect Command | Report Format | Output File Extension |
+|----------|-----------|----------------------|---------------|-----------------------|
+| Python | pytest | `pytest --collect-only` | JSON (`--json-report`) | `.json` |
+| Python | unittest | `python -m pytest --collect-only` | JSON | `.json` |
+| Go | go_test | `go test -list '.*' ./...` | JSONL (`go test -json`) | `.jsonl` |
+| Java | maven | `mvn test-compile` | Console log | `.log` |
+| Java | gradle | `gradle testClasses` | Console log | `.log` |
+| Rust | cargo | `cargo test --no-run` | Console log | `.log` |
+| JavaScript | jest | `npx jest --listTests` | JSON (`--json`) | `.json` |
+| JavaScript | mocha | `npx mocha --dry-run` | JSON | `.json` |
+
+### Output File Format Reference
+
+When generating `test_config.json`, use the correct file extension for `{output_file}`:
+
+| Framework | Recommended Extension |
+|-----------|----------------------|
+| pytest / unittest / jest / mocha | `.json` |
+| go_test | `.jsonl` |
+| maven / gradle / cargo | `.log` |
+
+IMPORTANT: The test runner (`run_milestone_tests.py`) auto-selects the parser based on `--test-framework`. The file extension must match — wrong extension → parser fails → `B_tests_ran_successfully` gate trips.
+
+For full run-time commands with `--json-report` / `-json` / `--reporter json` / `2>&1 | tee` flags, follow the framework's standard test-output documentation; this table is the lookup, not the full command catalog.

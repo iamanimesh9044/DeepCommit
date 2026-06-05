@@ -1,0 +1,22 @@
+{
+  "_framework": "ginkgo",
+  "collectors": [],
+  "duration": 0.0,
+  "summary": {
+    "error": 0,
+    "failed": 1,
+    "passed": 1,
+    "skipped": 0,
+    "total": 2
+  },
+  "tests": [
+    {
+      "nodeid": "p::A > B > works",
+      "outcome": "passed"
+    },
+    {
+      "nodeid": "p::A > fails",
+      "outcome": "failed"
+    }
+  ]
+}

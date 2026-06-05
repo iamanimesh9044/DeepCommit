@@ -1,0 +1,23 @@
+{
+  "_framework": "playwright",
+  "collectors": [],
+  "duration": 0.15000000000000002,
+  "summary": {
+    "error": 0,
+    "failed": 1,
+    "passed": 1,
+    "skipped": 0,
+    "total": 2
+  },
+  "tests": [
+    {
+      "message": "boom",
+      "nodeid": "tests/login.spec.ts::Login > breaks [chromium]",
+      "outcome": "failed"
+    },
+    {
+      "nodeid": "tests/login.spec.ts::Login > works [chromium]",
+      "outcome": "passed"
+    }
+  ]
+}

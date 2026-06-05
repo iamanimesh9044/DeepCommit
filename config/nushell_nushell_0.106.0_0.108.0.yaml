@@ -1,0 +1,27 @@
+repo_src_dirs:
+  - src
+  - crates
+
+# 测试目录/文件模式 (注: Rust 内嵌 #[cfg(test)] 无法用 glob 排除)
+test_dirs:
+  - "tests/**"
+  - "benches/**"
+  - "crates/*/tests/**"
+  - "crates/*/benches/**"
+  - "crates/nu-cmd-extra/src/example_test.rs"
+  - "crates/nu-cmd-lang/src/example_test.rs"
+  - "crates/nu-cmd-lang/src/parse_const_test.rs"
+  - "crates/nu-command/src/example_test.rs"
+
+# 排除目录 (repo_src_dirs 内部不需要分析的目录)
+exclude:
+  # 脚本示例插件（不是 Rust 代码，只有单个脚本文件，变更仅为版本号同步）
+  - "crates/nu_plugin_python/**"
+  - "crates/nu_plugin_javascript/**"
+  - "crates/nu_plugin_nu_example/**"
+
+main_branch: main
+
+# Language and test framework
+language: rust
+test_framework: cargo

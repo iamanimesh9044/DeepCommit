@@ -1,0 +1,31 @@
+{
+  "numTotalTests": 2,
+  "numPassedTests": 1,
+  "numFailedTests": 1,
+  "numPendingTests": 0,
+  "numTodoTests": 0,
+  "testResults": [
+    {
+      "name": "/testbed/ui/b.test.js",
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "S"
+          ],
+          "title": "ok",
+          "status": "passed"
+        },
+        {
+          "ancestorTitles": [
+            "S"
+          ],
+          "title": "bad",
+          "status": "failed",
+          "failureMessages": [
+            "boom"
+          ]
+        }
+      ]
+    }
+  ]
+}

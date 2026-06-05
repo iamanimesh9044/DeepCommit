@@ -1,0 +1,18 @@
+Use the repository's JavaScript package metadata first: `package.json`, lockfiles, workspace config, and framework config files.
+
+Common commands to test locally inside the image:
+
+```bash
+npm ci
+npm test -- --runInBand
+npx jest --runInBand
+npx mocha
+```
+
+Choose the command that matches the repository. For pnpm or yarn workspaces, install with the repository's package manager and keep lockfile behavior deterministic.
+
+JavaScript patching notes:
+
+- Avoid deleting lockfiles or regenerating dependency graphs without a clear reason.
+- Keep Node version selection explicit.
+- Ensure test reports or exit codes distinguish runner crashes from assertion failures.

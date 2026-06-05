@@ -1,0 +1,148 @@
+## Validation Contract
+
+Pipeline is the only authority for acceptance. Agent-side commands and checklists help you converge, but they do not decide whether the image is accepted.
+
+Module 2 has two legitimate terminal states (mirrors `Goal` in `base.md.j2`):
+
+1. ACCEPTANCE — `{{ build_status_path }} :: built == true`. All hard gates passed.
+2. MODULE2_SUFFICIENT — `built == false` AND `{{ module2_waivers_path }} :: agent_sufficient.value == true` AND substantive `bound_waivers` / `unbound_issues`. Only valid when config sets `module2_acceptance_mode = "agent_sufficient"` (default `hard_gate` keeps retrying).
+
+`{{ build_status_path }}` is written after each attempt and overwritten by the next attempt for the same milestone.
+
+### Design Principles
+
+These principles drive how the gates are weighted; understanding them helps you decide what to fix first.
+
+- **Single source of truth.** `built` in `{{ build_status_path }}` is the only acceptance signal; checklists in this prompt are process aids.
+- **Real-world tolerance.** Milestones are extracted from real commit history and need not be perfect; whole-suite gates allow bounded drift, they do not demand zero noise.
+- **Patched tests are stricter.** Tests that the milestone commits actively touch are the ground-truth signal of the milestone — they should be 100% collected and exhibit demonstrable pass behavior. Use structured root-cause waivers only for blockers outside Dockerfile/test_config/environment scope, never for silent drops.
+- **Real env errors must be fixed.** `error` outcomes (import / setup / fixture / DB / resource crashes) are environment bugs — chase them. But a *catastrophic* error rate blocks built (hard ratio gate) while mid-level error only warns: don't mask errors to look clean, but don't expect a literal zero either — tests that error only because they reference src this milestone hasn't reached yet are exempt.
+- **Direction over thresholds.** This document states the *direction* each gate enforces. Active threshold values are configurable and live in the pipeline config — read `{{ build_status_path }}` for the active threshold, your current `value`, and `evidence` when a gate fails.
+- **Tests must pass for the right reason.** The benchmark exists to measure what milestone src commits do; any agent shortcut that bypasses milestone src changes destroys that measurement. The full rule — Q1 attribution test, role-vs-path file classification, hidden-vs-routed test discovery — lives in `patching.md.j2` Boundary rule. Defer to it for any classification call.
+- **Four exits, not infinite retry.** When a hard gate cannot be satisfied within "change HOW only" limits, agents have four structured exits — three documented in `{{ module2_waivers_path }}` (`bound_waivers` gate-attached + machine-verified, `unbound_issues` gate-orthogonal observations for Module 3, `agent_sufficient` declarative stop signal) plus `commit_signals` in `{{ module2_signals_path }}` (sandbox-empirical prescriptions for Module 3). Combined, these cover any unfixable scenario without needing to violate the previous principle. See workflow Phase 4.5.
+- **Waivers are M3-actionable, not pipeline-bypass.** Each `bound_waiver`'s `reason_code` tells Module 3 exactly what action to take (Path A: remove test; Path B: cherry-pick paired commit_signal; patched-data-quality: fix upstream). Without precise classification, M3 cannot act and the milestone stays broken across attempts. Pipeline rejects miscategorized waivers — fix the entry (symbol / path / rationale), don't switch `reason_code` to dodge the check. **Only 4 reason_codes exist** — there is no `dag_gap_acknowledged` / "Path C" escape hatch. If neither Path A nor Path B fits, document in `unbound_issues` (does NOT offset gates) and accept the gate failure honestly.
+- **Empirical over speculative.** Each `reason_code` has a git-verifiable fact that Pipeline checks automatically (`git log -S`, ancestry vs `{{ end_state }}`, anchor in symptom pool, symbol matches identifier regex, path is production source). Validate your claim BEFORE writing the waiver. Speculative entries — guessed SHAs, unverified symbols, cherry-picks never actually run — land in `invalid_bound_waivers` / `invalid_commit_signals` and waste a retry.
+- **Path B carries a heavy lift — MANDATORY paired commit_signal.** Every `bound_waiver` with `reason_code: feature_introduced_later` (Path B) is a promise that M3 can cherry-pick the introducing commit. Pipeline requires you to actually run the sandbox cherry-pick workflow (Exit 3) and emit a matching `commit_moves[]` entry with `status="verified"` whose `resolves.bound_waiver_ids` includes that waiver's `id`. Unpaired Path B waivers land in `invalid_bound_waivers` and surface in `raw_metrics.commit_signal_missing_warning`. If sandbox cherry-pick can't advance any candidate, mark the `commit_moves[]` entry `status="attempted_failed"` AND move the Path B waiver to `unbound_issues` (which does NOT offset gates) — let the gate fail honestly rather than fabricate a different `reason_code` to dodge the check.
+- **Empirical progress is durable.** `module2_signals.json :: commit_moves[]` is a **multi-attempt TODO log** with a `status` field per entry (`pending` / `verified` / `attempted_failed`). When you discover a future SHA via `git log -S`, write a `status="pending"` entry **immediately** (before sandboxing). Silent exit or context exhaustion between attempts must not lose the discovered SHA — the file survives. Each cherry-pick attempt updates the entry's status. Pipeline surfaces `raw_metrics.candidates_pending_count` so the next retry sees the unfinished work.
+- **One unbound_issue = one specific M3 action.** `unbound_issue.summary` names a specific root cause and `evidence.m3_action` names a specific action (cherry-pick a commit / split the milestone / accept failure). Generic catch-all entries ("broader behavior gaps") get flagged by retry self-audit. Pipeline warns when a single unbound_issue covers >100 distinct error_group reasons — split it.
+
+### Gate Groups
+
+#### Layer 1: BUILD & RUN INTEGRITY (binary)
+
+The pipeline chain and image structure must be trustworthy before test data is even worth looking at. All Layer 1 gates are binary.
+
+- `B_lint_block_clean` — Dockerfile carries no block-level lint violation (see `Dockerfile Rules` below).
+- `B_base_image_consistent` — `FROM` is exactly `{{ base_image }}`; do not swap in a generic language image or another milestone's image to dodge a base-image bug.
+- `B_image_exists` — the final milestone image is built and present in the docker daemon.
+- `B_state_tags_consistent` — START (`{{ base_state }}`) and END (`{{ end_state }}`) refs both check out cleanly inside the image, and the image's default `HEAD` is at the START state. Patches are committed and tags are moved.
+- `B_agent_completed` — the latest agent attempt finished normally (no timeout, no API error, no context overflow).
+- `B_tests_ran_successfully` — `run_milestone_tests` subprocess exited 0 and produced parseable `start.json`, `end.json`, and `classification.json`.
+
+#### Layer 2: TEST COLLECTION & RESULT QUALITY
+
+Layer 2 has two tiers of strictness. Patched-test gates require full collection; result-distribution gates tolerate moderate drift but reject patterns that hide tests instead of running them.
+
+##### Patched-test gates (strict — aim for full collection)
+
+The patched-test subset is the milestone's primary signal: tests the commits actually modified. Hold this subset to a higher bar than the whole suite.
+
+- `H_patched_completeness` — every patched test must appear in the results. **Aim for 100% collected.** If a root cause outside Module 2 makes one or more patched tests objectively unreachable at this milestone, record a structured waiver in `{{ module2_waivers_path }}` with an id, reason code, anchor evidence, and why Dockerfile/test_config work cannot fix it. A waiver is not permission to skip, filter, delete, or hide tests.
+- `H_patched_clean_signal` — patched tests must show demonstrable progress: enough of them resolve to a clean pass — `P→P`, `F→P`, or a src-driven gain `none→P` / `error→P` / `skipped→P` (a test that was absent / crashed / feature-skipped at START and passes at END once the milestone's own src adds the feature). Milestones where every patched test ends in fail / error / a *persistent* skip (`S→S`) do not represent a real change in behavior.
+
+##### Absolute Proportion Gates (Evaluated entirely within this milestone)
+
+These gates evaluate the internal composition of the milestone's results without referencing historical baselines. They ensure the environment is symmetrical, clean of setup crashes, and free of chaotic test churning.
+
+- `H_pass_to_pass_majority` — most tests should be stable pass-to-pass across START and END (**≥ 75%**). A large fraction flipping between the two states means the env is asymmetric (one side patched, the other not) or one baseline is broken.
+- `H_none_error_fail_to_pass_present` — at least one whole-suite test must produce a `fail_to_pass` transition between START and END. Other src-driven gains also qualify: newly-added tests that pass (`none_to_pass`), tests that errored at the baseline and now pass (`error_to_pass`), and tests that were feature-skipped at the baseline (`@skipUnlessDBFeature`) and now pass (`skipped_to_pass`). All provide concrete evidence the milestone changed observable behavior. Uses the raw attempt classification (not `stable_classification`) — this is an existence check, not a purity check, so flaky-but-improving tests still count as real signal. Milestones with no `fail_to_pass`, `none_to_pass`, `error_to_pass`, or `skipped_to_pass` events (suite entirely P→P, or pure src refactor with empty patched subset) provide no usable signal for downstream evaluation.
+- `H_error_within_budget` — `error` outcomes (import / fixture / setup / DB / resource crashes) are environment bugs. This is a **ratio** of persistent end-errors over end-collection, with two thresholds: the **hard** bar (≤ 0.10, blocks built) trips on a high error rate (catastrophic collapse, or > 10% persistent error) — fix it; a **soft** warning (> 0.05) flags mid-level error for you to chase. Errors that are absent at START because the milestone's own src wasn't applied yet (`error→pass`, `start_only`) are exempt — they're the milestone working, not an env bug. (Note: `error` is pytest-specific today; frameworks without it report ratio 0.)
+- `H_anomaly_aggregate` — aggregate of "should-be-rare" transitions: regressions (P→F), skip asymmetry (P→S, F→S, S→F — but **NOT** S→P, which is a src-driven positive signal counted like F→P), new tests that already break (none→F, none→S), and test churn (P→none, F→none, S→none). Catches mutual cancellation that snapshot-vs-base gates miss (e.g. P→F and F→P canceling out).
+
+##### Base-Relative Gates (Compared against the scenario base baseline)
+
+These gates compare the milestone's START / END results against the scenario's base baseline. Real milestones are noisy; the gates allow moderate drift but reject patterns that suggest the agent silenced tests instead of fixing them.
+
+- `H_total_not_below_base` — START and END collection totals should not drop materially below the base baseline. Catches `--ignore=...`, `SUBDIRS_TO_SKIP`, `addopts` filters, and import-error-induced file drops. More tests than base is fine — milestones may add tests.
+- `H_f2f_not_above_base` — stable assertion failures (fail-to-fail in both states). The **hard** gate is **patched-scoped**: the milestone's OWN tests' fail→fail rate (≤ 0.15) — that's what reflects whether its src made them pass. Whole-suite f2f is only a **soft** warning (it is dominated by ahead-of-src tests that fail at both START and END — not the milestone's defect). Don't chase whole-suite f2f down; focus on the milestone's own patched tests.
+- `H_s2s_not_above_base` — stable skips (skipped-to-skipped in both states) should not exceed the base skip ratio. Fewer than base is fine (milestone may have resolved conditional skips); a surge almost always means the agent added a skip filter or modified a fixture's skip condition.
+
+### When a gate cannot pass on its own
+
+When a hard gate cannot pass without violating the "Tests must pass for the right reason" principle, you have four structured exits — see `workflow.md.j2` Phase 4.5 for schemas and complete examples:
+
+- **bound_waivers** — for verifiable absences (test/symbol unreachable from milestone tags, stale nodeid, deleted-earlier test). Each entry attaches to a specific gate (`H_patched_completeness` or `H_error_within_budget`) and is machine-verified by pipeline. Once verified, the attached gate's evaluation includes the waivered entries as collected/budgeted, so the gate may pass.
+- **unbound_issues** — for trade-offs that cannot reduce to a single git fact and need natural-language description for Module 3 / human judgment: environment dependency that cannot be installed, runtime configuration changes you made for technical reasons, suspected DAG misalignment without a single attributable symbol, large F→F clusters sharing one root cause. Same intent as bound_waivers (documenting an unfixable trade-off) — different verification mechanism. Does NOT affect any gate's pass/fail. Lives in `{{ module2_waivers_path }} :: unbound_issues` — Module 3 reads the file directly. `build_status.json :: raw_metrics.unbound_issues_count` is a quick integer index of how many were declared.
+- **commit_signals** — for sandbox-empirical prescriptions: the agent has gone into a temporary sandbox branch, cherry-picked a candidate future commit, and verified the anchor test's failure point measurably advanced. Lives in `{{ module2_signals_path }}` (separate file from waivers). Pipeline runs SHA structure checks (`git rev-parse`, `git merge-base --is-ancestor`); successful entries count into `raw_metrics.commit_signals_count`, failing entries into `raw_metrics.invalid_commit_signals`. Does NOT affect any gate's pass/fail. The production Dockerfile must remain clean; the sandbox branch must be destroyed before declaring this exit.
+- **agent_sufficient** — declarative stop signal. Set `agent_sufficient.value = true` when `bound_waivers` + `unbound_issues` + `commit_signals` cover all remaining unfixable issues. Does NOT change `built` judgment (hard gates remain authoritative). Whether it triggers retry early-stop is config-driven via `module2_acceptance_mode` (default `hard_gate` keeps retrying; `agent_sufficient` enables early-stop with terminal status `module2_sufficient`).
+
+The most important rule: **do not bypass these exits by modifying test/source code to force a gate to pass.** That destroys the benchmark's measurement.
+
+### When a gate fails
+
+Read `{{ build_status_path }}` first. Each failed gate carries:
+
+- `passed: false`
+- `value`     — measured number for this milestone (when applicable)
+- `threshold` — active threshold (configurable; do not hardcode it in your fix)
+- `evidence`  — counts / IDs the pipeline used to compute `value`
+
+For long-form artifacts (per-test nodeids, error groupings, transition lists), follow `artifact_paths.latest_attempt` into `{{ test_results_dir }}/{{ m_id }}/refinement/{attempt}/`. `benchmark/{MID}_classification.json` and `benchmark/test_summary.json` are post-loop benchmark artifacts only, not Module 2 refinement evidence. The retry prompt surfaces the most relevant files for the failing gate.
+
+### Error and Fail Boundary
+
+Use this boundary consistently when debugging:
+
+- `error`: tests did not run normally. Examples include import/package errors, missing binary or service, bad test discovery, syntax/runtime setup failures, and test runner crashes.
+- `fail`: tests ran normally and an assertion or expected-behavior check failed.
+
+The classifier keeps `error` out of pass/fail/skipped transitions and records
+it as a per-state health signal.
+If you build a custom runner bridge, map framework setup/collection/import
+errors to report outcome `error`, not `failed`; only assertion failures
+should become `failed`.
+
+Environment work targets `error`. A `fail` may be an expected historical signal and should not be hidden by changing tests, deleting assertions, skipping tests, or broadening ignore patterns.
+
+### Dockerfile Rules
+
+`B_lint_block_clean` aggregates three tiers of lint signals. Tier 1 and 2 contribute to the block decision; tier 3 is recorded for audit but never blocks on its own.
+
+#### Tier 1 — Categorical block lints (unconditional bans)
+
+Triggered by command pattern; any occurrence blocks acceptance regardless of size or context. These are not threshold rules — there is no "small enough to be OK."
+
+- `no_delete`: do not delete repository files or test files to make the image pass.
+- `no_checkout_file`: do not use file-level checkout to revert individual source or test files.
+
+#### Tier 2 — Per-class numstat threshold lints (effect-based block)
+
+Computed from `git diff --numstat` between the pristine milestone SHAs and the built image, then bucketed through a path classifier (and for Rust, a hunk-level classifier that separates src from `#[cfg(test)]` inline test ranges). The threshold table covers only the **checked** classes — files classified into other classes are not threshold-evaluated:
+
+| file class (checked) | typical threshold direction | meaning |
+|---|---|---|
+| `python_src` / `java_src` / `go_src` / `js_src` | minimal (typical: ≤20 lines, no body replacement; exact threshold in pipeline config) | general-language src; non-src scaffolding (`sitecustomize`, `conftest`) is preferred over src edits |
+| `rust_src` | minimal (typical: ≤20 lines, no body replacement; exact threshold in pipeline config) | Rust src range, hunk-level (excludes `#[cfg(test)]` inline test ranges in the same file) |
+| `rust_inline_test` | 0 | Rust file's `#[cfg(test)]` mod range — equivalent to Test Content, no edits allowed |
+| `test_content` | 0 | test bodies, parametrize data, expected-value tables, assertion-target fixture models — paths matched by exclusion from `test_infra_patterns` under `{{ test_dir }}` |
+
+**Not threshold-checked** (freely modifiable per HOW-layer rules):
+
+- `test_infrastructure` — paths matching `test_infra_patterns` in `metadata.json` (e.g. `**/conftest.py`, `tests/runtests.py`, `**/jest.setup.js`). Modifiable scaffolding / setup hooks / runner harness.
+- `non_src_non_test` — paths outside both `repo_src_dirs` and `test_dirs` (e.g. `/tmp/sitecustomize.py`, newly added config files). Agent's free space.
+
+Two block sub-rules consume these thresholds:
+
+- `B_lint_block_clean::large_src_append`: per-class added-line cap exceeded. When triggered, re-apply the attribution test in `patching.md.j2` Boundary rule: edits whose only effect is restoring evaluability are allowed; edits that answer the test's behavioral question are a hard ban regardless of size, and the right path is a `bound_waiver` (`reason_code: feature_introduced_later` with `attached_gates: ["H_patched_completeness"]`) paired with the MANDATORY `commit_signal` from sandbox cherry-pick (Exit 3 in workflow Phase 4.5). **The lint is not a separate rule, and not a warning to argue with — it is a prompt to reapply the attribution test.**
+- `B_lint_block_clean::src_function_replaced`: replacing the body of an existing source function (signature change + body rewrite) always fails the attribution test — an existing method body with new logic changes why tests pass or fail. Modifying widely-used functions taints transition statistics across the entire suite.
+
+#### Tier 3 — Warn-level audit signals (recorded, not blocking)
+
+These do not fail `B_lint_block_clean` on their own. They surface in retry context to help diagnose patterns that often precede tier 1 / tier 2 violations.
+
+- `indirect_src_modify`: a heredoc creates a temp Python script that writes into a src directory. Numstat would still catch the resulting diff, but this signal attributes it to a specific obfuscation pattern.
+- `patch_not_committed`: an environment patch was applied without the `git add -A && git commit && git tag -f` sequence. Patches that miss the commit + retag step are also caught downstream by `B_state_tags_consistent`; this warn is an earlier hint.
+
+### Agent Checklist Boundary
+
+The final checklist below is not an acceptance report. Items marked `[verified by hard_gate: ...]` point to pipeline checks. Items marked `[process only]` are instructions for how to work.
