@@ -3,7 +3,7 @@
 > Automated agentic pipeline for synthesizing long-horizon coding tasks from the
 > commit histories of open-source repositories.
 
-DeepCommit powers the **EvoClaw** benchmark for evaluating AI agents on continuous
+DeepCommit powers the **SWE-Milestone** benchmark for evaluating AI agents on continuous
 software evolution ([paper](https://arxiv.org/abs/2603.13428)).
 
 [![CI](https://github.com/DeepCommit-ai/DeepCommit/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepCommit-ai/DeepCommit/actions/workflows/ci.yml)
@@ -52,8 +52,7 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and ou
 
 ## Citation
 
-If you use DeepCommit or the EvoClaw benchmark, please cite the paper (see
-[CITATION.cff](CITATION.cff)):
+If you enjoy DeepCommit or SWE-Milestone, please cite our paper:
 
 ```bibtex
 @misc{deng2026evoclaw,
