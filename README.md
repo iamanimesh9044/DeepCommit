@@ -55,17 +55,14 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and ou
 If you enjoy DeepCommit or SWE-Milestone, please cite our paper:
 
 ```bibtex
-@misc{deng2026evoclaw,
-  title         = {EvoClaw: Evaluating AI Agents on Continuous Software Evolution},
-  author        = {Deng, Gangda and Chen, Zhaoling and Yu, Zhongming and Fan, Haoyang
-                   and Liu, Yuhong and Yang, Yuxin and Parikh, Dhruv and Kannan, Rajgopal
-                   and Cong, Le and Wang, Mengdi and Zhang, Qian and Prasanna, Viktor
-                   and Tang, Xiangru and Wang, Xingyao},
-  year          = {2026},
-  eprint        = {2603.13428},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.SE},
-  url           = {https://arxiv.org/abs/2603.13428}
+@misc{deng2026swemilestoneevaluatingaiagents,
+      title={SWE-Milestone: Evaluating AI Agents on Continuous Software Evolution},
+      author={Gangda Deng and Zhaoling Chen and Zhongming Yu and Haoyang Fan and Yuhong Liu and Yuxin Yang and Dhruv Parikh and Rajgopal Kannan and Le Cong and Mengdi Wang and Qian Zhang and Viktor Prasanna and Xiangru Tang and Xingyao Wang},
+      year={2026},
+      eprint={2603.13428},
+      archivePrefix={arXiv},
+      primaryClass={cs.SE},
+      url={https://arxiv.org/abs/2603.13428},
 }
 ```
 
