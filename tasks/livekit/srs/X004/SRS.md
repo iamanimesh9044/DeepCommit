@@ -5,8 +5,8 @@ DRAFT, generated from gold commit messages. Not human-verified, not dry-run.
 The media server must recover lost RTP packets using FlexFEC (FEC) protection streams, and report FEC activity in RTP statistics.
 
 ## Repos and order
-1. **protocol (Go/proto):** RTP statistics message gains FEC counters: FEC packets received, FEC bytes, FEC packets recovered, FEC packets discarded.
-2. **livekit server (Go):** depends on the new protocol fields. Adds FlexFEC recovery for uplink streams and fills the new counters.
+1. **protocol (Go/proto), already in the workspace as context:** RTP statistics message gains FEC counters: FEC packets received, FEC bytes, FEC packets recovered, FEC packets discarded.
+2. **livekit server (Go), your work:** depends on the protocol fields above. Adds FlexFEC recovery for uplink streams and fills the new counters.
 
 ## Requirements
 - FR1: Negotiate FlexFEC from the SDP; FEC stream pairing must handle whitespace and malformed or missing ssrc groups without failing.

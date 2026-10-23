@@ -5,8 +5,8 @@ DRAFT, generated from gold commit messages. Not human-verified, not dry-run.
 Agents hold durable conversations ("threads") with people. The protocol repo defines the thread data model and auth grant; the Rust SDK consumes it and exposes clients. This milestone crosses a language boundary (Go/proto to Rust).
 
 ## Repos and order
-1. **protocol (Go/proto):** thread messages (the durable conversation), a thread grant carried in access tokens, new id prefixes for threads and their items; the agent-db service moves from Twirp to internal gRPC (its Twirp service is removed).
-2. **rust-sdks (Rust):** the Rust protocol crate exposes the agent package; the token crate supports agent and thread grants; the API crate gains thread and database service clients. The Rust protocol submodule pin moves to a protocol commit that includes step 1.
+1. **protocol (Go/proto), already in the workspace as context:** thread messages (the durable conversation), a thread grant carried in access tokens, new id prefixes for threads and their items; the agent-db service moves from Twirp to internal gRPC (its Twirp service is removed).
+2. **rust-sdks (Rust), your work:** the Rust protocol crate exposes the agent package; the token crate supports agent and thread grants; the API crate gains thread and database service clients. The Rust protocol submodule pin moves to a protocol commit that includes step 1.
 
 ## Requirements
 - FR1 (protocol): thread grant round-trips through access tokens (encode and decode).

@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 HASH = re.compile(r"-[0-9a-f]{16}\b")
+INDEXED = re.compile(r"/\d+/[^/]+$")   # map-order subtests such as Test/9/name, whose names change between runs
 
 
 def norm(d):
@@ -25,7 +26,9 @@ def clean(start, end):
         parts = t.split("/")
         anc = ["/".join(parts[:i]) for i in range(1, len(parts))]
         one_sided = (s is None) != (e is None)
-        if one_sided and any(x in both_pass for x in anc):
+        if INDEXED.search(t):
+            b["dropped_unstable"].append(t)
+        elif one_sided and any(x in both_pass for x in anc):
             b["dropped_unstable"].append(t)
         elif s == "passed" and e == "passed": b["pass_to_pass"].append(t)
         elif s == "failed" and e == "passed": b["fail_to_pass"].append(t)

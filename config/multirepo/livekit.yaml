@@ -19,6 +19,7 @@ dependents:
     lang: rust
     local: /private/tmp/claude-501/-Users-iamanimesh-workspace-csf-data/8795c4c0-8aa1-4b8d-b3a3-bb6cd475f7bb/scratchpad/lk/rust-sdks
     pin: {kind: submodule, path: livekit-protocol/protocol}
+    test_crates: [livekit-api, livekit-token, livekit-protocol]
 generated:                              # regexes; matching files are ignored as evidence
   - '\.pb\.go$'
   - '\.twirp\.go$'

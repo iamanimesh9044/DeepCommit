@@ -1,0 +1,42 @@
+{
+ "fail_to_pass": [],
+ "none_to_pass": [
+  "/target/debug/deps/livekit_api/public_api::tests::public_api_url_from_project_url",
+  "/target/debug/deps/livekit_token/access_token::tests::test_agent_grants_claim_names",
+  "/target/debug/deps/threads/get_thread_request"
+ ],
+ "pass_to_pass": [
+  "/target/debug/deps/livekit_api/services::api_test::agent_dispatch_smoke",
+  "/target/debug/deps/livekit_api/services::api_test::all_unavailable",
+  "/target/debug/deps/livekit_api/services::api_test::attempts_gating_and_timeout_guard",
+  "/target/debug/deps/livekit_api/services::api_test::client_error_not_retried",
+  "/target/debug/deps/livekit_api/services::api_test::connector_smoke",
+  "/target/debug/deps/livekit_api/services::api_test::create_room_echoes_fields",
+  "/target/debug/deps/livekit_api/services::api_test::disabled",
+  "/target/debug/deps/livekit_api/services::api_test::egress_smoke",
+  "/target/debug/deps/livekit_api/services::api_test::healthy",
+  "/target/debug/deps/livekit_api/services::api_test::ingress_smoke",
+  "/target/debug/deps/livekit_api/services::api_test::non_sip_error_not_decoded",
+  "/target/debug/deps/livekit_api/services::api_test::not_cloud_host",
+  "/target/debug/deps/livekit_api/services::api_test::primary_unavailable",
+  "/target/debug/deps/livekit_api/services::api_test::region_discovery_unreachable",
+  "/target/debug/deps/livekit_api/services::api_test::room_mute_track",
+  "/target/debug/deps/livekit_api/services::api_test::room_smoke",
+  "/target/debug/deps/livekit_api/services::api_test::sip_busy",
+  "/target/debug/deps/livekit_api/services::api_test::sip_declined",
+  "/target/debug/deps/livekit_api/services::api_test::sip_dial_timeout",
+  "/target/debug/deps/livekit_api/services::api_test::sip_no_answer",
+  "/target/debug/deps/livekit_api/services::api_test::sip_participant",
+  "/target/debug/deps/livekit_api/services::api_test::sip_smoke",
+  "/target/debug/deps/livekit_api/services::api_test::sip_transfer",
+  "/target/debug/deps/livekit_api/services::api_test::token_auth",
+  "/target/debug/deps/livekit_api/services::api_test::transport_error_failover",
+  "/target/debug/deps/livekit_api/services::api_test::two_regions_unavailable",
+  "/target/debug/deps/livekit_api/services::twirp_client::normalize_host_tests::normalizes_ws_schemes",
+  "/target/debug/deps/livekit_token/access_token::tests::test_access_token",
+  "/target/debug/deps/livekit_token/access_token::tests::test_agent_grant_and_kind",
+  "/target/debug/deps/livekit_token/access_token::tests::test_defaults_are_not_serialized",
+  "/target/debug/deps/livekit_token/access_token::tests::test_unverified_token",
+  "/target/debug/deps/livekit_token/access_token::tests::test_verify_token_with_room_config"
+ ]
+}
