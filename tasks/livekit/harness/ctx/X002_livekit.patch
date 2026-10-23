@@ -1,0 +1,4281 @@
+diff --git a/.github/scripts/go-version.sh b/.github/scripts/go-version.sh
+new file mode 100755
+index 00000000..9ce6fab1
+--- /dev/null
++++ b/.github/scripts/go-version.sh
+@@ -0,0 +1,50 @@
++#!/usr/bin/env bash
++# Copyright 2026 LiveKit, Inc.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++#
++# Print the Go toolchain version pinned by a Dockerfile's golang builder image.
++#
++#   usage: .github/scripts/go-version.sh [dockerfile]   (default: Dockerfile)
++#
++# The pinned `golang:X.Y.Z-alpineA.B@sha256:...` builder image is the single source
++# of truth, and Renovate keeps it current via an approvable PR. Each workflow reads
++# the version out of the Dockerfile it builds against (setup-go cannot parse a
++# Dockerfile itself), so a job's Go runtime always matches the image it produces.
++#
++# Deliberately NOT derived from go.mod's `go` directive: that is the module
++# minimum, owned by the toolchain and by dependency requirements, and the go
++# command may rewrite it to a bare major.minor.
++set -euo pipefail
++
++dockerfile="${1:-Dockerfile}"
++
++if [ ! -f "$dockerfile" ]; then
++  echo "$dockerfile: no such file" >&2
++  exit 1
++fi
++
++version=$(sed -nE 's/^FROM[[:space:]]+golang:([0-9]+\.[0-9]+\.[0-9]+)[^[:space:]]*.*/\1/p' "$dockerfile" | sort -u)
++
++if [ -z "$version" ]; then
++  echo "$dockerfile: no pinned 'FROM golang:X.Y.Z-...' base image found" >&2
++  exit 1
++fi
++
++if [ "$(printf '%s\n' "$version" | wc -l)" -ne 1 ]; then
++  echo "$dockerfile pins more than one Go version: $(echo $version)" >&2
++  exit 1
++fi
++
++echo "$version"
+diff --git a/.github/workflows/buildtest.yaml b/.github/workflows/buildtest.yaml
+index 250bc7b5..b11478cd 100644
+--- a/.github/workflows/buildtest.yaml
++++ b/.github/workflows/buildtest.yaml
+@@ -35,29 +35,34 @@ jobs:
+           auto-start: true
+       - run: redis-cli ping
+ 
++      # Test with the same Go toolchain the published image is built with
++      - name: Resolve Go version
++        id: go-version
++        run: |
++          # Assign first so a failed lookup trips `set -e`; inside echo its exit
++          # status would be discarded and an empty version written.
++          version=$(.github/scripts/go-version.sh Dockerfile)
++          echo "version=$version" >> "$GITHUB_OUTPUT"
++
+       - name: Set up Go
+         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+         with:
+-          go-version: "^1.26"
+-
+-      - name: Set up gotestfmt
+-        run: go install github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@v2.4.1
++          go-version: ${{ steps.go-version.outputs.version }}
+ 
+       - name: Replace mutexes
+         run: |
+           go get github.com/sasha-s/go-deadlock
+           grep -rl sync.Mutex ./pkg | xargs sed -i 's/sync\.Mutex/deadlock\.Mutex/g'
+           grep -rl sync.RWMutex ./pkg | xargs sed -i 's/sync\.RWMutex/deadlock\.RWMutex/g'
+-          go install golang.org/x/tools/cmd/goimports@latest
+-          grep -rl deadlock.Mutex ./pkg | xargs goimports -w
+-          grep -rl deadlock.RWMutex ./pkg | xargs goimports -w
++          grep -rl deadlock.Mutex ./pkg | xargs go tool goimports -w
++          grep -rl deadlock.RWMutex ./pkg | xargs go tool goimports -w
+           go mod tidy
+ 
++      # Run mage at the version go.mod pins, rather than the mage-action's
++      # `version: latest`, so the binary matches the mage/mg library the magefile is
++      # compiled against and Renovate owns the version like any other module.
+       - name: Mage Build
+-        uses: magefile/mage-action@a662bd8c29d8106879588cfff83b2faf6e6f59db # v4
+-        with:
+-          version: latest
+-          args: build
++        run: go run github.com/magefile/mage build
+ 
+       - name: Lint
+         uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9.2.0
+@@ -67,7 +72,7 @@ jobs:
+       - name: Test
+         run: |
+           set -euo pipefail
+-          MallocNanoZone=0 go test -race -json -v ./... 2>&1 | tee /tmp/gotest.log | gotestfmt
++          MallocNanoZone=0 go test -race -json -v ./... 2>&1 | tee /tmp/gotest.log | go tool gotestfmt
+ 
+       # Upload the original go test log as an artifact for later review.
+       - name: Upload test log
+diff --git a/.github/workflows/docker.yaml b/.github/workflows/docker.yaml
+index d9b9397e..72a51013 100644
+--- a/.github/workflows/docker.yaml
++++ b/.github/workflows/docker.yaml
+@@ -43,19 +43,28 @@ jobs:
+             type=semver,pattern=v{{version}}
+             type=semver,pattern=v{{major}}.{{minor}}
+ 
++      # Generate with the same Go toolchain the published image is built with
++      - name: Resolve Go version
++        id: go-version
++        run: |
++          # Assign first so a failed lookup trips `set -e`; inside echo its exit
++          # status would be discarded and an empty version written.
++          version=$(.github/scripts/go-version.sh Dockerfile)
++          echo "version=$version" >> "$GITHUB_OUTPUT"
++
+       - name: Set up Go
+         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+         with:
+-          go-version-file: "go.mod"
++          go-version: ${{ steps.go-version.outputs.version }}
+ 
+       - name: Download Go modules
+         run: go mod download
+ 
++      # Run mage at the version go.mod pins, rather than the mage-action's
++      # `version: latest`, so the binary matches the mage/mg library the magefile is
++      # compiled against and Renovate owns the version like any other module.
+       - name: Generate code
+-        uses: magefile/mage-action@a662bd8c29d8106879588cfff83b2faf6e6f59db # v4
+-        with:
+-          version: latest
+-          args: generate
++        run: go run github.com/magefile/mage generate
+ 
+       - name: Set up Docker Buildx
+         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+diff --git a/.github/workflows/release.yaml b/.github/workflows/release.yaml
+index 0cad9185..c19e1411 100644
+--- a/.github/workflows/release.yaml
++++ b/.github/workflows/release.yaml
+@@ -32,10 +32,19 @@ jobs:
+       - name: Fetch all tags
+         run: git fetch --force --tags
+ 
++      # Release with the same Go toolchain the published image is built with
++      - name: Resolve Go version
++        id: go-version
++        run: |
++          # Assign first so a failed lookup trips `set -e`; inside echo its exit
++          # status would be discarded and an empty version written.
++          version=$(.github/scripts/go-version.sh Dockerfile)
++          echo "version=$version" >> "$GITHUB_OUTPUT"
++
+       - name: Set up Go
+         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+         with:
+-          go-version-file: "go.mod"
++          go-version: ${{ steps.go-version.outputs.version }}
+ 
+       - name: Run GoReleaser
+         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7
+diff --git a/Dockerfile b/Dockerfile
+index 4fb0a92f..c71b191d 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -12,7 +12,12 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
+-FROM golang:1.26-alpine AS builder
++# Pinned by digest so the build is reproducible even if the tag is republished.
++# The tag is kept alongside it for readability; Renovate updates both together.
++# This image is also the single source of truth for the Go toolchain: CI reads the
++# version out of this line (see .github/scripts/go-version.sh) so tests and images
++# always run the same runtime.
++FROM golang:1.26.6-alpine3.24@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS builder
+ 
+ ARG TARGETPLATFORM
+ ARG TARGETARCH
+@@ -20,6 +25,10 @@ RUN echo building for "$TARGETPLATFORM"
+ 
+ WORKDIR /workspace
+ 
++# Build with exactly the toolchain in this image; fail (don't silently download)
++# if go.mod ever requires a newer version, so the pinned image stays authoritative.
++ENV GOTOOLCHAIN=local
++
+ # Copy the Go Modules manifests
+ COPY go.mod go.mod
+ COPY go.sum go.sum
+@@ -31,12 +40,20 @@ RUN go mod download
+ COPY cmd/ cmd/
+ COPY pkg/ pkg/
+ COPY test/ test/
+-COPY tools/ tools/
+ COPY version/ version/
+ 
+ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH GO111MODULE=on go build -a -o livekit-server ./cmd/server
+ 
+-FROM alpine
++FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
++
++# Pull the latest security patches for base packages within the pinned Alpine
++# release. The digest above is only refreshed by a Renovate PR, so without this
++# an image can ship base-package CVEs that Alpine has already fixed.
++# NOTE: this relies on the build starting with a cold layer cache, which is true
++# today because the release workflow configures no buildx cache. If cache-from/
++# cache-to is ever added, this layer needs a cache-busting ARG (as ../cloud does
++# with SECURITY_REFRESH) or it will be served stale.
++RUN apk upgrade --no-cache
+ 
+ COPY --from=builder /workspace/livekit-server /livekit-server
+ 
+diff --git a/cmd/test-server/Dockerfile b/cmd/test-server/Dockerfile
+index 0182aade..e0dc826d 100644
+--- a/cmd/test-server/Dockerfile
++++ b/cmd/test-server/Dockerfile
+@@ -14,12 +14,19 @@
+ 
+ # Mock LiveKit API server for SDK conformance testing. Build from the repo
+ # root:  docker build -f cmd/test-server/Dockerfile -t livekit/test-server .
+-FROM golang:1.26-alpine AS builder
++#
++# Pinned by digest so the build is reproducible even if the tag is republished.
++# The tag is kept alongside it for readability; Renovate updates both together.
++FROM golang:1.26.6-alpine3.24@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS builder
+ 
+ ARG TARGETARCH
+ 
+ WORKDIR /workspace
+ 
++# Build with exactly the toolchain in this image; fail (don't silently download)
++# if go.mod ever requires a newer version, so the pinned image stays authoritative.
++ENV GOTOOLCHAIN=local
++
+ COPY go.mod go.mod
+ COPY go.sum go.sum
+ RUN go mod download
+@@ -30,7 +37,12 @@ COPY version/ version/
+ 
+ RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH GO111MODULE=on go build -a -o livekit-test-server ./cmd/test-server
+ 
+-FROM alpine
++FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
++
++# Pull the latest security patches for base packages within the pinned Alpine
++# release; the digest above is only refreshed by a Renovate PR. See the note in
++# the repo-root Dockerfile about the cold-cache assumption.
++RUN apk upgrade --no-cache
+ 
+ COPY --from=builder /workspace/livekit-test-server /livekit-test-server
+ 
+diff --git a/config-sample.yaml b/config-sample.yaml
+index 870a4fa2..1cbf8a9e 100644
+--- a/config-sample.yaml
++++ b/config-sample.yaml
+@@ -300,6 +300,10 @@ keys:
+ #   # set UDP port range for TURN relay to connect to LiveKit SFU, by default it uses a any available port
+ #   relay_range_start: 1024
+ #   relay_range_end: 30000
++#   # caps the number of concurrent relay allocations a single participant credential may hold.
++#   # prevents one authenticated participant from exhausting the shared relay-port range for everyone else.
++#   # defaults to 12; a value <= 0 disables the quota.
++#   per_user_relay_allocation_limit: 12
+ #   # set external_tls to true if using a L4 load balancer to terminate TLS. when enabled,
+ #   # LiveKit expects unencrypted traffic on tls_port, and still advertise tls_port as a TURN/TLS candidate.
+ #   external_tls: true
+@@ -376,3 +380,12 @@ keys:
+ #   max_room_name_length: 0
+ #   # limit length of participant identity
+ #   max_participant_identity_length: 0
++#   # max size (bytes) of a single client-facing signalling WebSocket message; oversized
++#   # frames are rejected by the transport before being buffered. defaults to 2 MiB, 0 for no limit
++#   signal_message_size_limit: 2097152
++#   # same as above, but for agent worker WebSocket connections. defaults to 2 MiB, 0 for no limit
++#   agent_signal_message_size_limit: 2097152
++#   # max size (bytes) of an HTTP request body on the main API listener (Twirp room/egress/ingress/SIP
++#   # routes). requests larger than this are rejected before their body is decoded, so large messages
++#   # cannot exhaust memory. defaults to 10 MiB, 0 for no limit
++#   max_api_request_body_size: 10485760
+diff --git a/go.mod b/go.mod
+index d2f1ac99..5802a856 100644
+--- a/go.mod
++++ b/go.mod
+@@ -21,13 +21,12 @@ require (
+ 	github.com/jxskiss/base62 v1.1.0
+ 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
+ 	github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0
+-	github.com/livekit/protocol v1.50.5-0.20260805073019-6c35920ed51c
++	github.com/livekit/protocol v1.50.5-0.20260818023635-24e126c61d3e
+ 	github.com/livekit/psrpc v0.7.3
+ 	github.com/mackerelio/go-osstat v0.2.8
+ 	github.com/magefile/mage v1.17.2
+-	github.com/maxbrunsfeld/counterfeiter/v6 v6.12.2
+ 	github.com/mitchellh/go-homedir v1.1.0
+-	github.com/moby/moby/client v0.5.0
++	github.com/moby/moby/client v0.5.1
+ 	github.com/olekukonko/tablewriter v1.1.4
+ 	github.com/ory/dockertest/v4 v4.0.0
+ 	github.com/pion/datachannel v1.6.2
+@@ -45,7 +44,7 @@ require (
+ 	github.com/prometheus/client_golang v1.24.1
+ 	github.com/redis/go-redis/v9 v9.22.0
+ 	github.com/rs/cors v1.11.1
+-	github.com/stretchr/testify v1.11.1
++	github.com/stretchr/testify v1.12.0
+ 	github.com/thoas/go-funk v0.9.3
+ 	github.com/tomnomnom/linkheader v0.0.0-20250811210735-e5fe3b51442e
+ 	github.com/twitchtv/twirp v8.1.3+incompatible
+@@ -62,7 +61,7 @@ require (
+ 
+ require (
+ 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
+-	github.com/cilium/ebpf v0.16.0 // indirect
++	github.com/cilium/ebpf v0.22.0 // indirect
+ 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
+ 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+ 	github.com/containerd/errdefs v1.0.0 // indirect
+@@ -73,14 +72,17 @@ require (
+ 	github.com/go-logr/stdr v1.2.2 // indirect
+ 	github.com/goccy/go-json v0.10.6 // indirect
+ 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
++	github.com/gotesttools/gotestfmt/v2 v2.4.1 // indirect
+ 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
+ 	github.com/mattn/go-colorable v0.1.15 // indirect
+ 	github.com/mattn/go-isatty v0.0.22 // indirect
++	github.com/maxbrunsfeld/counterfeiter/v6 v6.12.2 // indirect
+ 	github.com/moby/moby/api v1.55.0 // indirect
+ 	github.com/nyaruka/phonenumbers v1.8.1 // indirect
+ 	github.com/olekukonko/cat v0.0.0-20250911104152-50322a0618f6 // indirect
+ 	github.com/olekukonko/errors v1.3.0 // indirect
+ 	github.com/olekukonko/ll v0.1.8 // indirect
++	github.com/petermattis/goid v0.0.0-20260725062400-500c67a39b75 // indirect
+ 	github.com/puzpuzpuz/xsync/v4 v4.5.0 // indirect
+ 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+ 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
+@@ -93,6 +95,7 @@ require (
+ 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
+ 	go.yaml.in/yaml/v3 v3.0.5 // indirect
+ 	golang.org/x/exp v0.0.0-20260727155853-b88d891fe743 // indirect
++	golang.org/x/telemetry v0.0.0-20260708182218-49f421fb7959 // indirect
+ 	golang.org/x/time v0.15.0 // indirect
+ )
+ 
+@@ -106,7 +109,6 @@ require (
+ 	github.com/benbjohnson/clock v1.3.5 // indirect
+ 	github.com/beorn7/perks v1.0.1 // indirect
+ 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+-	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+ 	github.com/docker/go-connections v0.7.0 // indirect
+ 	github.com/docker/go-units v0.5.0 // indirect
+ 	github.com/fsnotify/fsnotify v1.10.1 // indirect
+@@ -153,3 +155,16 @@ require (
+ 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
+ 	google.golang.org/grpc v1.83.0 // indirect
+ )
++
++tool (
++	github.com/google/wire/cmd/wire
++	github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt
++	github.com/maxbrunsfeld/counterfeiter/v6
++	golang.org/x/tools/cmd/goimports
++)
++
++replace github.com/pion/webrtc/v4 => github.com/livekit/webrtc-pion/v4 v4.2.18-warp.1
++
++replace github.com/pion/dtls/v3 => github.com/livekit/dtls/v3 v3.1.5-warp.1
++
++replace github.com/pion/ice/v4 => github.com/livekit/ice/v4 v4.4.0-warp.1
+diff --git a/go.sum b/go.sum
+index b11dbfce..7d957ef3 100644
+--- a/go.sum
++++ b/go.sum
+@@ -29,8 +29,8 @@ github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XL
+ github.com/cilium/ebpf v0.5.0/go.mod h1:4tRaxcgiL706VnOzHOdBlY8IEAIdxINsQBcU4xJJXRs=
+ github.com/cilium/ebpf v0.7.0/go.mod h1:/oI2+1shJiTGAMgl6/RgJr36Eo1jzrRcAWbcXO2usCA=
+ github.com/cilium/ebpf v0.8.1/go.mod h1:f5zLIM0FSNuAkSyLAN7X+Hy6yznlF1mNiWUMfxMtrgk=
+-github.com/cilium/ebpf v0.16.0 h1:+BiEnHL6Z7lXnlGUsXQPPAE7+kenAd4ES8MQ5min0Ok=
+-github.com/cilium/ebpf v0.16.0/go.mod h1:L7u2Blt2jMM/vLAVgjxluxtBKlz3/GWjB0dMOEngfwE=
++github.com/cilium/ebpf v0.22.0 h1:v2ktp0roffpMOj2MMf3idtCQZOsAoC4BJbAJN+ke2bY=
++github.com/cilium/ebpf v0.22.0/go.mod h1:CDzZbe2hC5JjlDC+CY3KFCzlYwN4gbxppYM+Z10bQt4=
+ github.com/clipperhouse/displaywidth v0.11.0 h1:lBc6kY44VFw+TDx4I8opi/EtL9m20WSEFgwIwO+UVM8=
+ github.com/clipperhouse/displaywidth v0.11.0/go.mod h1:bkrFNkf81G8HyVqmKGxsPufD3JhNl3dSqnGhOoSD/o0=
+ github.com/clipperhouse/uax29/v2 v2.7.0 h1:+gs4oBZ2gPfVrKPthwbMzWZDaAFPGYK72F0NJv2v7Vk=
+@@ -44,8 +44,6 @@ github.com/d5/tengo/v2 v2.17.0 h1:BWUN9NoJzw48jZKiYDXDIF3QrIVZRm1uV1gTzeZ2lqM=
+ github.com/d5/tengo/v2 v2.17.0/go.mod h1:XRGjEs5I9jYIKTxly6HCF8oiiilk5E/RYXOZ5b0DZC8=
+ github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+ github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+-github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
+-github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+ github.com/dennwc/iters v1.2.2 h1:XH2/Etihiy9ZvPOVCR+icQXeYlhbvS7k0qro4x/2qQo=
+ github.com/dennwc/iters v1.2.2/go.mod h1:M9KuuMBeyEXYTmB7EnI9SCyALFCmPWOIxn5W1L0CjGg=
+ github.com/distribution/reference v0.6.0 h1:0IXCQ5g4/QMHHkarYzh5l+u8T3t73zM5QvfrDyIgxBk=
+@@ -107,6 +105,8 @@ github.com/google/wire v0.7.0 h1:JxUKI6+CVBgCO2WToKy/nQk0sS+amI9z9EjVmdaocj4=
+ github.com/google/wire v0.7.0/go.mod h1:n6YbUQD9cPKTnHXEBN2DXlOp/mVADhVErcMFb0v3J18=
+ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+ github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
++github.com/gotesttools/gotestfmt/v2 v2.4.1 h1:Ml+KPqPocp/KckpizL+tgsy/dlddI4/z2w6lgS7YIFE=
++github.com/gotesttools/gotestfmt/v2 v2.4.1/go.mod h1:oQJg2KZ2aGoqEbMC2PDaAeBYm0tOkocgixK9FzsCdp4=
+ github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF28c5ZQfqCBQ5g2xfk=
+ github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0/go.mod h1:Hyl3n6Twe1hvtd9XUXDec4pTvgMSEixRuQKPTMH2bNs=
+ github.com/hashicorp/go-cleanhttp v0.5.2 h1:035FKYIWjmULyFRBKPs8TBQoi0x6d9G4xc9neXJWAZQ=
+@@ -156,14 +156,20 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
+ github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
+ github.com/lithammer/shortuuid/v4 v4.2.0 h1:LMFOzVB3996a7b8aBuEXxqOBflbfPQAiVzkIcHO0h8c=
+ github.com/lithammer/shortuuid/v4 v4.2.0/go.mod h1:D5noHZ2oFw/YaKCfGy0YxyE7M0wMbezmMjPdhyEFe6Y=
++github.com/livekit/dtls/v3 v3.1.5-warp.1 h1:5jo2qQreDnUrgw6Al1F+9xVyXHvWQ2IaQkjF53FHEyU=
++github.com/livekit/dtls/v3 v3.1.5-warp.1/go.mod h1:gz1K4jg6c+fq86oQMH4pilpCEOEPwmEr2jY+VcF/mkU=
++github.com/livekit/ice/v4 v4.4.0-warp.1 h1:P9Y1f02VVx6kkRJxY3jzoS7HnblFbYkgMwiu6iOqCOU=
++github.com/livekit/ice/v4 v4.4.0-warp.1/go.mod h1:obAyD+J+Hzs7QA7Y8YXHp5uIn6gb7z87pKedXZkrcFU=
+ github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 h1:9x+U2HGLrSw5ATTo469PQPkqzdoU7be46ryiCDO3boc=
+ github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731/go.mod h1:Rs3MhFwutWhGwmY1VQsygw28z5bWcnEYmS1OG9OxjOQ=
+ github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0 h1:XHNNzebIKZRkLimla/hFGrAIX5EMWHctrgt3hLw7s+I=
+ github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0/go.mod h1:o8CFmAdrVwzJNOCsQCLUzXRjokkufNshnQHOe4fRaqU=
+-github.com/livekit/protocol v1.50.5-0.20260805073019-6c35920ed51c h1:s/DmilyBXEqM02LvZMnaAIK8IfxhTXjMkSNSuWwe8+c=
+-github.com/livekit/protocol v1.50.5-0.20260805073019-6c35920ed51c/go.mod h1:DeGUkqNGJhLz16DOP3MfKrJtYn/1PiYfrQMsJb3rzDs=
++github.com/livekit/protocol v1.50.5-0.20260818023635-24e126c61d3e h1:DHSagaJXDSrnqfOuwNLby2r+VIknFJxvJzAazm9Tdh8=
++github.com/livekit/protocol v1.50.5-0.20260818023635-24e126c61d3e/go.mod h1:h4wP4IBPkT5aew7SZSGViHSmanKAiKWsHij/5YfL4BE=
+ github.com/livekit/psrpc v0.7.3 h1:bekuZt/ZQzg8+/M8G6G5jq7bvV9fAKdPHSOZeTwrIIc=
+ github.com/livekit/psrpc v0.7.3/go.mod h1:rAI+m2+/cb4x9RXhLRtUx5ZwdfjjXOl4zi46IjEetaw=
++github.com/livekit/webrtc-pion/v4 v4.2.18-warp.1 h1:fH+v4W+NFp9FfPzON6FaUFNmazGcctaAhb2P+Ksf+1s=
++github.com/livekit/webrtc-pion/v4 v4.2.18-warp.1/go.mod h1:rbKGHo2OpNUImWTvRIV776/3xjjq/t47H3IZiTtwluc=
+ github.com/mackerelio/go-osstat v0.2.8 h1:I2duicTaCGWoM53XwAwA9OIe1inu0xnVs8/pqOWWVr4=
+ github.com/mackerelio/go-osstat v0.2.8/go.mod h1:SyS3XxKdoSKJnTGTkN5Yrh6VUQVuAURACfE6y+2DN4k=
+ github.com/magefile/mage v1.17.2 h1:fyXVu1eadI8Ap1HCCNgEhJ5McIWiYhLR8uol64ZZc40=
+@@ -201,8 +207,8 @@ github.com/moby/docker-image-spec v1.3.1 h1:jMKff3w6PgbfSa69GfNg+zN/XLhfXJGnEx3N
+ github.com/moby/docker-image-spec v1.3.1/go.mod h1:eKmb5VW8vQEh/BAr2yvVNvuiJuY6UIocYsFu/DxxRpo=
+ github.com/moby/moby/api v1.55.0 h1:2/sexvQyqIWS8pRSCFddBfpW2qE7vR7FCL+vN8pxwMc=
+ github.com/moby/moby/api v1.55.0/go.mod h1:+RQ6wluLwtYaTd1WnPLykIDPekkuyD/ROWQClE83pzs=
+-github.com/moby/moby/client v0.5.0 h1:5XhyPk2fuOWf6RlSFa3MkIIgDZkF25xToXW8Q/BH7cc=
+-github.com/moby/moby/client v0.5.0/go.mod h1:rcVpF8ncl9vo5gaIBdol6CnbEtSj1uxMvEV/UrykF/s=
++github.com/moby/moby/client v0.5.1 h1:tYNaJno4c0HXz12y5BiqEDy0rVTYkWzI26lGvnTMiJw=
++github.com/moby/moby/client v0.5.1/go.mod h1:odLstlZ6uSnfvAgVxMpvgmb8SUdd+siH2T0GBuxVAlM=
+ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
+ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
+ github.com/nats-io/nats.go v1.52.0 h1:n3avV4VBsCgsdwh71TppsTwtv+QdPs7ntSKM8qJLGsc=
+@@ -229,12 +235,10 @@ github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJw
+ github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
+ github.com/ory/dockertest/v4 v4.0.0 h1:i19aFsO/VXE0VrMk4ifnKW4G/KIJ93PCjLOslxXoPME=
+ github.com/ory/dockertest/v4 v4.0.0/go.mod h1:b5Ofu8VIxWNhXFvQcLu17pRNQdoUBKtXBW74G4Ygzx8=
++github.com/petermattis/goid v0.0.0-20260725062400-500c67a39b75 h1:VmZ6mKVkxavKEhEy4ZYyV7BwBYBFBP0TwIqmLk84fpU=
++github.com/petermattis/goid v0.0.0-20260725062400-500c67a39b75/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
+ github.com/pion/datachannel v1.6.2 h1:7EXQ8TH3vTouBUdRWYbcX2edSx9Yj6k5zl5P+qyxEPc=
+ github.com/pion/datachannel v1.6.2/go.mod h1:pzbdAZvyGtXbcHM1hBbsFaOTf40lZizU/dNlvVOak6E=
+-github.com/pion/dtls/v3 v3.1.5 h1:9xJtVsHwMYeSjPp5Hh1FTis4DchnQWtnOa5o+6ygqfc=
+-github.com/pion/dtls/v3 v3.1.5/go.mod h1:gz1K4jg6c+fq86oQMH4pilpCEOEPwmEr2jY+VcF/mkU=
+-github.com/pion/ice/v4 v4.4.0 h1:wvHDDqimaC38Y7MVpD46Y63p246ChvXd87VKoLYS5b4=
+-github.com/pion/ice/v4 v4.4.0/go.mod h1:obAyD+J+Hzs7QA7Y8YXHp5uIn6gb7z87pKedXZkrcFU=
+ github.com/pion/interceptor v0.1.47 h1:yw8t5pJ2f8t78NgU+8EmxhaqYLXS7uFCC/tAGOaSDBo=
+ github.com/pion/interceptor v0.1.47/go.mod h1:7yoRBzaIDETPC6cIN8Zj9EyGqHv1ImOpcTFPha6MuOM=
+ github.com/pion/logging v0.2.4 h1:tTew+7cmQ+Mc1pTBLKH2puKsOvhm32dROumOZ655zB8=
+@@ -261,8 +265,6 @@ github.com/pion/transport/v4 v4.1.0 h1:8S+nF2reM2cJuqC6g78OVy2BBgmbdns+acx3jA97B
+ github.com/pion/transport/v4 v4.1.0/go.mod h1:06hFI+jCFcok2X2MekVufNZ/uzNZXivGBPfviSVcjgM=
+ github.com/pion/turn/v5 v5.0.12 h1:6+b69ivQQXSlyfkp2AKripqD2k3W32qXK8QzCzpJWPI=
+ github.com/pion/turn/v5 v5.0.12/go.mod h1:CQACsRDJtjQ+6RSrGHrS2PCIerLwbW3uqXRqOvtjAFg=
+-github.com/pion/webrtc/v4 v4.2.18 h1:smA/3g6Gy4RohM0VIZ5KKY/12TQbxv3XFgpUMyb2EUI=
+-github.com/pion/webrtc/v4 v4.2.18/go.mod h1:vmzi6s+rvhoIuT94DPqivB+0xJXs9rG4QRD+4MgBtlY=
+ github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
+ github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
+ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+@@ -293,8 +295,8 @@ github.com/shoenig/test v1.7.0 h1:eWcHtTXa6QLnBvm0jgEabMRN/uJ4DMV3M8xUGgRkZmk=
+ github.com/shoenig/test v1.7.0/go.mod h1:UxJ6u/x2v/TNs/LoLxBNJRV9DiwBBKYxXSyczsBHFoI=
+ github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+ github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81PSLYec5m4=
+-github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
+-github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
++github.com/stretchr/testify v1.12.0 h1:K6Mr6jO9JICuend/5xzTM03ydSV3vdNRYAdPSukj8uI=
++github.com/stretchr/testify v1.12.0/go.mod h1:bOYBZb5qJ00vPzWfIqBUZPaxK8jWiXc6d3ErP4Ca9Gw=
+ github.com/thoas/go-funk v0.9.3 h1:7+nAEx3kn5ZJcnDm2Bh23N2yOtweO14bi//dvRtgLpw=
+ github.com/thoas/go-funk v0.9.3/go.mod h1:+IWnUfUmFO1+WVYQWQtIJHeRRdaIyyYglZN7xzUPe4Q=
+ github.com/tomnomnom/linkheader v0.0.0-20250811210735-e5fe3b51442e h1:tD38/4xg4nuQCASJ/JxcvCHNb46w0cdAaJfkzQOO1bA=
+@@ -400,6 +402,8 @@ golang.org/x/sys v0.0.0-20220319134239-a9b59b0215f8/go.mod h1:oPkhp1MJrh7nUepCBc
+ golang.org/x/sys v0.0.0-20220728004956-3c1f35247d10/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
+ golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
++golang.org/x/telemetry v0.0.0-20260708182218-49f421fb7959 h1:RJhm5l6Fo4rmEIcndxDllNhhf/fAx8qIm4t6A7vpm2A=
++golang.org/x/telemetry v0.0.0-20260708182218-49f421fb7959/go.mod h1:LV7u5Oco+Z/g6XI7PqN+EUUUGGkEcmB1uj2ceI0fOVg=
+ golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+ golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
+ golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+diff --git a/magefile.go b/magefile.go
+index d4d42fa6..ff2f6f9f 100644
+--- a/magefile.go
++++ b/magefile.go
+@@ -51,9 +51,14 @@ func init() {
+ 	}
+ }
+ 
+-// explicitly reinstall all deps
++// downloads module deps at the versions pinned in go.mod
++//
++// Code generators are not installed here: they run as `go run <pkg>` from their
++// //go:generate directives (see pkg/service/wire_gen.go and the counterfeiter
++// directives under pkg/), so they always execute at the version go.mod pins and
++// Renovate keeps them current alongside every other module.
+ func Deps() error {
+-	return installTools(true)
++	return mageutil.Run(context.Background(), "go mod download")
+ }
+ 
+ // builds LiveKit server
+@@ -109,9 +114,6 @@ func BuildLinux() error {
+ 
+ func Deadlock() error {
+ 	ctx := context.Background()
+-	if err := mageutil.InstallTool("golang.org/x/tools/cmd/goimports", "latest", false); err != nil {
+-		return err
+-	}
+ 	if err := mageutil.Run(ctx, "go get github.com/sasha-s/go-deadlock"); err != nil {
+ 		return err
+ 	}
+@@ -121,7 +123,7 @@ func Deadlock() error {
+ 	if err := mageutil.Pipe("grep -rl sync.RWMutex ./pkg", "xargs sed -i  -e s/sync.RWMutex/deadlock.RWMutex/g"); err != nil {
+ 		return err
+ 	}
+-	if err := mageutil.Pipe("grep -rl deadlock.Mutex\\|deadlock.RWMutex ./pkg", "xargs goimports -w"); err != nil {
++	if err := mageutil.Pipe("grep -rl deadlock.Mutex\\|deadlock.RWMutex ./pkg", "xargs go tool goimports -w"); err != nil {
+ 		return err
+ 	}
+ 	if err := mageutil.Run(ctx, "go mod tidy"); err != nil {
+@@ -137,7 +139,7 @@ func Sync() error {
+ 	if err := mageutil.Pipe("grep -rl deadlock.RWMutex ./pkg", "xargs sed -i  -e s/deadlock.RWMutex/sync.RWMutex/g"); err != nil {
+ 		return err
+ 	}
+-	if err := mageutil.Pipe("grep -rl sync.Mutex\\|sync.RWMutex ./pkg", "xargs goimports -w"); err != nil {
++	if err := mageutil.Pipe("grep -rl sync.Mutex\\|sync.RWMutex ./pkg", "xargs go tool goimports -w"); err != nil {
+ 		return err
+ 	}
+ 	if err := mageutil.Run(context.Background(), "go mod tidy"); err != nil {
+@@ -199,7 +201,7 @@ func Clean() {
+ 
+ // regenerate code
+ func Generate() error {
+-	mg.Deps(installDeps, generateWire)
++	mg.Deps(generateWire)
+ 
+ 	fmt.Println("generating...")
+ 	return mageutil.Run(context.Background(), "go generate ./...")
+@@ -207,40 +209,13 @@ func Generate() error {
+ 
+ // code generation for wiring
+ func generateWire() error {
+-	mg.Deps(installDeps)
+ 	if !checksummer.IsChanged() {
+ 		return nil
+ 	}
+ 
+ 	fmt.Println("wiring...")
+ 
+-	wire, err := mageutil.GetToolPath("wire")
+-	if err != nil {
+-		return err
+-	}
+-	cmd := exec.Command(wire)
+-	cmd.Dir = "pkg/service"
+-	mageutil.ConnectStd(cmd)
+-	if err := cmd.Run(); err != nil {
+-		return err
+-	}
+-
+-	return nil
+-}
+-
+-// implicitly install deps
+-func installDeps() error {
+-	return installTools(false)
+-}
+-
+-func installTools(force bool) error {
+-	tools := map[string]string{
+-		"github.com/google/wire/cmd/wire": "latest",
+-	}
+-	for t, v := range tools {
+-		if err := mageutil.InstallTool(t, v, force); err != nil {
+-			return err
+-		}
+-	}
+-	return nil
++	// Matches the //go:generate directive in pkg/service/wire_gen.go, so running
++	// wire here and running `go generate ./...` produce the same output.
++	return mageutil.RunDir(context.Background(), "pkg/service", "go run github.com/google/wire/cmd/wire")
+ }
+diff --git a/pkg/config/config.go b/pkg/config/config.go
+index 2eb4445a..2ef6a3ef 100644
+--- a/pkg/config/config.go
++++ b/pkg/config/config.go
+@@ -64,7 +64,7 @@ const (
+ 	// allocations a single participant credential may hold on the embedded TURN
+ 	// server. It prevents one authenticated participant from exhausting the
+ 	// shared relay-port range for everyone else. A value <= 0 disables the quota.
+-	DefaultTURNPerUserRelayAllocationLimit = 4
++	DefaultTURNPerUserRelayAllocationLimit = 12
+ )
+ 
+ var (
+@@ -122,6 +122,11 @@ type RTCConfig struct {
+ 
+ 	TURNServers []TURNServer `yaml:"turn_servers,omitempty"`
+ 
++	// EnableWarp turns on WARP = SPED (DTLS-in-STUN, saves DTLS round-trip) +
++	// SNAP (SCTP INIT in SDP, saves SCTP/data-channel init round-trip).
++	// Off by default; experimental.
++	EnableWarp bool `yaml:"enable_warp,omitempty"`
++
+ 	// Deprecated
+ 	StrictACKs bool `yaml:"strict_acks,omitempty"`
+ 
+@@ -337,6 +342,20 @@ type LimitConfig struct {
+ 	MaxDataBlobSize      uint32 `yaml:"max_data_blobs_size,omitempty"`
+ 
+ 	MaxDataTrackCustomEncodingLength int `yaml:"max_data_track_custom_encoding_length,omitempty"`
++
++	// maximum size (in bytes) of a single message read off a client-facing
++	// signalling WebSocket connection. Frames larger than this are rejected by the
++	// transport before being buffered, guarding against single-frame memory
++	// exhaustion. A value of 0 disables the limit (unbounded).
++	SignalMessageSizeLimit int64 `yaml:"signal_message_size_limit,omitempty"`
++	// same as SignalMessageSizeLimit, but for agent worker WebSocket connections.
++	AgentSignalMessageSizeLimit int64 `yaml:"agent_signal_message_size_limit,omitempty"`
++
++	// maximum size (in bytes) of an HTTP request body accepted on the main API
++	// listener (Twirp room/egress/ingress/SIP routes, etc). Requests larger than
++	// this are rejected before their body is decoded, so large messages cannot
++	// exhaust memory. A value of 0 disables the limit (unbounded).
++	MaxAPIRequestBodySize int64 `yaml:"max_api_request_body_size,omitempty"`
+ }
+ 
+ func (l LimitConfig) CheckRoomNameLength(name string) bool {
+@@ -543,6 +562,9 @@ var DefaultConfig = Config{
+ 		MaxDataBlobKeyLength:             256,
+ 		MaxDataBlobSize:                  64000,
+ 		MaxDataTrackCustomEncodingLength: 32,
++		SignalMessageSizeLimit:           2 << 20,  // 2 MiB
++		AgentSignalMessageSizeLimit:      2 << 20,  // 2 MiB
++		MaxAPIRequestBodySize:            10 << 20, // 10 MiB
+ 	},
+ 	Logging: LoggingConfig{
+ 		PionLevel: "error",
+diff --git a/pkg/config/config_test.go b/pkg/config/config_test.go
+index f5381bbc..3e9cfbf4 100644
+--- a/pkg/config/config_test.go
++++ b/pkg/config/config_test.go
+@@ -42,6 +42,25 @@ func TestConfig_DefaultsKept(t *testing.T) {
+ 	require.Equal(t, uint32(10), conf.Room.EmptyTimeout)
+ }
+ 
++func TestConfig_SignalMessageSizeLimitDefaults(t *testing.T) {
++	conf, err := NewConfig("", true, nil, nil)
++	require.NoError(t, err)
++	// both default to 2 MiB when not specified
++	require.Equal(t, int64(2<<20), conf.Limit.SignalMessageSizeLimit)
++	require.Equal(t, int64(2<<20), conf.Limit.AgentSignalMessageSizeLimit)
++}
++
++func TestConfig_SignalMessageSizeLimitOverride(t *testing.T) {
++	const content = `limit:
++  signal_message_size_limit: 1024
++  agent_signal_message_size_limit: 0`
++	conf, err := NewConfig(content, true, nil, nil)
++	require.NoError(t, err)
++	require.Equal(t, int64(1024), conf.Limit.SignalMessageSizeLimit)
++	// 0 explicitly disables the limit
++	require.Equal(t, int64(0), conf.Limit.AgentSignalMessageSizeLimit)
++}
++
+ func TestConfig_UnknownKeys(t *testing.T) {
+ 	const content = `unknown: 10
+ room:
+diff --git a/pkg/rtc/mediatrack.go b/pkg/rtc/mediatrack.go
+index d0fc9a9a..2f48b0e5 100644
+--- a/pkg/rtc/mediatrack.go
++++ b/pkg/rtc/mediatrack.go
+@@ -348,8 +348,11 @@ func (t *MediaTrack) AddReceiver(receiver *webrtc.RTPReceiver, track sfu.TrackRe
+ 	})
+ 
+ 	ti := t.MediaTrackReceiver.TrackInfoClone()
+-	t.lock.Lock()
++
+ 	var regressCodec bool
++	enableRegression := t.enableRegression()
++
++	t.lock.Lock()
+ 	mimeType := mime.NormalizeMimeType(track.Codec().MimeType)
+ 	layer := buffer.GetSpatialLayerForRid(mimeType, track.RID(), ti)
+ 	if layer < 0 {
+@@ -531,7 +534,7 @@ func (t *MediaTrack) AddReceiver(receiver *webrtc.RTPReceiver, track sfu.TrackRe
+ 		})
+ 	}
+ 
+-	if newCodec && t.enableRegression() {
++	if newCodec && enableRegression {
+ 		if mimeType == t.regressionTargetCodec {
+ 			t.params.Logger.Infow("regression target codec received", "codec", mimeType)
+ 			t.regressionTargetCodecReceived = true
+diff --git a/pkg/rtc/migrationdatacache.go b/pkg/rtc/migrationdatacache.go
+index 8c44eac6..45a689b7 100644
+--- a/pkg/rtc/migrationdatacache.go
++++ b/pkg/rtc/migrationdatacache.go
+@@ -14,9 +14,14 @@ const (
+ 	MigrationDataCacheStateDone
+ )
+ 
++const (
++	migrationDataCacheMaxSize = 4 << 20 // 4 MiB
++)
++
+ type MigrationDataCache struct {
+ 	lastSeq   uint32
+ 	pkts      []*livekit.DataPacket
++	size      int
+ 	state     MigrationDataCacheState
+ 	expiredAt time.Time
+ }
+@@ -30,10 +35,10 @@ func NewMigrationDataCache(lastSeq uint32, expiredAt time.Time) *MigrationDataCa
+ 
+ // Add adds a message to the cache if there is a gap between the last sequence number and cached messages then return the cache State:
+ //   - MigrationDataCacheStateWaiting: waiting for the next packet (lastSeq + 1) of last sequence from old node
+-//   - MigrationDataCacheStateTimeout: the next packet is not received before the expiredAt, participant will
+-//     continue to process the reliable messages, subscribers will see the gap after the publisher migration
++//   - MigrationDataCacheStateTimeout: the next packet is not received before the expiredAt or the cache is full, participant
++//     will continue to process the reliable messages, subscribers will see the gap after the publisher migration
+ //   - MigrationDataCacheStateDone: the next packet is received, participant can continue to process the reliable messages
+-func (c *MigrationDataCache) Add(pkt *livekit.DataPacket) MigrationDataCacheState {
++func (c *MigrationDataCache) Add(pkt *livekit.DataPacket, size int) MigrationDataCacheState {
+ 	if c.state == MigrationDataCacheStateDone || c.state == MigrationDataCacheStateTimeout {
+ 		return c.state
+ 	}
+@@ -48,7 +53,8 @@ func (c *MigrationDataCache) Add(pkt *livekit.DataPacket) MigrationDataCacheStat
+ 	}
+ 
+ 	c.pkts = append(c.pkts, pkt)
+-	if time.Now().After(c.expiredAt) {
++	c.size += size
++	if c.size >= migrationDataCacheMaxSize || time.Now().After(c.expiredAt) {
+ 		c.state = MigrationDataCacheStateTimeout
+ 	}
+ 	return c.state
+@@ -57,3 +63,7 @@ func (c *MigrationDataCache) Add(pkt *livekit.DataPacket) MigrationDataCacheStat
+ func (c *MigrationDataCache) Get() []*livekit.DataPacket {
+ 	return c.pkts
+ }
++
++func (c *MigrationDataCache) Size() int {
++	return c.size
++}
+diff --git a/pkg/rtc/migrationdatacache_test.go b/pkg/rtc/migrationdatacache_test.go
+index 046b2ddf..a753c75f 100644
+--- a/pkg/rtc/migrationdatacache_test.go
++++ b/pkg/rtc/migrationdatacache_test.go
+@@ -14,25 +14,44 @@ func TestMigrationDataCache_Add(t *testing.T) {
+ 	cache := NewMigrationDataCache(10, expiredAt)
+ 
+ 	pkt1 := &livekit.DataPacket{Sequence: 9}
+-	state := cache.Add(pkt1)
++	state := cache.Add(pkt1, 0)
+ 	require.Equal(t, MigrationDataCacheStateWaiting, state)
+ 	require.Empty(t, cache.Get())
+ 
+ 	pkt2 := &livekit.DataPacket{Sequence: 11}
+-	state = cache.Add(pkt2)
++	state = cache.Add(pkt2, 0)
+ 	require.Equal(t, MigrationDataCacheStateDone, state)
+ 	require.Empty(t, cache.Get())
+ 
+ 	pkt3 := &livekit.DataPacket{Sequence: 12}
+-	state = cache.Add(pkt3)
++	state = cache.Add(pkt3, 0)
+ 	require.Equal(t, MigrationDataCacheStateDone, state)
+ 	require.Empty(t, cache.Get())
+ 
+ 	cache2 := NewMigrationDataCache(20, time.Now().Add(10*time.Millisecond))
+ 	pkt4 := &livekit.DataPacket{Sequence: 22}
+ 	time.Sleep(20 * time.Millisecond)
+-	state = cache2.Add(pkt4)
++	state = cache2.Add(pkt4, 0)
+ 	require.Equal(t, MigrationDataCacheStateTimeout, state)
+ 	require.Len(t, cache2.Get(), 1)
+ 	require.Equal(t, uint32(22), cache2.Get()[0].Sequence)
+ }
++
++func TestMigrationDataCache_MaxSize(t *testing.T) {
++	// the cache should not grow past the size budget even if the expiry is far in the future
++	cache := NewMigrationDataCache(10, time.Now().Add(time.Minute))
++
++	pktSize := 1000
++	seq := uint32(12)
++	state := MigrationDataCacheStateWaiting
++	for ; state == MigrationDataCacheStateWaiting; seq++ {
++		state = cache.Add(&livekit.DataPacket{Sequence: seq}, pktSize)
++	}
++
++	require.Equal(t, MigrationDataCacheStateTimeout, state)
++	require.LessOrEqual(t, cache.Size(), migrationDataCacheMaxSize+pktSize)
++	require.Len(t, cache.Get(), migrationDataCacheMaxSize/pktSize+1)
++
++	// once full, further packets are dropped, including the continuous one
++	require.Equal(t, MigrationDataCacheStateTimeout, cache.Add(&livekit.DataPacket{Sequence: 11}, pktSize))
++}
+diff --git a/pkg/rtc/participant.go b/pkg/rtc/participant.go
+index 1cad3974..28ffccbc 100644
+--- a/pkg/rtc/participant.go
++++ b/pkg/rtc/participant.go
+@@ -78,6 +78,13 @@ const (
+ 	migrationWaitDuration              = 3 * time.Second
+ 	migrationWaitContinuousMsgDuration = 2 * time.Second
+ 
++	cMaxPendingTracks       = 20
++	cMaxPendingQueuedTracks = 3
++
++	// unsequenced reliable data (server API sends) cannot be recovered from the
++	// data message cache, so it is held here until the reliable data channel is writable
++	cMaxJoiningUnsequencedReliableBytes = 100_000
++
+ 	PingIntervalSeconds = 5
+ 	PingTimeoutSeconds  = 15
+ )
+@@ -147,6 +154,9 @@ type reliableDataInfo struct {
+ 	joiningMessageLock            sync.Mutex
+ 	joiningMessageFirstSeqs       map[livekit.ParticipantID]uint32
+ 	joiningMessageLastWrittenSeqs map[livekit.ParticipantID]uint32
++	joiningUnsequencedMessages    [][]byte
++	joiningUnsequencedBytes       int
++	joiningUnsequencedDropped     int
+ 	lastPubReliableSeq            atomic.Uint32
+ 	stopReliableByMigrateOut      atomic.Bool
+ 	canWriteReliable              bool
+@@ -230,6 +240,7 @@ type ParticipantParams struct {
+ 	EnableStartAtDesiredQuality       bool
+ 	MigrationWaitDuration             time.Duration
+ 	ExcludeIPv6LocalCandidates        bool
++	EnableWarp                        bool
+ }
+ 
+ type ParticipantImpl struct {
+@@ -1009,7 +1020,7 @@ func (p *ParticipantImpl) OnClaimsChanged(callback func(types.LocalParticipant))
+ func (p *ParticipantImpl) HandleSignalSourceClose() {
+ 	p.TransportManager.SetSignalSourceValid(false)
+ 
+-	if !p.HasConnected() {
++	if !p.HasICEConnected() {
+ 		_ = p.Close(false, types.ParticipantCloseReasonSignalSourceClose, false)
+ 	}
+ }
+@@ -1445,14 +1456,14 @@ func (p *ParticipantImpl) IsMigration() bool {
+ }
+ 
+ func (p *ParticipantImpl) recordRTCState(closeReason types.ParticipantCloseReason) {
+-	if p.HasConnected() {
++	if p.HasICEConnected() {
+ 		return
+ 	}
+ 
+ 	if p.IsConnectionCanceled(closeReason) {
+-		prometheus.IncrementParticipantRtcCanceled(1)
++		prometheus.IncrementParticipantRtcCanceled(1, p.params.EnableWarp)
+ 	} else {
+-		prometheus.IncrementParticipantRtcFailure(1)
++		prometheus.IncrementParticipantRtcFailure(1, p.params.EnableWarp)
+ 	}
+ }
+ 
+@@ -1506,6 +1517,7 @@ func (p *ParticipantImpl) Close(sendLeave bool, reason types.ParticipantCloseRea
+ 		p.supervisor.Stop()
+ 	}
+ 
++	sdk := p.GetClientInfo().GetSdk()
+ 	p.pendingTracksLock.Lock()
+ 	if p.IsConnectionCanceled(reason) {
+ 		for _, pti := range p.pendingTracks {
+@@ -1514,6 +1526,23 @@ func (p *ParticipantImpl) Close(sendLeave bool, reason types.ParticipantCloseRea
+ 			}
+ 			prometheus.RecordTrackPublishCancels(pti.trackInfos[0].Type.String(), int32(len(pti.trackInfos)))
+ 		}
++	} else {
++		// record close time as publish time for non canceled pending tracks,
++		// this will inflate publish time and can signal a node wide issue if
++		// enough participants are closing without publishing tracks.
++		for _, pti := range p.pendingTracks {
++			if len(pti.trackInfos) == 0 || pti.migrated {
++				continue
++			}
++			prometheus.RecordPublishTime(
++				p.params.Country,
++				pti.trackInfos[0].Source,
++				pti.trackInfos[0].Type,
++				time.Since(pti.createdAt),
++				sdk,
++				p.Kind(),
++			)
++		}
+ 	}
+ 	p.pendingTracks = make(map[string]*pendingTrackInfo)
+ 	p.pendingPublishingTracks = make(map[livekit.TrackID]*pendingTrackInfo)
+@@ -2079,6 +2108,7 @@ func (p *ParticipantImpl) setupTransportManager() error {
+ 		FireOnTrackBySdp:                  p.params.FireOnTrackBySdp,
+ 		EnableDataTracks:                  p.params.EnableDataTracks,
+ 		ExcludeIPv6LocalCandidates:        p.params.ExcludeIPv6LocalCandidates,
++		EnableWarp:                        p.params.EnableWarp,
+ 	}
+ 	if p.params.SyncStreams && p.params.PlayoutDelay.GetEnabled() && p.params.ClientInfo.isFirefox() {
+ 		// we will disable playout delay for Firefox if the user is expecting
+@@ -2417,7 +2447,7 @@ func (p *ParticipantImpl) onReceivedDataMessage(kind livekit.DataPacket_Kind, da
+ 		}
+ 
+ 		if migrationCache := p.reliableDataInfo.migrateInPubDataCache.Load(); migrationCache != nil {
+-			switch migrationCache.Add(dp) {
++			switch migrationCache.Add(dp, len(data)) {
+ 			case MigrationDataCacheStateWaiting:
+ 				// waiting for the reliable sequence to continue from last node
+ 				return
+@@ -2436,6 +2466,8 @@ func (p *ParticipantImpl) onReceivedDataMessage(kind livekit.DataPacket_Kind, da
+ 						"migration data cache timed out, handling cached messages", nil,
+ 						"cachedFirstSeq", cachedMsgs[0].Sequence,
+ 						"cachedLastSeq", cachedMsgs[len(cachedMsgs)-1].Sequence,
++						"cachedNum", len(cachedMsgs),
++						"cachedSize", migrationCache.Size(),
+ 						"lastPubReliableSeq", p.params.LastPubReliableSeq,
+ 					)
+ 				}
+@@ -2662,8 +2694,8 @@ func (p *ParticipantImpl) onPrimaryTransportInitialConnected() {
+ 	}
+ 
+ 	if !p.sessionStartRecorded.Swap(true) {
+-		prometheus.RecordSessionStartTime(int(p.ProtocolVersion()), time.Since(p.params.SessionStartTime))
+-		prometheus.IncrementParticipantRtcSuccess(1)
++		prometheus.RecordSessionStartTime(int(p.ProtocolVersion()), p.params.EnableWarp, time.Since(p.params.SessionStartTime))
++		prometheus.IncrementParticipantRtcSuccess(1, p.params.EnableWarp)
+ 	}
+ 	p.updateState(livekit.ParticipantInfo_ACTIVE)
+ }
+@@ -2910,6 +2942,19 @@ func (p *ParticipantImpl) addPendingTrack(req *livekit.AddTrackRequest) *livekit
+ 		return ti
+ 	}
+ 
++	if len(p.pendingTracks) >= cMaxPendingTracks {
++		p.pubLogger.Infow("too many pending tracks, rejecting new track", "numPendingTracks", len(p.pendingTracks))
++		p.sendRequestResponse(&livekit.RequestResponse{
++			Reason:  livekit.RequestResponse_LIMIT_EXCEEDED,
++			Message: fmt.Sprintf("too many pending tracks, rejecting new track, numPendingTracks: %d", len(p.pendingTracks)),
++			Request: &livekit.RequestResponse_AddTrack{
++				AddTrack: utils.CloneProto(req),
++			},
++		})
++		p.pendingTracksLock.Unlock()
++		return nil
++	}
++
+ 	backupCodecPolicy := req.BackupCodecPolicy
+ 
+ 	// enable simulcast codec for audio by default
+@@ -3075,11 +3120,6 @@ func (p *ParticipantImpl) addPendingTrack(req *livekit.AddTrackRequest) *livekit
+ 		}
+ 	}
+ 
+-	if p.supervisor != nil {
+-		p.supervisor.AddPublication(livekit.TrackID(ti.Sid))
+-		p.supervisor.SetPublicationMute(livekit.TrackID(ti.Sid), ti.Muted)
+-	}
+-
+ 	if p.getPublishedTrackBySignalCid(req.Cid) != nil || p.getPublishedTrackBySdpCid(req.Cid) != nil || p.pendingTracks[req.Cid] != nil {
+ 		if p.pendingTracks[req.Cid] == nil {
+ 			pti := &pendingTrackInfo{
+@@ -3092,6 +3132,19 @@ func (p *ParticipantImpl) addPendingTrack(req *livekit.AddTrackRequest) *livekit
+ 			}
+ 			p.pendingTracks[req.Cid] = pti
+ 		} else {
++			if len(p.pendingTracks[req.Cid].trackInfos) >= cMaxPendingQueuedTracks {
++				p.pubLogger.Infow("too many pending queued tracks, rejecting new track", "trackID", ti.Sid, "numPendingTracksQueued", len(p.pendingTracks[req.Cid].trackInfos))
++				p.sendRequestResponse(&livekit.RequestResponse{
++					Reason:  livekit.RequestResponse_LIMIT_EXCEEDED,
++					Message: fmt.Sprintf("too many pending queued tracks, rejecting new track, numPendingTracksQueued: %d", len(p.pendingTracks[req.Cid].trackInfos)),
++					Request: &livekit.RequestResponse_AddTrack{
++						AddTrack: utils.CloneProto(req),
++					},
++				})
++				p.pendingTracksLock.Unlock()
++				return nil
++			}
++
+ 			p.pendingTracks[req.Cid].trackInfos = append(p.pendingTracks[req.Cid].trackInfos, ti)
+ 		}
+ 		p.pubLogger.Infow(
+@@ -3106,7 +3159,13 @@ func (p *ParticipantImpl) addPendingTrack(req *livekit.AddTrackRequest) *livekit
+ 				AddTrack: utils.CloneProto(req),
+ 			},
+ 		})
++
++		if p.supervisor != nil {
++			p.supervisor.AddPublication(livekit.TrackID(ti.Sid))
++			p.supervisor.SetPublicationMute(livekit.TrackID(ti.Sid), ti.Muted)
++		}
+ 		p.pendingTracksLock.Unlock()
++
+ 		p.params.TelemetryListener.OnTrackPublishRequested(p.ID(), p.Identity(), utils.CloneProto(ti), true)
+ 		return nil
+ 	}
+@@ -3125,7 +3184,13 @@ func (p *ParticipantImpl) addPendingTrack(req *livekit.AddTrackRequest) *livekit
+ 		"request", logger.Proto(req),
+ 		"pendingTrack", p.pendingTracks[req.Cid],
+ 	)
++
++	if p.supervisor != nil {
++		p.supervisor.AddPublication(livekit.TrackID(ti.Sid))
++		p.supervisor.SetPublicationMute(livekit.TrackID(ti.Sid), ti.Muted)
++	}
+ 	p.pendingTracksLock.Unlock()
++
+ 	p.params.TelemetryListener.OnTrackPublishRequested(p.ID(), p.Identity(), utils.CloneProto(ti), true)
+ 	return ti
+ }
+@@ -3143,6 +3208,10 @@ func (p *ParticipantImpl) GetPendingTrack(trackID livekit.TrackID) *livekit.Trac
+ 	return nil
+ }
+ 
++func (p *ParticipantImpl) HasICEConnected() bool {
++	return p.TransportManager.HasSubscriberICEEverConnected() || p.TransportManager.HasPublisherICEEverConnected()
++}
++
+ func (p *ParticipantImpl) HasConnected() bool {
+ 	return p.TransportManager.HasSubscriberEverConnected() || p.TransportManager.HasPublisherEverConnected()
+ }
+@@ -3896,7 +3965,37 @@ func (p *ParticipantImpl) SupportsTransceiverReuse(mt types.MediaTrack) bool {
+ }
+ 
+ func (p *ParticipantImpl) SendDataMessage(kind livekit.DataPacket_Kind, data []byte, sender livekit.ParticipantID, seq uint32) error {
+-	if sender == "" || kind != livekit.DataPacket_RELIABLE || seq == 0 {
++	if kind != livekit.DataPacket_RELIABLE {
++		if p.State() != livekit.ParticipantInfo_ACTIVE {
++			return ErrDataChannelUnavailable
++		}
++		return p.TransportManager.SendDataMessage(kind, data)
++	}
++
++	if sender == "" || seq == 0 {
++		// Unsequenced reliable data, i. e. not published by a participant, room service
++		// SendData for example. Such a message cannot be recovered by
++		// replayJoiningReliableMessages as the data message cache is keyed on
++		// sender/sequence number, so hold on to the message itself here till the
++		// reliable data channel is writable.
++		p.reliableDataInfo.joiningMessageLock.Lock()
++		if !p.reliableDataInfo.canWriteReliable {
++			if p.reliableDataInfo.joiningUnsequencedBytes+len(data) > cMaxJoiningUnsequencedReliableBytes {
++				p.reliableDataInfo.joiningUnsequencedDropped++
++				p.reliableDataInfo.joiningMessageLock.Unlock()
++				return ErrDataChannelUnavailable
++			}
++
++			p.reliableDataInfo.joiningUnsequencedMessages = append(
++				p.reliableDataInfo.joiningUnsequencedMessages,
++				slices.Clone(data),
++			)
++			p.reliableDataInfo.joiningUnsequencedBytes += len(data)
++			p.reliableDataInfo.joiningMessageLock.Unlock()
++			return nil
++		}
++		p.reliableDataInfo.joiningMessageLock.Unlock()
++
+ 		if p.State() != livekit.ParticipantInfo_ACTIVE {
+ 			return ErrDataChannelUnavailable
+ 		}
+@@ -4011,6 +4110,20 @@ func (p *ParticipantImpl) replayJoiningReliableMessages() {
+ 		p.TransportManager.SendDataMessage(livekit.DataPacket_RELIABLE, msgCache.Data)
+ 	}
+ 
++	for _, msg := range p.reliableDataInfo.joiningUnsequencedMessages {
++		p.TransportManager.SendDataMessage(livekit.DataPacket_RELIABLE, msg)
++	}
++	if p.reliableDataInfo.joiningUnsequencedDropped != 0 {
++		p.params.Logger.Warnw(
++			"dropped unsequenced reliable data messages while joining", nil,
++			"numDropped", p.reliableDataInfo.joiningUnsequencedDropped,
++			"numReplayed", len(p.reliableDataInfo.joiningUnsequencedMessages),
++		)
++	}
++	p.reliableDataInfo.joiningUnsequencedMessages = nil
++	p.reliableDataInfo.joiningUnsequencedBytes = 0
++	p.reliableDataInfo.joiningUnsequencedDropped = 0
++
+ 	p.reliableDataInfo.joiningMessageFirstSeqs = make(map[livekit.ParticipantID]uint32)
+ 	p.reliableDataInfo.canWriteReliable = true
+ 	p.reliableDataInfo.joiningMessageLock.Unlock()
+@@ -4388,3 +4501,7 @@ func (p *ParticipantImpl) PerformRpc(req *livekit.PerformRpcRequest, resultCh ch
+ 		p.rpcLock.Unlock()
+ 	}()
+ }
++
++func (p *ParticipantImpl) IsWarpEnabled() bool {
++	return p.params.EnableWarp
++}
+diff --git a/pkg/rtc/participant_internal_test.go b/pkg/rtc/participant_internal_test.go
+index 33263a36..2cde9181 100644
+--- a/pkg/rtc/participant_internal_test.go
++++ b/pkg/rtc/participant_internal_test.go
+@@ -847,3 +847,51 @@ func newParticipantForTestWithOpts(identity livekit.ParticipantIdentity, opts *p
+ func newParticipantForTest(identity livekit.ParticipantIdentity) *ParticipantImpl {
+ 	return newParticipantForTestWithOpts(identity, nil)
+ }
++
++func TestUnsequencedReliableDataBufferedWhileJoining(t *testing.T) {
++	// unsequenced reliable data, i. e. room service SendData, arriving before the
++	// reliable data channel is writable should be held and replayed, not dropped
++	t.Run("buffers and replays", func(t *testing.T) {
++		p := newParticipantForTest("test")
++		require.False(t, p.reliableDataInfo.canWriteReliable)
++
++		require.NoError(t, p.SendDataMessage(livekit.DataPacket_RELIABLE, []byte("one"), "", 0))
++		require.NoError(t, p.SendDataMessage(livekit.DataPacket_RELIABLE, []byte("two"), "", 0))
++
++		require.Equal(t, [][]byte{[]byte("one"), []byte("two")}, p.reliableDataInfo.joiningUnsequencedMessages)
++		require.Equal(t, 6, p.reliableDataInfo.joiningUnsequencedBytes)
++
++		p.replayJoiningReliableMessages()
++
++		require.True(t, p.reliableDataInfo.canWriteReliable)
++		require.Empty(t, p.reliableDataInfo.joiningUnsequencedMessages)
++		require.Zero(t, p.reliableDataInfo.joiningUnsequencedBytes)
++	})
++
++	t.Run("does not buffer once writable", func(t *testing.T) {
++		p := newParticipantForTest("test")
++		p.replayJoiningReliableMessages()
++
++		// no data channel in test, so the write through fails rather than getting buffered
++		require.Error(t, p.SendDataMessage(livekit.DataPacket_RELIABLE, []byte("one"), "", 0))
++		require.Empty(t, p.reliableDataInfo.joiningUnsequencedMessages)
++	})
++
++	t.Run("bounded buffer", func(t *testing.T) {
++		p := newParticipantForTest("test")
++
++		data := make([]byte, cMaxJoiningUnsequencedReliableBytes)
++		require.NoError(t, p.SendDataMessage(livekit.DataPacket_RELIABLE, data, "", 0))
++		require.Error(t, p.SendDataMessage(livekit.DataPacket_RELIABLE, []byte("overflow"), "", 0))
++
++		require.Len(t, p.reliableDataInfo.joiningUnsequencedMessages, 1)
++		require.Equal(t, 1, p.reliableDataInfo.joiningUnsequencedDropped)
++	})
++
++	t.Run("lossy is not buffered", func(t *testing.T) {
++		p := newParticipantForTest("test")
++
++		require.Error(t, p.SendDataMessage(livekit.DataPacket_LOSSY, []byte("one"), "", 0))
++		require.Empty(t, p.reliableDataInfo.joiningUnsequencedMessages)
++	})
++}
+diff --git a/pkg/rtc/room.go b/pkg/rtc/room.go
+index b6e97a8b..74f7f305 100644
+--- a/pkg/rtc/room.go
++++ b/pkg/rtc/room.go
+@@ -1265,6 +1265,7 @@ func (r *Room) onStateChange(p types.LocalParticipant) {
+ 			p.ToProto(),
+ 			meta,
+ 			false,
++			p.IsWarpEnabled(),
+ 			p.TelemetryGuard(),
+ 		)
+ 
+diff --git a/pkg/rtc/subscriptionmanager.go b/pkg/rtc/subscriptionmanager.go
+index 4d1a2b12..7e06a8f6 100644
+--- a/pkg/rtc/subscriptionmanager.go
++++ b/pkg/rtc/subscriptionmanager.go
+@@ -736,13 +736,13 @@ func (m *SubscriptionManager) hasCapacityForSubscription(kind livekit.TrackType)
+ 	switch kind {
+ 	case livekit.TrackType_VIDEO:
+ 		if m.params.SubscriptionLimitVideo > 0 && m.subscribedVideoCount.Load() >= m.params.SubscriptionLimitVideo {
+-			m.params.Logger.Infow("subscription limit exceeded for video", "limit", m.params.SubscriptionLimitVideo, "subscriptions", m.subscribedVideoCount.Load())
++			m.params.Logger.Debugw("subscription limit exceeded for video", "limit", m.params.SubscriptionLimitVideo, "subscriptions", m.subscribedVideoCount.Load())
+ 			return false
+ 		}
+ 
+ 	case livekit.TrackType_AUDIO:
+ 		if m.params.SubscriptionLimitAudio > 0 && m.subscribedAudioCount.Load() >= m.params.SubscriptionLimitAudio {
+-			m.params.Logger.Infow("subscription limit exceeded for audio", "limit", m.params.SubscriptionLimitAudio, "subscriptions", m.subscribedAudioCount.Load())
++			m.params.Logger.Debugw("subscription limit exceeded for audio", "limit", m.params.SubscriptionLimitAudio, "subscriptions", m.subscribedAudioCount.Load())
+ 			return false
+ 		}
+ 	}
+diff --git a/pkg/rtc/transport.go b/pkg/rtc/transport.go
+index c1b5c0c0..c15d2e1d 100644
+--- a/pkg/rtc/transport.go
++++ b/pkg/rtc/transport.go
+@@ -223,14 +223,14 @@ type PCTransport struct {
+ 	dataTrackDC             *datachannel.DataChannelWriter[*webrtc.DataChannel]
+ 	unlabeledDataChannels   []*datachannel.DataChannelWriter[*webrtc.DataChannel]
+ 
+-	iceStartedAt               time.Time
+-	iceConnectedAt             time.Time
+-	firstConnectedAt           time.Time
+-	connectedAt                time.Time
+-	tcpICETimer                *time.Timer
+-	connectAfterICETimer       *time.Timer // timer to wait for pc to connect after ice connected
+-	resetShortConnOnICERestart atomic.Bool
+-	signalingRTT               atomic.Uint32 // milliseconds
++	iceFirstStartedAt              time.Time
++	iceFirstConnectedAt            time.Time
++	peerConnectionFirstConnectedAt time.Time
++	peerConnectionLastconnectedAt  time.Time
++	tcpICETimer                    *time.Timer
++	connectAfterICETimer           *time.Timer // timer to wait for pc to connect after ice connected
++	resetShortConnOnICERestart     atomic.Bool
++	signalingRTT                   atomic.Uint32 // milliseconds
+ 
+ 	hasFullyEstablishedRecorded bool
+ 
+@@ -330,6 +330,7 @@ type TransportParams struct {
+ 	DatachannelMaxReceiverBufferSize int
+ 
+ 	EnableDataTracks bool
++	EnableWarp       bool
+ }
+ 
+ func newPeerConnection(
+@@ -382,6 +383,11 @@ func newPeerConnection(
+ 		se.EnableSCTPZeroChecksum(true)
+ 	}
+ 
++	if params.EnableWarp {
++		se.EnableSped(true)
++		se.EnableSctpSnap(true)
++	}
++
+ 	//
+ 	// Disable SRTP replay protection (https://datatracker.ietf.org/doc/html/rfc3711#page-15).
+ 	// Needed due to lack of RTX stream support in Pion.
+@@ -664,8 +670,8 @@ func (t *PCTransport) SetSignalingRTT(rtt uint32) {
+ 
+ func (t *PCTransport) setICEStartedAt(at time.Time) {
+ 	t.lock.Lock()
+-	if t.iceStartedAt.IsZero() {
+-		t.iceStartedAt = at
++	if t.iceFirstStartedAt.IsZero() {
++		t.iceFirstStartedAt = at
+ 
+ 		// checklist of ice agent will be cleared on ice failed, get stats before that
+ 		t.mayFailedICEStatsTimer = time.AfterFunc(iceFailedTimeoutTotal-time.Second, t.logMayFailedICEStats)
+@@ -696,15 +702,15 @@ func (t *PCTransport) setICEStartedAt(at time.Time) {
+ 
+ func (t *PCTransport) setICEConnectedAt(at time.Time) {
+ 	t.lock.Lock()
+-	if t.iceConnectedAt.IsZero() {
++	if t.iceFirstConnectedAt.IsZero() {
+ 		//
+ 		// Record initial connection time.
+-		// This prevents reset of connected at time if ICE goes `Connected` -> `Disconnected` -> `Connected`.
++		// This prevents reset of iceFirstConnectedAt if ICE goes `Connected` -> `Disconnected` -> `Connected`.
+ 		//
+-		t.iceConnectedAt = at
++		t.iceFirstConnectedAt = at
+ 
+ 		// set failure timer for dtls handshake
+-		iceDuration := at.Sub(t.iceStartedAt)
++		iceDuration := at.Sub(t.iceFirstStartedAt)
+ 		connTimeoutAfterICE := min(max(minConnectTimeoutAfterICE, 3*iceDuration), maxConnectTimeoutAfterICE)
+ 		t.params.Logger.Debugw("setting connection timer after ICE connected", "timeout", connTimeoutAfterICE, "iceDuration", iceDuration)
+ 		t.connectAfterICETimer = time.AfterFunc(connTimeoutAfterICE, func() {
+@@ -771,9 +777,9 @@ func (t *PCTransport) logMayFailedICEStats() {
+ func (t *PCTransport) resetShortConn() {
+ 	t.params.Logger.Infow("resetting short connection on ICE restart")
+ 	t.lock.Lock()
+-	t.iceStartedAt = time.Time{}
+-	t.iceConnectedAt = time.Time{}
+-	t.connectedAt = time.Time{}
++	t.iceFirstStartedAt = time.Time{}
++	t.iceFirstConnectedAt = time.Time{}
++	t.peerConnectionLastconnectedAt = time.Time{}
+ 	if t.connectAfterICETimer != nil {
+ 		t.connectAfterICETimer.Stop()
+ 		t.connectAfterICETimer = nil
+@@ -789,23 +795,23 @@ func (t *PCTransport) IsShortConnection(at time.Time) (bool, time.Duration) {
+ 	t.lock.RLock()
+ 	defer t.lock.RUnlock()
+ 
+-	if t.iceConnectedAt.IsZero() {
++	if t.iceFirstConnectedAt.IsZero() {
+ 		return false, 0
+ 	}
+ 
+-	duration := at.Sub(t.iceConnectedAt)
++	duration := at.Sub(t.iceFirstConnectedAt)
+ 	return duration < shortConnectionThreshold, duration
+ }
+ 
+-func (t *PCTransport) setConnectedAt(at time.Time) bool {
++func (t *PCTransport) setPeerConnectionConnectedAt(at time.Time) bool {
+ 	t.lock.Lock()
+-	t.connectedAt = at
+-	if !t.firstConnectedAt.IsZero() {
++	t.peerConnectionLastconnectedAt = at
++	if !t.peerConnectionFirstConnectedAt.IsZero() {
+ 		t.lock.Unlock()
+ 		return false
+ 	}
+ 
+-	t.firstConnectedAt = at
++	t.peerConnectionFirstConnectedAt = at
+ 	prometheus.RecordServiceOperationSuccess("peer_connection")
+ 	prometheus.RecordPeerConnectionState(t.params.Transport, "connected")
+ 	t.lock.Unlock()
+@@ -859,7 +865,7 @@ func (t *PCTransport) onPeerConnectionStateChange(state webrtc.PeerConnectionSta
+ 	switch state {
+ 	case webrtc.PeerConnectionStateConnected:
+ 		t.clearConnTimer()
+-		isInitialConnection := t.setConnectedAt(time.Now())
++		isInitialConnection := t.setPeerConnectionConnectedAt(time.Now())
+ 		if isInitialConnection {
+ 			t.params.Handler.OnInitialConnected()
+ 
+@@ -987,7 +993,7 @@ func (t *PCTransport) isFullyEstablished() bool {
+ 
+ 	dataChannelReady := t.params.UseOneShotSignallingMode || t.firstOfferNoDataChannel || (t.reliableDCOpened && t.lossyDCOpened)
+ 
+-	return dataChannelReady && !t.connectedAt.IsZero()
++	return dataChannelReady && !t.peerConnectionLastconnectedAt.IsZero()
+ }
+ 
+ func (t *PCTransport) SetPreferTCP(preferTCP bool) {
+@@ -1434,18 +1440,25 @@ func (t *PCTransport) IsEstablished() bool {
+ 	return t.pc.ConnectionState() != webrtc.PeerConnectionStateNew
+ }
+ 
+-func (t *PCTransport) HasEverConnected() bool {
++func (t *PCTransport) ICEHasEverConnected() bool {
++	t.lock.RLock()
++	defer t.lock.RUnlock()
++
++	return !t.iceFirstConnectedAt.IsZero()
++}
++
++func (t *PCTransport) PeerConnectionHasEverConnected() bool {
+ 	t.lock.RLock()
+ 	defer t.lock.RUnlock()
+ 
+-	return !t.firstConnectedAt.IsZero()
++	return !t.peerConnectionFirstConnectedAt.IsZero()
+ }
+ 
+-func (t *PCTransport) FirstConnectedAt() time.Time {
++func (t *PCTransport) PeerConnectionFirstConnectedAt() time.Time {
+ 	t.lock.RLock()
+ 	defer t.lock.RUnlock()
+ 
+-	return t.firstConnectedAt
++	return t.peerConnectionFirstConnectedAt
+ }
+ 
+ func (t *PCTransport) GetICEConnectionInfo() *types.ICEConnectionInfo {
+diff --git a/pkg/rtc/transportmanager.go b/pkg/rtc/transportmanager.go
+index 151af1bf..108651f2 100644
+--- a/pkg/rtc/transportmanager.go
++++ b/pkg/rtc/transportmanager.go
+@@ -100,6 +100,7 @@ type TransportManagerParams struct {
+ 	FireOnTrackBySdp                  bool
+ 	EnableDataTracks                  bool
+ 	ExcludeIPv6LocalCandidates        bool
++	EnableWarp                        bool
+ }
+ 
+ type TransportManager struct {
+@@ -172,6 +173,7 @@ func NewTransportManager(params TransportManagerParams) (*TransportManager, erro
+ 		FireOnTrackBySdp:                  params.FireOnTrackBySdp,
+ 		EnableDataTracks:                  params.EnableDataTracks,
+ 		ExcludeIPv6LocalCandidates:        params.ExcludeIPv6LocalCandidates,
++		EnableWarp:                        params.EnableWarp,
+ 	})
+ 	if err != nil {
+ 		return nil, err
+@@ -200,6 +202,7 @@ func NewTransportManager(params TransportManagerParams) (*TransportManager, erro
+ 			FireOnTrackBySdp:                  params.FireOnTrackBySdp,
+ 			EnableDataTracks:                  params.EnableDataTracks,
+ 			ExcludeIPv6LocalCandidates:        params.ExcludeIPv6LocalCandidates,
++			EnableWarp:                        params.EnableWarp,
+ 		})
+ 		if err != nil {
+ 			return nil, err
+@@ -229,12 +232,16 @@ func (t *TransportManager) SubscriberClose() {
+ 	t.subscriber.Close()
+ }
+ 
++func (t *TransportManager) HasPublisherICEEverConnected() bool {
++	return t.publisher.ICEHasEverConnected()
++}
++
+ func (t *TransportManager) HasPublisherEverConnected() bool {
+-	return t.publisher.HasEverConnected()
++	return t.publisher.PeerConnectionHasEverConnected()
+ }
+ 
+ func (t *TransportManager) PublisherFirstConnectedAt() time.Time {
+-	return t.publisher.FirstConnectedAt()
++	return t.publisher.PeerConnectionFirstConnectedAt()
+ }
+ 
+ func (t *TransportManager) IsPublisherEstablished() bool {
+@@ -269,19 +276,27 @@ func (t *TransportManager) GetSubscriberRTT() (float64, bool) {
+ 	}
+ }
+ 
++func (t *TransportManager) HasSubscriberICEEverConnected() bool {
++	if t.params.UseOneShotSignallingMode || t.params.UseSinglePeerConnection {
++		return t.publisher.ICEHasEverConnected()
++	} else {
++		return t.subscriber.ICEHasEverConnected()
++	}
++}
++
+ func (t *TransportManager) HasSubscriberEverConnected() bool {
+ 	if t.params.UseOneShotSignallingMode || t.params.UseSinglePeerConnection {
+-		return t.publisher.HasEverConnected()
++		return t.publisher.PeerConnectionHasEverConnected()
+ 	} else {
+-		return t.subscriber.HasEverConnected()
++		return t.subscriber.PeerConnectionHasEverConnected()
+ 	}
+ }
+ 
+ func (t *TransportManager) SubscriberFirstConnectedAt() time.Time {
+ 	if t.params.UseOneShotSignallingMode || t.params.UseSinglePeerConnection {
+-		return t.publisher.FirstConnectedAt()
++		return t.publisher.PeerConnectionFirstConnectedAt()
+ 	} else {
+-		return t.subscriber.FirstConnectedAt()
++		return t.subscriber.PeerConnectionFirstConnectedAt()
+ 	}
+ }
+ 
+diff --git a/pkg/rtc/types/interfaces.go b/pkg/rtc/types/interfaces.go
+index 2b4552a5..9c3a23db 100644
+--- a/pkg/rtc/types/interfaces.go
++++ b/pkg/rtc/types/interfaces.go
+@@ -16,6 +16,7 @@ package types
+ 
+ import (
+ 	"fmt"
++	"io"
+ 	"time"
+ 
+ 	"github.com/pion/rtcp"
+@@ -43,6 +44,7 @@ import (
+ //counterfeiter:generate . WebsocketClient
+ type WebsocketClient interface {
+ 	ReadMessage() (messageType int, p []byte, err error)
++	NextReader() (messageType int, r io.Reader, err error)
+ 	WriteMessage(messageType int, data []byte) error
+ 	WriteControl(messageType int, data []byte, deadline time.Time) error
+ 	SetReadDeadline(deadline time.Time) error
+@@ -423,11 +425,13 @@ type LocalParticipant interface {
+ 	GetPlayoutDelayConfig() *livekit.PlayoutDelay
+ 	GetPendingTrack(trackID livekit.TrackID) *livekit.TrackInfo
+ 	GetICEConnectionInfo() []*ICEConnectionInfo
++	HasICEConnected() bool
+ 	HasConnected() bool
+ 	GetEnabledPublishCodecs() []*livekit.Codec
+ 	GetPublisherICESessionUfrag() (string, error)
+ 	SupportsMoving() error
+ 	GetLastReliableSequence(migrateOut bool) uint32
++	IsWarpEnabled() bool
+ 
+ 	SwapResponseSink(sink routing.MessageSink, reason SignallingCloseReason)
+ 	GetResponseSink() routing.MessageSink
+diff --git a/pkg/rtc/types/typesfakes/fake_local_participant.go b/pkg/rtc/types/typesfakes/fake_local_participant.go
+index 6996a81e..e0900c54 100644
+--- a/pkg/rtc/types/typesfakes/fake_local_participant.go
++++ b/pkg/rtc/types/typesfakes/fake_local_participant.go
+@@ -774,6 +774,16 @@ type FakeLocalParticipant struct {
+ 	hasConnectedReturnsOnCall map[int]struct {
+ 		result1 bool
+ 	}
++	HasICEConnectedStub        func() bool
++	hasICEConnectedMutex       sync.RWMutex
++	hasICEConnectedArgsForCall []struct {
++	}
++	hasICEConnectedReturns struct {
++		result1 bool
++	}
++	hasICEConnectedReturnsOnCall map[int]struct {
++		result1 bool
++	}
+ 	HasPermissionStub        func(livekit.TrackID, livekit.ParticipantIdentity) bool
+ 	hasPermissionMutex       sync.RWMutex
+ 	hasPermissionArgsForCall []struct {
+@@ -965,6 +975,16 @@ type FakeLocalParticipant struct {
+ 	isUsingSinglePeerConnectionReturnsOnCall map[int]struct {
+ 		result1 bool
+ 	}
++	IsWarpEnabledStub        func() bool
++	isWarpEnabledMutex       sync.RWMutex
++	isWarpEnabledArgsForCall []struct {
++	}
++	isWarpEnabledReturns struct {
++		result1 bool
++	}
++	isWarpEnabledReturnsOnCall map[int]struct {
++		result1 bool
++	}
+ 	IssueFullReconnectStub        func(types.ParticipantCloseReason)
+ 	issueFullReconnectMutex       sync.RWMutex
+ 	issueFullReconnectArgsForCall []struct {
+@@ -5608,6 +5628,59 @@ func (fake *FakeLocalParticipant) HasConnectedReturnsOnCall(i int, result1 bool)
+ 	}{result1}
+ }
+ 
++func (fake *FakeLocalParticipant) HasICEConnected() bool {
++	fake.hasICEConnectedMutex.Lock()
++	ret, specificReturn := fake.hasICEConnectedReturnsOnCall[len(fake.hasICEConnectedArgsForCall)]
++	fake.hasICEConnectedArgsForCall = append(fake.hasICEConnectedArgsForCall, struct {
++	}{})
++	stub := fake.HasICEConnectedStub
++	fakeReturns := fake.hasICEConnectedReturns
++	fake.recordInvocation("HasICEConnected", []interface{}{})
++	fake.hasICEConnectedMutex.Unlock()
++	if stub != nil {
++		return stub()
++	}
++	if specificReturn {
++		return ret.result1
++	}
++	return fakeReturns.result1
++}
++
++func (fake *FakeLocalParticipant) HasICEConnectedCallCount() int {
++	fake.hasICEConnectedMutex.RLock()
++	defer fake.hasICEConnectedMutex.RUnlock()
++	return len(fake.hasICEConnectedArgsForCall)
++}
++
++func (fake *FakeLocalParticipant) HasICEConnectedCalls(stub func() bool) {
++	fake.hasICEConnectedMutex.Lock()
++	defer fake.hasICEConnectedMutex.Unlock()
++	fake.HasICEConnectedStub = stub
++}
++
++func (fake *FakeLocalParticipant) HasICEConnectedReturns(result1 bool) {
++	fake.hasICEConnectedMutex.Lock()
++	defer fake.hasICEConnectedMutex.Unlock()
++	fake.HasICEConnectedStub = nil
++	fake.hasICEConnectedReturns = struct {
++		result1 bool
++	}{result1}
++}
++
++func (fake *FakeLocalParticipant) HasICEConnectedReturnsOnCall(i int, result1 bool) {
++	fake.hasICEConnectedMutex.Lock()
++	defer fake.hasICEConnectedMutex.Unlock()
++	fake.HasICEConnectedStub = nil
++	if fake.hasICEConnectedReturnsOnCall == nil {
++		fake.hasICEConnectedReturnsOnCall = make(map[int]struct {
++			result1 bool
++		})
++	}
++	fake.hasICEConnectedReturnsOnCall[i] = struct {
++		result1 bool
++	}{result1}
++}
++
+ func (fake *FakeLocalParticipant) HasPermission(arg1 livekit.TrackID, arg2 livekit.ParticipantIdentity) bool {
+ 	fake.hasPermissionMutex.Lock()
+ 	ret, specificReturn := fake.hasPermissionReturnsOnCall[len(fake.hasPermissionArgsForCall)]
+@@ -6628,6 +6701,59 @@ func (fake *FakeLocalParticipant) IsUsingSinglePeerConnectionReturnsOnCall(i int
+ 	}{result1}
+ }
+ 
++func (fake *FakeLocalParticipant) IsWarpEnabled() bool {
++	fake.isWarpEnabledMutex.Lock()
++	ret, specificReturn := fake.isWarpEnabledReturnsOnCall[len(fake.isWarpEnabledArgsForCall)]
++	fake.isWarpEnabledArgsForCall = append(fake.isWarpEnabledArgsForCall, struct {
++	}{})
++	stub := fake.IsWarpEnabledStub
++	fakeReturns := fake.isWarpEnabledReturns
++	fake.recordInvocation("IsWarpEnabled", []interface{}{})
++	fake.isWarpEnabledMutex.Unlock()
++	if stub != nil {
++		return stub()
++	}
++	if specificReturn {
++		return ret.result1
++	}
++	return fakeReturns.result1
++}
++
++func (fake *FakeLocalParticipant) IsWarpEnabledCallCount() int {
++	fake.isWarpEnabledMutex.RLock()
++	defer fake.isWarpEnabledMutex.RUnlock()
++	return len(fake.isWarpEnabledArgsForCall)
++}
++
++func (fake *FakeLocalParticipant) IsWarpEnabledCalls(stub func() bool) {
++	fake.isWarpEnabledMutex.Lock()
++	defer fake.isWarpEnabledMutex.Unlock()
++	fake.IsWarpEnabledStub = stub
++}
++
++func (fake *FakeLocalParticipant) IsWarpEnabledReturns(result1 bool) {
++	fake.isWarpEnabledMutex.Lock()
++	defer fake.isWarpEnabledMutex.Unlock()
++	fake.IsWarpEnabledStub = nil
++	fake.isWarpEnabledReturns = struct {
++		result1 bool
++	}{result1}
++}
++
++func (fake *FakeLocalParticipant) IsWarpEnabledReturnsOnCall(i int, result1 bool) {
++	fake.isWarpEnabledMutex.Lock()
++	defer fake.isWarpEnabledMutex.Unlock()
++	fake.IsWarpEnabledStub = nil
++	if fake.isWarpEnabledReturnsOnCall == nil {
++		fake.isWarpEnabledReturnsOnCall = make(map[int]struct {
++			result1 bool
++		})
++	}
++	fake.isWarpEnabledReturnsOnCall[i] = struct {
++		result1 bool
++	}{result1}
++}
++
+ func (fake *FakeLocalParticipant) IssueFullReconnect(arg1 types.ParticipantCloseReason) {
+ 	fake.issueFullReconnectMutex.Lock()
+ 	fake.issueFullReconnectArgsForCall = append(fake.issueFullReconnectArgsForCall, struct {
+diff --git a/pkg/rtc/types/typesfakes/fake_websocket_client.go b/pkg/rtc/types/typesfakes/fake_websocket_client.go
+index 6d5b44c8..ac92d509 100644
+--- a/pkg/rtc/types/typesfakes/fake_websocket_client.go
++++ b/pkg/rtc/types/typesfakes/fake_websocket_client.go
+@@ -2,6 +2,7 @@
+ package typesfakes
+ 
+ import (
++	"io"
+ 	"sync"
+ 	"time"
+ 
+@@ -19,6 +20,20 @@ type FakeWebsocketClient struct {
+ 	closeReturnsOnCall map[int]struct {
+ 		result1 error
+ 	}
++	NextReaderStub        func() (int, io.Reader, error)
++	nextReaderMutex       sync.RWMutex
++	nextReaderArgsForCall []struct {
++	}
++	nextReaderReturns struct {
++		result1 int
++		result2 io.Reader
++		result3 error
++	}
++	nextReaderReturnsOnCall map[int]struct {
++		result1 int
++		result2 io.Reader
++		result3 error
++	}
+ 	ReadMessageStub        func() (int, []byte, error)
+ 	readMessageMutex       sync.RWMutex
+ 	readMessageArgsForCall []struct {
+@@ -126,6 +141,65 @@ func (fake *FakeWebsocketClient) CloseReturnsOnCall(i int, result1 error) {
+ 	}{result1}
+ }
+ 
++func (fake *FakeWebsocketClient) NextReader() (int, io.Reader, error) {
++	fake.nextReaderMutex.Lock()
++	ret, specificReturn := fake.nextReaderReturnsOnCall[len(fake.nextReaderArgsForCall)]
++	fake.nextReaderArgsForCall = append(fake.nextReaderArgsForCall, struct {
++	}{})
++	stub := fake.NextReaderStub
++	fakeReturns := fake.nextReaderReturns
++	fake.recordInvocation("NextReader", []interface{}{})
++	fake.nextReaderMutex.Unlock()
++	if stub != nil {
++		return stub()
++	}
++	if specificReturn {
++		return ret.result1, ret.result2, ret.result3
++	}
++	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
++}
++
++func (fake *FakeWebsocketClient) NextReaderCallCount() int {
++	fake.nextReaderMutex.RLock()
++	defer fake.nextReaderMutex.RUnlock()
++	return len(fake.nextReaderArgsForCall)
++}
++
++func (fake *FakeWebsocketClient) NextReaderCalls(stub func() (int, io.Reader, error)) {
++	fake.nextReaderMutex.Lock()
++	defer fake.nextReaderMutex.Unlock()
++	fake.NextReaderStub = stub
++}
++
++func (fake *FakeWebsocketClient) NextReaderReturns(result1 int, result2 io.Reader, result3 error) {
++	fake.nextReaderMutex.Lock()
++	defer fake.nextReaderMutex.Unlock()
++	fake.NextReaderStub = nil
++	fake.nextReaderReturns = struct {
++		result1 int
++		result2 io.Reader
++		result3 error
++	}{result1, result2, result3}
++}
++
++func (fake *FakeWebsocketClient) NextReaderReturnsOnCall(i int, result1 int, result2 io.Reader, result3 error) {
++	fake.nextReaderMutex.Lock()
++	defer fake.nextReaderMutex.Unlock()
++	fake.NextReaderStub = nil
++	if fake.nextReaderReturnsOnCall == nil {
++		fake.nextReaderReturnsOnCall = make(map[int]struct {
++			result1 int
++			result2 io.Reader
++			result3 error
++		})
++	}
++	fake.nextReaderReturnsOnCall[i] = struct {
++		result1 int
++		result2 io.Reader
++		result3 error
++	}{result1, result2, result3}
++}
++
+ func (fake *FakeWebsocketClient) ReadMessage() (int, []byte, error) {
+ 	fake.readMessageMutex.Lock()
+ 	ret, specificReturn := fake.readMessageReturnsOnCall[len(fake.readMessageArgsForCall)]
+diff --git a/pkg/service/agent_dispatch_service.go b/pkg/service/agent_dispatch_service.go
+index b15bc55a..f2dc581f 100644
+--- a/pkg/service/agent_dispatch_service.go
++++ b/pkg/service/agent_dispatch_service.go
+@@ -84,7 +84,7 @@ func (ag *AgentDispatchService) CreateDispatch(ctx context.Context, req *livekit
+ 	}
+ 
+ 	dispatch := &livekit.AgentDispatch{
+-		Id:            guid.New(guid.AgentDispatchPrefix),
++		Id:            DeterministicID(guid.AgentDispatchPrefix, RequestID(ctx)),
+ 		AgentName:     req.AgentName,
+ 		Room:          req.Room,
+ 		Metadata:      req.Metadata,
+diff --git a/pkg/service/agentservice.go b/pkg/service/agentservice.go
+index 16970726..b5128cb9 100644
+--- a/pkg/service/agentservice.go
++++ b/pkg/service/agentservice.go
+@@ -131,6 +131,8 @@ func HandshakeAgentWorker(c agent.SignalConn, serverInfo *livekit.ServerInfo, re
+ type AgentService struct {
+ 	upgrader AgentSocketUpgrader
+ 
++	signalMessageSizeLimit int64
++
+ 	*AgentHandler
+ }
+ 
+@@ -170,7 +172,9 @@ func NewAgentService(
+ 	bus psrpc.MessageBus,
+ 	keyProvider auth.KeyProvider,
+ ) (*AgentService, error) {
+-	s := &AgentService{}
++	s := &AgentService{
++		signalMessageSizeLimit: conf.Limit.AgentSignalMessageSizeLimit,
++	}
+ 
+ 	serverInfo := &livekit.ServerInfo{
+ 		Edition:       livekit.ServerInfo_Standard,
+@@ -200,8 +204,17 @@ func NewAgentService(
+ 
+ func (s *AgentService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+ 	if conn, registration, ok := s.upgrader.Upgrade(w, r, nil); ok {
+-		s.HandleConnection(r.Context(), NewWSSignalConnection(conn), registration)
+-		conn.Close()
++		// bound the size of a single signalling frame so an oversized message is
++		// rejected by the transport before being fully buffered in memory. This
++		// limits the compressed bytes read off the wire; the decompressed size is
++		// bounded separately in WSSignalConnection.
++		if s.signalMessageSizeLimit > 0 {
++			conn.SetReadLimit(s.signalMessageSizeLimit)
++		}
++		sigConn := NewWSSignalConnection(conn, s.signalMessageSizeLimit)
++		defer sigConn.Close()
++
++		s.HandleConnection(r.Context(), sigConn, registration)
+ 	}
+ }
+ 
+diff --git a/pkg/service/auth.go b/pkg/service/auth.go
+index d019c4aa..9d8c1e92 100644
+--- a/pkg/service/auth.go
++++ b/pkg/service/auth.go
+@@ -17,6 +17,7 @@ package service
+ import (
+ 	"context"
+ 	"errors"
++	"fmt"
+ 	"net/http"
+ 	"strings"
+ 	"time"
+@@ -88,13 +89,13 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
+ 
+ 		secret := m.provider.GetSecret(v.APIKey())
+ 		if secret == "" {
+-			HandleError(w, r, http.StatusUnauthorized, errors.New("invalid API key: "+v.APIKey()))
++			HandleError(w, r, http.StatusUnauthorized, ErrInvalidAPIKey, "apiKey", v.APIKey())
+ 			return
+ 		}
+ 
+ 		claims, grants, err := v.Verify(secret)
+ 		if err != nil {
+-			HandleError(w, r, http.StatusUnauthorized, errors.New("invalid token: "+authToken+", error: "+err.Error()))
++			HandleError(w, r, http.StatusUnauthorized, fmt.Errorf("%w: %s", ErrInvalidAuthorizationToken, err.Error()))
+ 			return
+ 		}
+ 
+diff --git a/pkg/service/clients.go b/pkg/service/clients.go
+index d8fb3378..406bf5e7 100644
+--- a/pkg/service/clients.go
++++ b/pkg/service/clients.go
+@@ -28,6 +28,6 @@ type IOClient interface {
+ 	CreateEgress(ctx context.Context, info *livekit.EgressInfo) (*emptypb.Empty, error)
+ 	GetEgress(ctx context.Context, req *rpc.GetEgressRequest) (*livekit.EgressInfo, error)
+ 	ListEgress(ctx context.Context, req *livekit.ListEgressRequest) (*livekit.ListEgressResponse, error)
+-	CreateIngress(ctx context.Context, req *livekit.IngressInfo) (*emptypb.Empty, error)
++	CreateIngress(ctx context.Context, req *livekit.IngressInfo) (*rpc.CreateIngressResponse, error)
+ 	UpdateIngressState(ctx context.Context, req *rpc.UpdateIngressStateRequest) (*emptypb.Empty, error)
+ }
+diff --git a/pkg/service/egress.go b/pkg/service/egress.go
+index 697aecbb..782d6cdc 100644
+--- a/pkg/service/egress.go
++++ b/pkg/service/egress.go
+@@ -319,8 +319,16 @@ func (s *EgressService) UpdateLayout(ctx context.Context, req *livekit.UpdateLay
+ 	return info, nil
+ }
+ 
++func redactedStreamUrls(urls []string) []string {
++	redacted := make([]string, len(urls))
++	for i, u := range urls {
++		redacted[i], _ = utils.RedactStreamKey(u)
++	}
++	return redacted
++}
++
+ func (s *EgressService) UpdateStream(ctx context.Context, req *livekit.UpdateStreamRequest) (*livekit.EgressInfo, error) {
+-	AppendLogFields(ctx, "egressID", req.EgressId, "addUrls", req.AddOutputUrls, "removeUrls", req.RemoveOutputUrls)
++	AppendLogFields(ctx, "egressID", req.EgressId, "addUrls", redactedStreamUrls(req.AddOutputUrls), "removeUrls", redactedStreamUrls(req.RemoveOutputUrls))
+ 	if err := EnsureRecordPermission(ctx); err != nil {
+ 		return nil, twirpAuthError(err)
+ 	}
+diff --git a/pkg/service/ingress.go b/pkg/service/ingress.go
+index 2b82453e..4036b0e1 100644
+--- a/pkg/service/ingress.go
++++ b/pkg/service/ingress.go
+@@ -192,6 +192,7 @@ func (s *IngressService) CreateIngressWithUrl(ctx context.Context, urlStr string
+ 		}
+ 		// The Ingress instance will create the ingress object when handling the URL pull ingress
+ 	} else {
++		// TODO-jie: ingress retry idempotency: generate ingress key by request-id, and return the ingress object from CreateIngress.
+ 		_, err = s.io.CreateIngress(ctx, info)
+ 		switch err {
+ 		case nil:
+diff --git a/pkg/service/ioservice_ingress.go b/pkg/service/ioservice_ingress.go
+index b802c888..c1fe5955 100644
+--- a/pkg/service/ioservice_ingress.go
++++ b/pkg/service/ioservice_ingress.go
+@@ -18,13 +18,14 @@ import (
+ 	"context"
+ 	"errors"
+ 
++	"google.golang.org/protobuf/types/known/emptypb"
++
+ 	"github.com/livekit/protocol/livekit"
+ 	"github.com/livekit/protocol/logger"
+ 	"github.com/livekit/protocol/rpc"
+-	"google.golang.org/protobuf/types/known/emptypb"
+ )
+ 
+-func (s *IOInfoService) CreateIngress(ctx context.Context, info *livekit.IngressInfo) (*emptypb.Empty, error) {
++func (s *IOInfoService) CreateIngress(ctx context.Context, info *livekit.IngressInfo) (*rpc.CreateIngressResponse, error) {
+ 	if s.is == nil {
+ 		return nil, ErrIngressNotConnected
+ 	}
+@@ -36,7 +37,7 @@ func (s *IOInfoService) CreateIngress(ctx context.Context, info *livekit.Ingress
+ 
+ 	s.telemetry.IngressCreated(ctx, info)
+ 
+-	return &emptypb.Empty{}, nil
++	return &rpc.CreateIngressResponse{Info: info}, nil
+ }
+ 
+ func (s *IOInfoService) GetIngressInfo(ctx context.Context, req *rpc.GetIngressInfoRequest) (*rpc.GetIngressInfoResponse, error) {
+diff --git a/pkg/service/requestid.go b/pkg/service/requestid.go
+new file mode 100644
+index 00000000..bde50b1f
+--- /dev/null
++++ b/pkg/service/requestid.go
+@@ -0,0 +1,53 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package service
++
++import (
++	"context"
++
++	"github.com/livekit/protocol/utils/guid"
++)
++
++// RequestIDAttribute is the participant attribute stamped with the request id
++// for calls that join a room before dialing. A
++// retry finds the existing participant with a matching value and skips the dial.
++const RequestIDAttribute = "lk.request_id"
++
++type requestIDKey struct{}
++
++// WithRequestID stores the client idempotency id on the context and propagates
++// it to downstream services via outgoing metadata. A no-op when id is empty.
++func WithRequestID(ctx context.Context, id string) context.Context {
++	if id == "" {
++		return ctx
++	}
++	return context.WithValue(ctx, requestIDKey{}, id)
++}
++
++func RequestID(ctx context.Context) string {
++	if id, ok := ctx.Value(requestIDKey{}).(string); ok && id != "" {
++		return id
++	}
++	return ""
++}
++
++// DeterministicID derives a stable resource id from the request id — retries of the same logical call
++// yield the same id and dedup at the store. With no request id it falls back to a random id.
++func DeterministicID(prefix, requestID string) string {
++	if requestID == "" {
++		return guid.New(prefix)
++	}
++	return guid.Hash(prefix, []byte(requestID))
++}
+diff --git a/pkg/service/requestid_test.go b/pkg/service/requestid_test.go
+new file mode 100644
+index 00000000..f3ed1398
+--- /dev/null
++++ b/pkg/service/requestid_test.go
+@@ -0,0 +1,70 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package service
++
++import (
++	"context"
++	"strings"
++	"testing"
++)
++
++func TestDeterministicID(t *testing.T) {
++	const prefix = "EG_"
++
++	// Same request id -> same id: this is what makes an SDK-retried create dedup.
++	a := DeterministicID(prefix, "req_123")
++	if b := DeterministicID(prefix, "req_123"); a != b {
++		t.Fatalf("not stable for same request id: %q != %q", a, b)
++	}
++	if !strings.HasPrefix(a, prefix) {
++		t.Fatalf("id %q missing prefix %q", a, prefix)
++	}
++
++	// Different request ids -> different ids.
++	if c := DeterministicID(prefix, "req_456"); c == a {
++		t.Fatalf("different request ids produced the same id: %q", c)
++	}
++
++	// Different prefixes -> different ids (so e.g. a room and identity derived
++	// from the same request id don't collide).
++	if d := DeterministicID("IN_", "req_123"); d == a {
++		t.Fatalf("different prefixes produced the same id: %q", d)
++	}
++
++	// Empty request id -> random (each call differs), still prefixed. Preserves
++	// non-idempotent behavior when the client sent no request id.
++	r1 := DeterministicID(prefix, "")
++	r2 := DeterministicID(prefix, "")
++	if r1 == r2 {
++		t.Fatalf("empty request id should produce random ids, got equal: %q", r1)
++	}
++	if !strings.HasPrefix(r1, prefix) {
++		t.Fatalf("random id %q missing prefix %q", r1, prefix)
++	}
++}
++
++func TestRequestID(t *testing.T) {
++	if got := RequestID(context.Background()); got != "" {
++		t.Fatalf("RequestID on bare context = %q, want empty", got)
++	}
++	ctx := WithRequestID(context.Background(), "req_abc")
++	if got := RequestID(ctx); got != "req_abc" {
++		t.Fatalf("RequestID = %q, want req_abc", got)
++	}
++	// An empty id is a no-op (the client sent none).
++	if got := RequestID(WithRequestID(context.Background(), "")); got != "" {
++		t.Fatalf("WithRequestID(\"\") should be a no-op, got %q", got)
++	}
++}
+diff --git a/pkg/service/requestlimit_test.go b/pkg/service/requestlimit_test.go
+new file mode 100644
+index 00000000..7c707530
+--- /dev/null
++++ b/pkg/service/requestlimit_test.go
+@@ -0,0 +1,135 @@
++// Copyright 2024 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package service_test
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/livekit-server/pkg/service"
++)
++
++// readAllHandler mimics the way a Twirp handler consumes the whole request body
++// before doing anything else. It records how much it managed to read and whether
++// the read failed (e.g. because the body limit was exceeded).
++type readAllHandler struct {
++	bytesRead int
++	readErr   error
++	called    bool
++}
++
++func (h *readAllHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	h.called = true
++	if r.Body == nil {
++		w.WriteHeader(http.StatusOK)
++		return
++	}
++	b, err := io.ReadAll(r.Body)
++	h.bytesRead = len(b)
++	h.readErr = err
++	if err != nil {
++		// a real decoder surfaces this as a 4xx/5xx; emulate that
++		w.WriteHeader(http.StatusBadRequest)
++		return
++	}
++	w.WriteHeader(http.StatusOK)
++}
++
++func TestRequestBodyLimiter(t *testing.T) {
++	const limit = 1024
++
++	t.Run("rejects oversized declared Content-Length before decoding", func(t *testing.T) {
++		l := service.NewRequestBodyLimiter(limit)
++		handler := &readAllHandler{}
++
++		body := strings.NewReader(strings.Repeat("a", limit*4))
++		r := httptest.NewRequest(http.MethodPost, "/twirp/livekit.Egress/StartRoomCompositeEgress", body)
++		require.EqualValues(t, limit*4, r.ContentLength)
++		w := httptest.NewRecorder()
++
++		l.ServeHTTP(w, r, handler.ServeHTTP)
++
++		require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
++		// the body must never be handed to the decoder
++		require.False(t, handler.called)
++	})
++
++	t.Run("bounds body when Content-Length is absent/dishonest", func(t *testing.T) {
++		l := service.NewRequestBodyLimiter(limit)
++		handler := &readAllHandler{}
++
++		body := strings.NewReader(strings.Repeat("a", limit*4))
++		r := httptest.NewRequest(http.MethodPost, "/twirp/livekit.Egress/StartRoomCompositeEgress", body)
++		// simulate chunked encoding / unknown length
++		r.ContentLength = -1
++		w := httptest.NewRecorder()
++
++		l.ServeHTTP(w, r, handler.ServeHTTP)
++
++		// the decoder was invoked but could not read more than the limit
++		require.True(t, handler.called)
++		require.Error(t, handler.readErr)
++		require.LessOrEqual(t, handler.bytesRead, limit)
++	})
++
++	t.Run("allows request within limit", func(t *testing.T) {
++		l := service.NewRequestBodyLimiter(limit)
++		handler := &readAllHandler{}
++
++		payload := strings.Repeat("a", limit/2)
++		r := httptest.NewRequest(http.MethodPost, "/twirp/livekit.Egress/StartRoomCompositeEgress", strings.NewReader(payload))
++		w := httptest.NewRecorder()
++
++		l.ServeHTTP(w, r, handler.ServeHTTP)
++
++		require.Equal(t, http.StatusOK, w.Code)
++		require.True(t, handler.called)
++		require.NoError(t, handler.readErr)
++		require.Equal(t, len(payload), handler.bytesRead)
++	})
++
++	t.Run("disabled when limit is non-positive", func(t *testing.T) {
++		l := service.NewRequestBodyLimiter(0)
++		handler := &readAllHandler{}
++
++		payload := strings.Repeat("a", limit*8)
++		r := httptest.NewRequest(http.MethodPost, "/twirp/livekit.Egress/StartRoomCompositeEgress", strings.NewReader(payload))
++		w := httptest.NewRecorder()
++
++		l.ServeHTTP(w, r, handler.ServeHTTP)
++
++		require.Equal(t, http.StatusOK, w.Code)
++		require.NoError(t, handler.readErr)
++		require.Equal(t, len(payload), handler.bytesRead)
++	})
++
++	t.Run("passes through nil body", func(t *testing.T) {
++		l := service.NewRequestBodyLimiter(limit)
++		handler := &readAllHandler{}
++
++		r := httptest.NewRequest(http.MethodGet, "/", nil)
++		r.Body = nil
++		w := httptest.NewRecorder()
++
++		l.ServeHTTP(w, r, handler.ServeHTTP)
++
++		require.True(t, handler.called)
++	})
++}
+diff --git a/pkg/service/roommanager.go b/pkg/service/roommanager.go
+index 0447f14e..57282b3c 100644
+--- a/pkg/service/roommanager.go
++++ b/pkg/service/roommanager.go
+@@ -306,7 +306,7 @@ func (r *RoomManager) StartSession(
+ 	room, err := r.getOrCreateRoom(ctx, createRoom)
+ 	if err != nil {
+ 		if pi.Identity != "" {
+-			prometheus.IncrementParticipantRtcCanceled(1)
++			prometheus.IncrementParticipantRtcCanceled(1, false)
+ 		}
+ 		return err
+ 	}
+@@ -359,7 +359,7 @@ func (r *RoomManager) StartSession(
+ 						Leave: leave,
+ 					},
+ 				})
+-				prometheus.IncrementParticipantRtcCanceled(1)
++				prometheus.IncrementParticipantRtcCanceled(1, participant.IsWarpEnabled())
+ 				return errors.New("could not restart closed participant")
+ 			}
+ 
+@@ -383,11 +383,11 @@ func (r *RoomManager) StartSession(
+ 				pi.ReconnectReason,
+ 			); err != nil {
+ 				participant.GetLogger().Warnw("could not resume participant", err)
+-				prometheus.IncrementParticipantRtcCanceled(1)
++				prometheus.IncrementParticipantRtcCanceled(1, participant.IsWarpEnabled())
+ 				return err
+ 			}
+ 			r.telemetry.ParticipantResumed(ctx, room.ToProto(), participant.ToProto(), r.currentNode.NodeID(), pi.ReconnectReason)
+-			prometheus.IncrementParticipantRtcActive(1)
++			prometheus.IncrementParticipantRtcActive(1, participant.IsWarpEnabled())
+ 
+ 			go room.HandleSyncState(participant, pi.SyncState)
+ 
+@@ -419,7 +419,7 @@ func (r *RoomManager) StartSession(
+ 				Leave: leave,
+ 			},
+ 		})
+-		prometheus.IncrementParticipantRtcCanceled(1)
++		prometheus.IncrementParticipantRtcCanceled(1, false)
+ 		return errors.New("could not restart participant")
+ 	}
+ 
+@@ -484,6 +484,7 @@ func (r *RoomManager) StartSession(
+ 		enabledCodecs = append(enabledCodecs, &livekit.Codec{Mime: mime.MimeTypeRTX.String()})
+ 	}
+ 
++	enableWarp := !useOneShotSignallingMode && r.config.RTC.EnableWarp
+ 	participant, err = rtc.NewParticipant(rtc.ParticipantParams{
+ 		Identity:                 pi.Identity,
+ 		Name:                     pi.Name,
+@@ -541,9 +542,10 @@ func (r *RoomManager) StartSession(
+ 		EnableDataTracks:                  r.config.EnableDataTracks,
+ 		EnableParticipantDataBlob:         r.config.EnableParticipantDataBlob,
+ 		EnableRTPStreamRestartDetection:   r.config.RTC.EnableRTPStreamRestartDetection,
++		EnableWarp:                        enableWarp,
+ 	})
+ 	if err != nil {
+-		prometheus.IncrementParticipantRtcCanceled(1)
++		prometheus.IncrementParticipantRtcCanceled(1, enableWarp)
+ 		return err
+ 	}
+ 	iceConfig := r.setIceConfig(room.Name(), participant)
+@@ -559,7 +561,7 @@ func (r *RoomManager) StartSession(
+ 	if err = room.Join(participant, requestSource, &opts, iceServers); err != nil {
+ 		pLogger.Errorw("could not join room", err)
+ 		_ = participant.Close(true, types.ParticipantCloseReasonJoinFailed, false)
+-		prometheus.IncrementParticipantRtcCanceled(1)
++		prometheus.IncrementParticipantRtcCanceled(1, enableWarp)
+ 		return err
+ 	}
+ 
+@@ -571,7 +573,7 @@ func (r *RoomManager) StartSession(
+ 		participantServerClosers.Close()
+ 		pLogger.Errorw("could not join register participant topic", err)
+ 		_ = participant.Close(true, types.ParticipantCloseReasonMessageBusFailed, false)
+-		prometheus.IncrementParticipantRtcCanceled(1)
++		prometheus.IncrementParticipantRtcCanceled(1, enableWarp)
+ 		return err
+ 	}
+ 
+@@ -582,7 +584,7 @@ func (r *RoomManager) StartSession(
+ 			participantServerClosers.Close()
+ 			pLogger.Errorw("could not join register participant topic for rtc rest participant server", err)
+ 			_ = participant.Close(true, types.ParticipantCloseReasonMessageBusFailed, false)
+-			prometheus.IncrementParticipantRtcCanceled(1)
++			prometheus.IncrementParticipantRtcCanceled(1, enableWarp)
+ 			return err
+ 		}
+ 	}
+diff --git a/pkg/service/rtcservice.go b/pkg/service/rtcservice.go
+index b42086d3..b111e410 100644
+--- a/pkg/service/rtcservice.go
++++ b/pkg/service/rtcservice.go
+@@ -44,6 +44,17 @@ import (
+ 	"github.com/livekit/livekit-server/pkg/utils"
+ )
+ 
++const (
++	// how long the response source is drained after the request direction is gone,
++	// applies only when the source is not closed by the relay, i. e. when there is
++	// no way to tell that everything pending has been read
++	responseFlushTimeout = 250 * time.Millisecond
++
++	// how long the response pump is given to stop, a bit more than the drain deadline
++	// so that it can finish the write it is in when that deadline expires
++	responsePumpDoneTimeout = 2 * responseFlushTimeout
++)
++
+ type RTCService struct {
+ 	router        routing.MessageRouter
+ 	roomAllocator RoomAllocator
+@@ -381,7 +392,7 @@ func (s *RTCService) serve(w http.ResponseWriter, r *http.Request, needsJoinRequ
+ 	var cr connectionResult
+ 	var initialResponse *livekit.SignalResponse
+ 	for attempt := 0; attempt < s.config.SignalRelay.ConnectAttempts; attempt++ {
+-		connectionTimeout := 3 * time.Second * time.Duration(attempt+1)
++		connectionTimeout := time.Duration(3+attempt) * time.Second
+ 		ctx := utils.ContextWithAttempt(r.Context(), attempt)
+ 		cr, initialResponse, err = s.startConnection(ctx, roomName, pi, connectionTimeout)
+ 		if err == nil || errors.Is(err, context.Canceled) {
+@@ -428,13 +439,34 @@ func (s *RTCService) serve(w http.ResponseWriter, r *http.Request, needsJoinRequ
+ 
+ 	closedByClient := atomic.NewBool(false)
+ 	done := make(chan struct{})
++	// closed by the response pump when it has stopped writing to the web socket
++	responsePumpDone := make(chan struct{})
++	responsePumpStarted := false
++	var sigConn *WSSignalConnection
+ 	// function exits when websocket terminates, it'll close the event reading off of request sink and response source as well
+ 	defer func() {
+ 		resolveLogger(true)
+ 		pLogger.Debugw("finishing WS connection", "closedByClient", closedByClient.Load())
+-		cr.ResponseSource.Close()
+-		cr.RequestSink.Close()
++
++		// signal the response pump before anything else so that it can flush responses
++		// the participant queued on its way out, a leave request sent just before the
++		// signalling connection was closed (on migration for example) is dropped otherwise
+ 		close(done)
++		cr.RequestSink.Close()
++		if responsePumpStarted {
++			select {
++			case <-responsePumpDone:
++			case <-time.After(responsePumpDoneTimeout):
++				pLogger.Debugw("timed out waiting for response pump to finish")
++			}
++		}
++		cr.ResponseSource.Close()
++
++		// close the web socket on all paths, even when the response pump is wedged
++		// writing to an unresponsive client
++		if sigConn != nil {
++			sigConn.CloseWithReason("")
++		}
+ 
+ 		signalStats.Stop()
+ 	}()
+@@ -447,6 +479,13 @@ func (s *RTCService) serve(w http.ResponseWriter, r *http.Request, needsJoinRequ
+ 		HandleError(w, r, http.StatusInternalServerError, err, getLoggerFields()...)
+ 		return
+ 	}
++	// bound the size of a single signalling frame so an oversized message is
++	// rejected by the transport before being fully buffered in memory. This limits
++	// the compressed bytes read off the wire; the decompressed size is bounded
++	// separately in WSSignalConnection below.
++	if s.limits.SignalMessageSizeLimit > 0 {
++		conn.SetReadLimit(s.limits.SignalMessageSizeLimit)
++	}
+ 
+ 	s.mu.Lock()
+ 	s.connections[conn] = struct{}{}
+@@ -459,7 +498,7 @@ func (s *RTCService) serve(w http.ResponseWriter, r *http.Request, needsJoinRequ
+ 	}()
+ 
+ 	// websocket established
+-	sigConn := NewWSSignalConnection(conn)
++	sigConn = NewWSSignalConnection(conn, s.limits.SignalMessageSizeLimit)
+ 	pLogger.Debugw("sending initial response", "response", logger.Proto(initialResponse))
+ 	count, err := sigConn.WriteResponse(initialResponse)
+ 	if err != nil {
+@@ -483,14 +522,82 @@ func (s *RTCService) serve(w http.ResponseWriter, r *http.Request, needsJoinRequ
+ 		"nodeSelectionReason", cr.NodeSelectionReason,
+ 	)
+ 
++	// writes one response from the response source to the web socket,
++	// returns false if the response pump should stop
++	writeResponse := func(msg proto.Message) bool {
++		res, ok := msg.(*livekit.SignalResponse)
++		if !ok {
++			pLogger.Errorw(
++				"unexpected message type", nil,
++				"type", fmt.Sprintf("%T", msg),
++			)
++			return true
++		}
++
++		switch m := res.Message.(type) {
++		case *livekit.SignalResponse_Offer:
++			pLogger.Debugw("sending offer", "offer", logger.Proto(res))
++
++		case *livekit.SignalResponse_Answer:
++			pLogger.Debugw("sending answer", "answer", logger.Proto(res))
++
++		case *livekit.SignalResponse_Join:
++			pLogger.Debugw("sending join", "join", logger.Proto(res))
++			signalStats.ResolveRoom(m.Join.GetRoom())
++			signalStats.ResolveParticipant(m.Join.GetParticipant())
++
++		case *livekit.SignalResponse_RoomUpdate:
++			updateRoomID := livekit.RoomID(m.RoomUpdate.GetRoom().GetSid())
++			if updateRoomID != "" {
++				roomID = updateRoomID
++				resolveLogger(false)
++			}
++			pLogger.Debugw("sending room update", "roomUpdate", logger.Proto(res))
++			signalStats.ResolveRoom(m.RoomUpdate.GetRoom())
++
++		case *livekit.SignalResponse_Update:
++			pLogger.Debugw("sending participant update", "participantUpdate", logger.Proto(res))
++
++		case *livekit.SignalResponse_RoomMoved:
++			resetLogger()
++			signalStats.Reset()
++
++			roomName = livekit.RoomName(m.RoomMoved.GetRoom().GetName())
++			moveRoomID := livekit.RoomID(m.RoomMoved.GetRoom().GetSid())
++			if moveRoomID != "" {
++				roomID = moveRoomID
++			}
++			participantIdentity = livekit.ParticipantIdentity(m.RoomMoved.GetParticipant().GetIdentity())
++			pID = livekit.ParticipantID(m.RoomMoved.GetParticipant().GetSid())
++			resolveLogger(false)
++
++			signalStats.ResolveRoom(m.RoomMoved.GetRoom())
++			signalStats.ResolveParticipant(m.RoomMoved.GetParticipant())
++			pLogger.Debugw("sending room moved", "roomMoved", logger.Proto(res))
++
++		default:
++			pLogger.Debugw("sending signal response", "response", logger.Proto(res))
++		}
++
++		if count, err := sigConn.WriteResponse(res); err != nil {
++			pLogger.Warnw("error writing to websocket", err)
++			return false
++		} else {
++			signalStats.AddBytes(uint64(count), true)
++		}
++
++		return true
++	}
++
+ 	// handle responses
++	responsePumpStarted = true
+ 	go func() {
+ 		defer func() {
++			close(responsePumpDone)
++
+ 			// when the source is terminated, this means Participant.Close had been called and RTC connection is done
+ 			// we would terminate the signal connection as well
+-			closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
+-			_ = conn.WriteControl(websocket.CloseMessage, closeMsg, time.Now().Add(time.Second))
+-			_ = conn.Close()
++			sigConn.CloseWithReason("")
+ 		}()
+ 		defer func() {
+ 			if r := rtc.Recover(pLogger); r != nil {
+@@ -500,72 +607,23 @@ func (s *RTCService) serve(w http.ResponseWriter, r *http.Request, needsJoinRequ
+ 		for {
+ 			select {
+ 			case <-done:
++				// the request direction is gone, flush what the participant queued on its
++				// way out unless the client is the one that went away
++				if !closedByClient.Load() {
++					if !drainMessageSource(cr.ResponseSource, responseFlushTimeout, writeResponse) {
++						pLogger.Debugw("could not drain response source fully")
++					}
++				}
+ 				return
++
+ 			case msg := <-cr.ResponseSource.ReadChan():
+ 				if msg == nil {
+ 					resolveLogger(true)
+ 					pLogger.Debugw("nothing to read from response source")
+ 					return
+ 				}
+-				res, ok := msg.(*livekit.SignalResponse)
+-				if !ok {
+-					pLogger.Errorw(
+-						"unexpected message type", nil,
+-						"type", fmt.Sprintf("%T", msg),
+-					)
+-					continue
+-				}
+-
+-				switch m := res.Message.(type) {
+-				case *livekit.SignalResponse_Offer:
+-					pLogger.Debugw("sending offer", "offer", logger.Proto(res))
+-
+-				case *livekit.SignalResponse_Answer:
+-					pLogger.Debugw("sending answer", "answer", logger.Proto(res))
+-
+-				case *livekit.SignalResponse_Join:
+-					pLogger.Debugw("sending join", "join", logger.Proto(res))
+-					signalStats.ResolveRoom(m.Join.GetRoom())
+-					signalStats.ResolveParticipant(m.Join.GetParticipant())
+-
+-				case *livekit.SignalResponse_RoomUpdate:
+-					updateRoomID := livekit.RoomID(m.RoomUpdate.GetRoom().GetSid())
+-					if updateRoomID != "" {
+-						roomID = updateRoomID
+-						resolveLogger(false)
+-					}
+-					pLogger.Debugw("sending room update", "roomUpdate", logger.Proto(res))
+-					signalStats.ResolveRoom(m.RoomUpdate.GetRoom())
+-
+-				case *livekit.SignalResponse_Update:
+-					pLogger.Debugw("sending participant update", "participantUpdate", logger.Proto(res))
+-
+-				case *livekit.SignalResponse_RoomMoved:
+-					resetLogger()
+-					signalStats.Reset()
+-
+-					roomName = livekit.RoomName(m.RoomMoved.GetRoom().GetName())
+-					moveRoomID := livekit.RoomID(m.RoomMoved.GetRoom().GetSid())
+-					if moveRoomID != "" {
+-						roomID = moveRoomID
+-					}
+-					participantIdentity = livekit.ParticipantIdentity(m.RoomMoved.GetParticipant().GetIdentity())
+-					pID = livekit.ParticipantID(m.RoomMoved.GetParticipant().GetSid())
+-					resolveLogger(false)
+-
+-					signalStats.ResolveRoom(m.RoomMoved.GetRoom())
+-					signalStats.ResolveParticipant(m.RoomMoved.GetParticipant())
+-					pLogger.Debugw("sending room moved", "roomMoved", logger.Proto(res))
+-
+-				default:
+-					pLogger.Debugw("sending signal response", "response", logger.Proto(res))
+-				}
+-
+-				if count, err := sigConn.WriteResponse(res); err != nil {
+-					pLogger.Warnw("error writing to websocket", err)
++				if !writeResponse(msg) {
+ 					return
+-				} else {
+-					signalStats.AddBytes(uint64(count), true)
+ 				}
+ 			}
+ 		}
+@@ -628,6 +686,34 @@ func (s *RTCService) serve(w http.ResponseWriter, r *http.Request, needsJoinRequ
+ 	}
+ }
+ 
++// drainMessageSource writes messages that are still queued in source using write.
++// It is used when tearing a signalling connection down, responses the participant queued
++// on its way out, a leave request on migration for example, would be dropped otherwise.
++//
++// The producer writes all pending messages into the source before closing it, so draining
++// till the source is closed is a complete flush. The deadline is a backstop for the cases
++// where the source is not closed, i. e. when there is no way to tell that everything
++// pending has been read. Returns true if the source was drained fully.
++func drainMessageSource(source routing.MessageSource, timeout time.Duration, write func(proto.Message) bool) bool {
++	deadline := time.NewTimer(timeout)
++	defer deadline.Stop()
++
++	for {
++		select {
++		case msg := <-source.ReadChan():
++			if msg == nil {
++				return true
++			}
++			if !write(msg) {
++				return false
++			}
++
++		case <-deadline.C:
++			return false
++		}
++	}
++}
++
+ func (s *RTCService) DrainConnections(interval time.Duration, force bool) {
+ 	s.mu.Lock()
+ 	conns := maps.Clone(s.connections)
+diff --git a/pkg/service/rtcservice_test.go b/pkg/service/rtcservice_test.go
+new file mode 100644
+index 00000000..f3cfebe8
+--- /dev/null
++++ b/pkg/service/rtcservice_test.go
+@@ -0,0 +1,109 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package service
++
++import (
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++	"google.golang.org/protobuf/proto"
++
++	"github.com/livekit/protocol/livekit"
++
++	"github.com/livekit/livekit-server/pkg/routing"
++)
++
++func leaveResponse(action livekit.LeaveRequest_Action) *livekit.SignalResponse {
++	return &livekit.SignalResponse{
++		Message: &livekit.SignalResponse_Leave{
++			Leave: &livekit.LeaveRequest{
++				Action: action,
++				Reason: livekit.DisconnectReason_MIGRATION,
++			},
++		},
++	}
++}
++
++func TestDrainMessageSource(t *testing.T) {
++	collect := func(msgs *[]proto.Message) func(proto.Message) bool {
++		return func(msg proto.Message) bool {
++			*msgs = append(*msgs, msg)
++			return true
++		}
++	}
++
++	t.Run("drains queued messages of a closed source", func(t *testing.T) {
++		source := routing.NewDefaultMessageChannel("CO_test")
++		require.NoError(t, source.WriteMessage(leaveResponse(livekit.LeaveRequest_RESUME)))
++		require.NoError(t, source.WriteMessage(leaveResponse(livekit.LeaveRequest_RECONNECT)))
++		source.Close()
++
++		var got []proto.Message
++		require.True(t, drainMessageSource(source, time.Second, collect(&got)))
++		require.Len(t, got, 2)
++		require.Equal(
++			t,
++			livekit.LeaveRequest_RESUME,
++			got[0].(*livekit.SignalResponse).GetLeave().GetAction(),
++		)
++		require.Equal(
++			t,
++			livekit.LeaveRequest_RECONNECT,
++			got[1].(*livekit.SignalResponse).GetLeave().GetAction(),
++		)
++	})
++
++	t.Run("drains messages written while draining", func(t *testing.T) {
++		source := routing.NewDefaultMessageChannel("CO_test")
++		// mimics the relay pushing a message that was still in flight when the
++		// request direction went away, and closing the source right after
++		go func() {
++			time.Sleep(20 * time.Millisecond)
++			_ = source.WriteMessage(leaveResponse(livekit.LeaveRequest_RESUME))
++			source.Close()
++		}()
++
++		var got []proto.Message
++		require.True(t, drainMessageSource(source, time.Second, collect(&got)))
++		require.Len(t, got, 1)
++	})
++
++	t.Run("gives up on the deadline when the source stays open", func(t *testing.T) {
++		source := routing.NewDefaultMessageChannel("CO_test")
++		require.NoError(t, source.WriteMessage(leaveResponse(livekit.LeaveRequest_RESUME)))
++
++		var got []proto.Message
++		start := time.Now()
++		require.False(t, drainMessageSource(source, 50*time.Millisecond, collect(&got)))
++		require.GreaterOrEqual(t, time.Since(start), 50*time.Millisecond)
++		// what was queued is still flushed
++		require.Len(t, got, 1)
++	})
++
++	t.Run("stops when the write fails", func(t *testing.T) {
++		source := routing.NewDefaultMessageChannel("CO_test")
++		require.NoError(t, source.WriteMessage(leaveResponse(livekit.LeaveRequest_RESUME)))
++		require.NoError(t, source.WriteMessage(leaveResponse(livekit.LeaveRequest_RECONNECT)))
++		source.Close()
++
++		var got []proto.Message
++		require.False(t, drainMessageSource(source, time.Second, func(msg proto.Message) bool {
++			got = append(got, msg)
++			return false
++		}))
++		require.Len(t, got, 1)
++	})
++}
+diff --git a/pkg/service/server.go b/pkg/service/server.go
+index 05a51522..e2656980 100644
+--- a/pkg/service/server.go
++++ b/pkg/service/server.go
+@@ -111,6 +111,8 @@ func NewLivekitServer(conf *config.Config,
+ 			MaxAge: 86400,
+ 		}),
+ 		negroni.HandlerFunc(RemoveDoubleSlashes),
++		// limit request body size so large messages cannot exhaust memory
++		NewRequestBodyLimiter(conf.Limit.MaxAPIRequestBodySize),
+ 	}
+ 	if keyProvider != nil {
+ 		middlewares = append(middlewares, NewAPIKeyAuthMiddleware(keyProvider))
+@@ -155,7 +157,7 @@ func NewLivekitServer(conf *config.Config,
+ 	}
+ 
+ 	if conf.PrometheusPort > 0 {
+-		logger.Warnw("prometheus_port is deprecated, please switch prometheus.port instead", nil)
++		logger.Warnw("prometheus_port is deprecated, please switch to prometheus.port instead", nil)
+ 		conf.Prometheus.Port = conf.PrometheusPort
+ 	}
+ 
+@@ -166,6 +168,10 @@ func NewLivekitServer(conf *config.Config,
+ 			protectedHandler.Use(negroni.HandlerFunc(GenBasicAuthMiddleware(conf.Prometheus.Username, conf.Prometheus.Password)))
+ 			protectedHandler.UseHandler(promHandler)
+ 			promHandler = protectedHandler
++		} else if conf.Prometheus.Username != "" || conf.Prometheus.Password != "" {
++			logger.Warnw("prometheus username or password is set but not both, set both or nothing for unauthenticated access", nil)
++			err = errors.New("prometheus username or password is set but not both, set both or nothing for unauthenticated access")
++			return
+ 		}
+ 		s.promServer = &http.Server{
+ 			Handler: promHandler,
+diff --git a/pkg/service/servicefakes/fake_ioclient.go b/pkg/service/servicefakes/fake_ioclient.go
+index 0cdda412..6a04a2c2 100644
+--- a/pkg/service/servicefakes/fake_ioclient.go
++++ b/pkg/service/servicefakes/fake_ioclient.go
+@@ -26,18 +26,18 @@ type FakeIOClient struct {
+ 		result1 *emptypb.Empty
+ 		result2 error
+ 	}
+-	CreateIngressStub        func(context.Context, *livekit.IngressInfo) (*emptypb.Empty, error)
++	CreateIngressStub        func(context.Context, *livekit.IngressInfo) (*rpc.CreateIngressResponse, error)
+ 	createIngressMutex       sync.RWMutex
+ 	createIngressArgsForCall []struct {
+ 		arg1 context.Context
+ 		arg2 *livekit.IngressInfo
+ 	}
+ 	createIngressReturns struct {
+-		result1 *emptypb.Empty
++		result1 *rpc.CreateIngressResponse
+ 		result2 error
+ 	}
+ 	createIngressReturnsOnCall map[int]struct {
+-		result1 *emptypb.Empty
++		result1 *rpc.CreateIngressResponse
+ 		result2 error
+ 	}
+ 	GetEgressStub        func(context.Context, *rpc.GetEgressRequest) (*livekit.EgressInfo, error)
+@@ -151,7 +151,7 @@ func (fake *FakeIOClient) CreateEgressReturnsOnCall(i int, result1 *emptypb.Empt
+ 	}{result1, result2}
+ }
+ 
+-func (fake *FakeIOClient) CreateIngress(arg1 context.Context, arg2 *livekit.IngressInfo) (*emptypb.Empty, error) {
++func (fake *FakeIOClient) CreateIngress(arg1 context.Context, arg2 *livekit.IngressInfo) (*rpc.CreateIngressResponse, error) {
+ 	fake.createIngressMutex.Lock()
+ 	ret, specificReturn := fake.createIngressReturnsOnCall[len(fake.createIngressArgsForCall)]
+ 	fake.createIngressArgsForCall = append(fake.createIngressArgsForCall, struct {
+@@ -177,7 +177,7 @@ func (fake *FakeIOClient) CreateIngressCallCount() int {
+ 	return len(fake.createIngressArgsForCall)
+ }
+ 
+-func (fake *FakeIOClient) CreateIngressCalls(stub func(context.Context, *livekit.IngressInfo) (*emptypb.Empty, error)) {
++func (fake *FakeIOClient) CreateIngressCalls(stub func(context.Context, *livekit.IngressInfo) (*rpc.CreateIngressResponse, error)) {
+ 	fake.createIngressMutex.Lock()
+ 	defer fake.createIngressMutex.Unlock()
+ 	fake.CreateIngressStub = stub
+@@ -190,28 +190,28 @@ func (fake *FakeIOClient) CreateIngressArgsForCall(i int) (context.Context, *liv
+ 	return argsForCall.arg1, argsForCall.arg2
+ }
+ 
+-func (fake *FakeIOClient) CreateIngressReturns(result1 *emptypb.Empty, result2 error) {
++func (fake *FakeIOClient) CreateIngressReturns(result1 *rpc.CreateIngressResponse, result2 error) {
+ 	fake.createIngressMutex.Lock()
+ 	defer fake.createIngressMutex.Unlock()
+ 	fake.CreateIngressStub = nil
+ 	fake.createIngressReturns = struct {
+-		result1 *emptypb.Empty
++		result1 *rpc.CreateIngressResponse
+ 		result2 error
+ 	}{result1, result2}
+ }
+ 
+-func (fake *FakeIOClient) CreateIngressReturnsOnCall(i int, result1 *emptypb.Empty, result2 error) {
++func (fake *FakeIOClient) CreateIngressReturnsOnCall(i int, result1 *rpc.CreateIngressResponse, result2 error) {
+ 	fake.createIngressMutex.Lock()
+ 	defer fake.createIngressMutex.Unlock()
+ 	fake.CreateIngressStub = nil
+ 	if fake.createIngressReturnsOnCall == nil {
+ 		fake.createIngressReturnsOnCall = make(map[int]struct {
+-			result1 *emptypb.Empty
++			result1 *rpc.CreateIngressResponse
+ 			result2 error
+ 		})
+ 	}
+ 	fake.createIngressReturnsOnCall[i] = struct {
+-		result1 *emptypb.Empty
++		result1 *rpc.CreateIngressResponse
+ 		result2 error
+ 	}{result1, result2}
+ }
+diff --git a/pkg/service/utils.go b/pkg/service/utils.go
+index be7c0dc9..cc31be85 100644
+--- a/pkg/service/utils.go
++++ b/pkg/service/utils.go
+@@ -44,8 +44,9 @@ import (
+ )
+ 
+ var (
+-	ErrGzipReadFailed = errors.New("cannot read decompressed data")
+-	ErrGzipTooLarge   = errors.New("decompressed data too large")
++	ErrGzipReadFailed      = errors.New("cannot read decompressed data")
++	ErrGzipTooLarge        = errors.New("decompressed data too large")
++	ErrRequestBodyTooLarge = errors.New("request body too large")
+ )
+ 
+ var gzipReaderPool = sync.Pool{
+@@ -106,6 +107,39 @@ func RemoveDoubleSlashes(w http.ResponseWriter, r *http.Request, next http.Handl
+ 	next(w, r)
+ }
+ 
++// RequestBodyLimiter bounds the size of an incoming HTTP request body so that
++// large messages cannot exhaust memory. The Twirp handlers decode the whole
++// body before any grant check runs, so the limit is applied here, up front.
++//
++// It does not decode the body itself: a request whose Content-Length exceeds
++// the limit is rejected with 413, and the body is wrapped with
++// http.MaxBytesReader so a missing or dishonest Content-Length is still caught
++// by the downstream decoder.
++type RequestBodyLimiter struct {
++	maxBytes int64
++}
++
++func NewRequestBodyLimiter(maxBytes int64) *RequestBodyLimiter {
++	return &RequestBodyLimiter{maxBytes: maxBytes}
++}
++
++func (l *RequestBodyLimiter) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
++	if l.maxBytes <= 0 || r.Body == nil {
++		next(w, r)
++		return
++	}
++
++	// reject early when the declared size already exceeds the limit
++	if r.ContentLength > l.maxBytes {
++		HandleError(w, r, http.StatusRequestEntityTooLarge, ErrRequestBodyTooLarge)
++		return
++	}
++
++	// bound the read in case Content-Length is missing or wrong
++	r.Body = http.MaxBytesReader(w, r.Body, l.maxBytes)
++	next(w, r)
++}
++
+ func IsValidDomain(domain string) bool {
+ 	domainRegexp := regexp.MustCompile(`^(?i)[a-z0-9-]+(\.[a-z0-9-]+)+\.?$`)
+ 	return domainRegexp.MatchString(domain)
+diff --git a/pkg/service/wire_gen.go b/pkg/service/wire_gen.go
+index b64fbb06..0da44113 100644
+--- a/pkg/service/wire_gen.go
++++ b/pkg/service/wire_gen.go
+@@ -86,23 +86,23 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
+ 	}
+ 	rtcEgressLauncher := NewEgressLauncher(egressClient, ioInfoService, objectStore)
+ 	topicFormatter := rpc.NewTopicFormatter()
+-	roomClient, err := rpc.NewTypedRoomClient(clientParams)
++	v, err := rpc.NewTypedRoomClient(clientParams)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	participantClient, err := rpc.NewTypedParticipantClient(clientParams)
++	v2, err := rpc.NewTypedParticipantClient(clientParams)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	roomService, err := NewRoomService(limitConfig, apiConfig, router, roomAllocator, objectStore, rtcEgressLauncher, topicFormatter, roomClient, participantClient)
++	roomService, err := NewRoomService(limitConfig, apiConfig, router, roomAllocator, objectStore, rtcEgressLauncher, topicFormatter, v, v2)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	agentDispatchInternalClient, err := rpc.NewTypedAgentDispatchInternalClient(clientParams)
++	v3, err := rpc.NewTypedAgentDispatchInternalClient(clientParams)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	agentDispatchService := NewAgentDispatchService(limitConfig, agentDispatchInternalClient, topicFormatter, roomAllocator, router)
++	agentDispatchService := NewAgentDispatchService(limitConfig, v3, topicFormatter, roomAllocator, router)
+ 	egressService := NewEgressService(egressClient, rtcEgressLauncher, ioInfoService, roomService)
+ 	ingressConfig := getIngressConfig(conf)
+ 	ingressClient, err := rpc.NewIngressClient(clientParams)
+@@ -117,11 +117,11 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
+ 	}
+ 	sipService := NewSIPService(sipConfig, nodeID, messageBus, sipClient, sipStore, roomService, telemetryService)
+ 	rtcService := NewRTCService(conf, roomAllocator, router, telemetryService)
+-	whipParticipantClient, err := rpc.NewTypedWHIPParticipantClient(clientParams)
++	v4, err := rpc.NewTypedWHIPParticipantClient(clientParams)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	serviceWHIPService, err := NewWHIPService(conf, router, roomAllocator, clientParams, topicFormatter, whipParticipantClient)
++	serviceWHIPService, err := NewWHIPService(conf, router, roomAllocator, clientParams, topicFormatter, v4)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -146,8 +146,8 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-	authHandler := getTURNAuthHandlerFunc(turnAuthHandler)
+-	server, err := newInProcessTurnServer(conf, authHandler)
++	v5 := getTURNAuthHandlerFunc(turnAuthHandler)
++	server, err := newInProcessTurnServer(conf, v5)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+diff --git a/pkg/service/wsprotocol.go b/pkg/service/wsprotocol.go
+index 6c676d09..58ca514a 100644
+--- a/pkg/service/wsprotocol.go
++++ b/pkg/service/wsprotocol.go
+@@ -16,11 +16,13 @@ package service
+ 
+ import (
+ 	"errors"
++	"fmt"
+ 	"io"
+ 	"strings"
+ 	"sync"
+ 	"time"
+ 
++	"github.com/frostbyte73/core"
+ 	"github.com/gorilla/websocket"
+ 	"google.golang.org/protobuf/proto"
+ 
+@@ -41,23 +43,62 @@ type WSSignalConnection struct {
+ 	conn    types.WebsocketClient
+ 	mu      sync.Mutex
+ 	useJSON bool
++
++	// maximum size (in bytes) of a single decompressed message; 0 disables the limit
++	messageSizeLimit int64
++
++	closed core.Fuse
+ }
+ 
+-func NewWSSignalConnection(conn types.WebsocketClient) *WSSignalConnection {
++func NewWSSignalConnection(conn types.WebsocketClient, messageSizeLimit int64) *WSSignalConnection {
+ 	wsc := &WSSignalConnection{
+-		conn:    conn,
+-		mu:      sync.Mutex{},
+-		useJSON: false,
++		conn:             conn,
++		mu:               sync.Mutex{},
++		useJSON:          false,
++		messageSizeLimit: messageSizeLimit,
+ 	}
+ 	go wsc.pingWorker()
+ 	return wsc
+ }
+ 
++// readMessage reads a single websocket message, bounding the size of the
++// decompressed payload. The transport-level read limit (SetReadLimit) only
++// accounts for the compressed bytes read off the wire, so a small compressed
++// frame can still expand into a much larger buffer once inflated. Reading through
++// an io.LimitReader caps the decompressed size at the same limit.
++func (c *WSSignalConnection) readMessage() (int, []byte, error) {
++	messageType, r, err := c.conn.NextReader()
++	if err != nil {
++		return messageType, nil, err
++	}
++
++	if c.messageSizeLimit > 0 {
++		// read one byte past the limit so an exactly-at-limit message is accepted
++		// while anything larger is detected and rejected
++		limited := io.LimitReader(r, c.messageSizeLimit+1)
++		payload, err := io.ReadAll(limited)
++		if err != nil {
++			return messageType, nil, err
++		}
++		if int64(len(payload)) > c.messageSizeLimit {
++			return messageType, nil, fmt.Errorf("signal message exceeds size limit of %d bytes", c.messageSizeLimit)
++		}
++		return messageType, payload, nil
++	}
++
++	payload, err := io.ReadAll(r)
++	return messageType, payload, err
++}
++
+ func (c *WSSignalConnection) Close() error {
++	c.closed.Break()
++
+ 	return c.conn.Close()
+ }
+ 
+ func (c *WSSignalConnection) CloseWithReason(reason string) error {
++	c.closed.Break()
++
+ 	msg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, reason)
+ 	_ = c.conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(closeWriteTimeout))
+ 	return c.conn.Close()
+@@ -69,7 +110,7 @@ func (c *WSSignalConnection) SetReadDeadline(deadline time.Time) error {
+ 
+ func (c *WSSignalConnection) ReadRequest() (*livekit.SignalRequest, int, error) {
+ 	// handle special messages and pass on the rest
+-	messageType, payload, err := c.conn.ReadMessage()
++	messageType, payload, err := c.readMessage()
+ 	if err != nil {
+ 		return nil, 0, err
+ 	}
+@@ -101,7 +142,7 @@ func (c *WSSignalConnection) ReadRequest() (*livekit.SignalRequest, int, error)
+ 
+ func (c *WSSignalConnection) ReadWorkerMessage() (*livekit.WorkerMessage, int, error) {
+ 	// handle special messages and pass on the rest
+-	messageType, payload, err := c.conn.ReadMessage()
++	messageType, payload, err := c.readMessage()
+ 	if err != nil {
+ 		return nil, 0, err
+ 	}
+@@ -179,10 +220,16 @@ func (c *WSSignalConnection) pingWorker() {
+ 	ticker := time.NewTicker(pingFrequency)
+ 	defer ticker.Stop()
+ 
+-	for range ticker.C {
+-		err := c.conn.WriteControl(websocket.PingMessage, []byte(""), time.Now().Add(pingTimeout))
+-		if err != nil {
++	for {
++		select {
++		case <-c.closed.Watch():
+ 			return
++
++		case <-ticker.C:
++			err := c.conn.WriteControl(websocket.PingMessage, []byte(""), time.Now().Add(pingTimeout))
++			if err != nil {
++				return
++			}
+ 		}
+ 	}
+ }
+diff --git a/pkg/service/wsprotocol_test.go b/pkg/service/wsprotocol_test.go
+new file mode 100644
+index 00000000..e73339c7
+--- /dev/null
++++ b/pkg/service/wsprotocol_test.go
+@@ -0,0 +1,74 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package service_test
++
++import (
++	"bytes"
++	"testing"
++
++	"github.com/gorilla/websocket"
++	"github.com/stretchr/testify/require"
++	"google.golang.org/protobuf/proto"
++
++	"github.com/livekit/protocol/livekit"
++
++	"github.com/livekit/livekit-server/pkg/rtc/types/typesfakes"
++	"github.com/livekit/livekit-server/pkg/service"
++)
++
++// TestWSSignalConnectionMessageSizeLimit exercises the decompressed-size bound in
++// WSSignalConnection. NextReader returns the (already decompressed) message
++// stream, so a reader larger than the limit stands in for a small compressed
++// frame that expands past the limit once inflated.
++func TestWSSignalConnectionMessageSizeLimit(t *testing.T) {
++	const limit = 1024
++
++	t.Run("rejects message larger than limit", func(t *testing.T) {
++		fake := &typesfakes.FakeWebsocketClient{}
++		fake.NextReaderReturns(websocket.BinaryMessage, bytes.NewReader(make([]byte, limit+1)), nil)
++
++		c := service.NewWSSignalConnection(fake, limit)
++		_, _, err := c.ReadRequest()
++		require.Error(t, err)
++		require.Contains(t, err.Error(), "exceeds size limit")
++	})
++
++	t.Run("accepts message within limit", func(t *testing.T) {
++		payload, err := proto.Marshal(&livekit.SignalRequest{})
++		require.NoError(t, err)
++		require.LessOrEqual(t, len(payload), limit)
++
++		fake := &typesfakes.FakeWebsocketClient{}
++		fake.NextReaderReturns(websocket.BinaryMessage, bytes.NewReader(payload), nil)
++
++		c := service.NewWSSignalConnection(fake, limit)
++		msg, _, err := c.ReadRequest()
++		require.NoError(t, err)
++		require.NotNil(t, msg)
++	})
++
++	t.Run("limit of zero reads unbounded payload", func(t *testing.T) {
++		// a payload well beyond any typical limit is read in full when disabled
++		payload, err := proto.Marshal(&livekit.SignalRequest{})
++		require.NoError(t, err)
++
++		fake := &typesfakes.FakeWebsocketClient{}
++		fake.NextReaderReturns(websocket.BinaryMessage, bytes.NewReader(payload), nil)
++
++		c := service.NewWSSignalConnection(fake, 0)
++		_, _, err = c.ReadRequest()
++		require.NoError(t, err)
++	})
++}
+diff --git a/pkg/sfu/buffer/buffer.go b/pkg/sfu/buffer/buffer.go
+index 5b376a49..c7383c7b 100644
+--- a/pkg/sfu/buffer/buffer.go
++++ b/pkg/sfu/buffer/buffer.go
+@@ -154,7 +154,7 @@ func (b *Buffer) Write(pkt []byte) (n int, err error) {
+ 
+ 	now := mono.UnixNano()
+ 	if b.twcc != nil && b.twccExtID != 0 {
+-		if ext := rtpPacket.GetExtension(b.twccExtID); ext != nil {
++		if ext := rtpPacket.GetExtension(b.twccExtID); len(ext) >= 2 {
+ 			b.twcc.Push(rtpPacket.SSRC, binary.BigEndian.Uint16(ext[0:2]), now, rtpPacket.Marker)
+ 		}
+ 	}
+diff --git a/pkg/sfu/buffer/buffer_base.go b/pkg/sfu/buffer/buffer_base.go
+index 68980ea0..bf373a8e 100644
+--- a/pkg/sfu/buffer/buffer_base.go
++++ b/pkg/sfu/buffer/buffer_base.go
+@@ -204,9 +204,10 @@ type BufferBase struct {
+ 	frameRateCalculator [DefaultMaxLayerSpatial + 1]FrameRateCalculator
+ 	frameRateCalculated bool
+ 
+-	packetNotFoundCount   atomic.Uint32
+-	packetTooOldCount     atomic.Uint32
+-	extPacketTooMuchCount atomic.Uint32
++	packetNotFoundCount           atomic.Uint32
++	packetTooOldCount             atomic.Uint32
++	extPacketTooMuchCount         atomic.Uint32
++	codecPayloadTypeNotFoundCount atomic.Uint32
+ 
+ 	absCaptureTimeExtID uint8
+ 
+@@ -986,11 +987,15 @@ func (b *BufferBase) handleCodecChange(newPT uint8) {
+ 		}
+ 	}
+ 	if !codecFound {
+-		b.logger.Errorw(
+-			"could not find codec for new payload type", nil,
+-			"pt", newPT,
+-			"rtpParameters", b.rtpParameters,
+-		)
++		codecNotFoundCount := b.codecPayloadTypeNotFoundCount.Inc()
++		if (codecNotFoundCount-1)%100 == 0 {
++			b.logger.Errorw(
++				"could not find codec for new payload type", nil,
++				"pt", newPT,
++				"rtpParameters", b.rtpParameters,
++				"count", codecNotFoundCount,
++			)
++		}
+ 		return
+ 	}
+ 
+diff --git a/pkg/sfu/buffer/frameintegrity.go b/pkg/sfu/buffer/frameintegrity.go
+index 935263b7..e2cbe8a4 100644
+--- a/pkg/sfu/buffer/frameintegrity.go
++++ b/pkg/sfu/buffer/frameintegrity.go
+@@ -100,7 +100,15 @@ func (ph *PacketHistory) AddPacket(extSeq uint64) {
+ 		return
+ 	}
+ 
+-	for i := ph.last + 1; i < extSeq; i++ {
++	// A forward jump only needs at most packetCount slots cleared; anything older aliases
++	// into the same ring and would be overwritten anyway. Cap the loop so a single crafted
++	// sequence number jump (up to ~32k by the extension wrap-around heuristic) cannot force
++	// a large per-packet iteration count.
++	start := ph.last + 1
++	if extSeq-start > uint64(ph.packetCount) {
++		start = extSeq - uint64(ph.packetCount)
++	}
++	for i := start; i < extSeq; i++ {
+ 		ph.set(i, false)
+ 	}
+ 
+@@ -208,8 +216,13 @@ func (fc *FrameIntegrityChecker) AddPacket(extSeq uint64, extFrameNum uint64, dd
+ 		return
+ 	}
+ 
+-	// reset missing frames
+-	for i := fc.last + 1; i <= extFrameNum; i++ {
++	// reset missing frames; cap to frameCount so a crafted frame-number jump cannot force a
++	// large loop (older frames alias into the same ring and get overwritten anyway).
++	start := fc.last + 1
++	if extFrameNum-fc.last > uint64(fc.frameCount) {
++		start = extFrameNum - uint64(fc.frameCount) + 1
++	}
++	for i := start; i <= extFrameNum; i++ {
+ 		fc.frames[int(i-fc.base)%fc.frameCount].Reset()
+ 	}
+ 	fc.frames[int(extFrameNum-fc.base)%fc.frameCount].AddPacket(extSeq, ddVal)
+diff --git a/pkg/sfu/buffer/frameintegrity_test.go b/pkg/sfu/buffer/frameintegrity_test.go
+index 2815cf5e..c492e3d9 100644
+--- a/pkg/sfu/buffer/frameintegrity_test.go
++++ b/pkg/sfu/buffer/frameintegrity_test.go
+@@ -15,6 +15,7 @@
+ package buffer
+ 
+ import (
++	"math/bits"
+ 	"math/rand"
+ 	"testing"
+ 
+@@ -72,8 +73,8 @@ func TestFrameIntegrityChecker(t *testing.T) {
+ 			frames = append(frames, i)
+ 		}
+ 		require.False(t, fc.FrameIntegrity(frame))
+-		rand.Seed(int64(frame))
+-		rand.Shuffle(len(frames), func(i, j int) { frames[i], frames[j] = frames[j], frames[i] })
++		rng := rand.New(rand.NewSource(int64(frame)))
++		rng.Shuffle(len(frames), func(i, j int) { frames[i], frames[j] = frames[j], frames[i] })
+ 		for i, f := range frames {
+ 			fc.AddPacket(f, frame, &dd.DependencyDescriptor{
+ 				FirstPacketInFrame: f == firstFrame,
+@@ -84,3 +85,63 @@ func TestFrameIntegrityChecker(t *testing.T) {
+ 		require.True(t, fc.FrameIntegrity(frame))
+ 	}
+ }
++
++func countSetBits(ph *PacketHistory) int {
++	n := 0
++	for _, w := range ph.bits {
++		n += bits.OnesCount64(w)
++	}
++	return n
++}
++
++// A forward sequence-number jump much larger than the ring must clear the whole ring,
++// leaving only the newly received sequence number set.
++func TestPacketHistoryLargeForwardJump(t *testing.T) {
++	ph := NewPacketHistory(1000) // rounds up to a multiple of 64
++	require.Equal(t, 1024, ph.packetCount)
++
++	// Fill the entire ring so every slot holds a "received" bit.
++	base := uint64(100000)
++	ph.AddPacket(base)
++	for i := base + 1; i <= base+2000; i++ {
++		ph.AddPacket(i)
++	}
++	require.Equal(t, ph.packetCount, countSetBits(ph))
++	last := base + 2000
++
++	// Forward jump well beyond both the ring and the ~32k extension wrap-around cap. The ring
++	// must end up fully cleared, with only newSeq marked received.
++	newSeq := last + 40000
++	ph.AddPacket(newSeq)
++
++	// If the cap under-cleared, stale bits from the pre-jump fill would survive here.
++	require.Equal(t, 1, countSetBits(ph))
++	require.True(t, ph.PacketsConsecutive(newSeq, newSeq))
++	require.False(t, ph.PacketsConsecutive(newSeq-5, newSeq))
++
++	// The window just below newSeq was cleared and can be refilled normally.
++	for i := newSeq - 5; i < newSeq; i++ {
++		ph.AddPacket(i)
++	}
++	require.True(t, ph.PacketsConsecutive(newSeq-5, newSeq))
++}
++
++// A forward frame-number jump much larger than frameCount must reset the whole frame ring,
++// so no frame that aliases an old slot inherits stale integrity.
++func TestFrameIntegrityCheckerLargeFrameJump(t *testing.T) {
++	fc := NewFrameIntegrityChecker(100, 1000)
++
++	// Populate every ring slot with an integral single-packet frame.
++	for f := uint64(200); f <= 399; f++ {
++		fc.AddPacket(f, f, &dd.DependencyDescriptor{FirstPacketInFrame: true, LastPacketInFrame: true})
++	}
++	require.True(t, fc.FrameIntegrity(399))
++
++	// Jump far beyond frameCount. The capped reset loop must clear the entire frame ring; if it
++	// under-cleared, some aliased slot would still report a stale frame's integrity.
++	newFrame := uint64(399 + 5000)
++	fc.AddPacket(50000, newFrame, &dd.DependencyDescriptor{}) // incomplete frame, no first/last
++	for f := newFrame - uint64(fc.frameCount) + 1; f <= newFrame; f++ {
++		require.False(t, fc.FrameIntegrity(f), "frame %d should not be integral after jump", f)
++	}
++}
+diff --git a/pkg/sfu/downtrack.go b/pkg/sfu/downtrack.go
+index d30de32a..b0326f4a 100644
+--- a/pkg/sfu/downtrack.go
++++ b/pkg/sfu/downtrack.go
+@@ -65,6 +65,9 @@ const (
+ 	keyFrameIntervalMax = 1000
+ 	flushTimeout        = 1 * time.Second
+ 
++	// upper bound on NACKed sequence numbers buffered between retransmit worker runs
++	maxPendingNACKs = 5000
++
+ 	waitBeforeSendPaddingOnMute = 100 * time.Millisecond
+ 	maxPaddingOnMuteDuration    = 5 * time.Second
+ 	paddingOnMuteInterval       = 100 * time.Millisecond
+@@ -336,6 +339,12 @@ type DownTrack struct {
+ 	keyFrameRequesterCh       chan struct{}
+ 	keyFrameRequesterChClosed bool
+ 
++	retransmitChMu     sync.RWMutex
++	retransmitCh       chan struct{}
++	retransmitChClosed bool
++	pendingNACKsMu     sync.Mutex
++	pendingNACKs       []uint16
++
+ 	createdAt     int64
+ 	lastUnmutedAt atomic.Time
+ }
+@@ -363,6 +372,7 @@ func NewDownTrack(params DownTrackParams) (*DownTrack, error) {
+ 		pacer:               params.Pacer,
+ 		maxLayerNotifierCh:  make(chan string, 1),
+ 		keyFrameRequesterCh: make(chan struct{}, 1),
++		retransmitCh:        make(chan struct{}, 1),
+ 		createdAt:           time.Now().UnixNano(),
+ 		receiver:            params.Receiver,
+ 	}
+@@ -422,6 +432,8 @@ func NewDownTrack(params DownTrackParams) (*DownTrack, error) {
+ 		go d.keyFrameRequester()
+ 	}
+ 
++	go d.retransmitWorker()
++
+ 	d.params.Receiver.AddOnReady(d.handleReceiverReady)
+ 	d.rtxSequenceNumber.Store(uint64(rand.Intn(1<<14)) + uint64(1<<15)) // a random number in third quartile of sequence number space
+ 	d.params.Logger.Debugw("downtrack created", "upstreamCodecs", d.upstreamCodecs)
+@@ -702,6 +714,7 @@ func (d *DownTrack) handleUpstreamCodecChange(mimeType string) {
+ 
+ 	receiver := d.Receiver()
+ 	d.forwarder.Restart()
++	d.flushSequencer()
+ 	d.forwarder.DetermineCodec(codec.RTPCodecCapability, receiver.HeaderExtensions(), receiver.VideoLayerMode())
+ 
+ 	d.connectionStats.UpdateCodec(d.Mime(), isFECEnabled)
+@@ -1022,6 +1035,15 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
+ 		return 0
+ 	}
+ 
++	if tp.incomingHeaderSize > len(extPkt.Packet.Payload) {
++		d.params.Logger.Errorw(
++			"incoming header size overflow", errPayloadOverflow,
++			"incomingHeaderSize", tp.incomingHeaderSize,
++			"payloadSize", len(extPkt.Packet.Payload),
++		)
++		return 0
++	}
++
+ 	poolEntity := PacketFactory.Get().(*[]byte)
+ 	payload := *poolEntity
+ 	copy(payload, tp.codecBytes)
+@@ -1461,6 +1483,11 @@ func (d *DownTrack) CloseWithFlush(flush bool, isEnding bool) {
+ 	close(d.keyFrameRequesterCh)
+ 	d.keyFrameRequesterChMu.Unlock()
+ 
++	d.retransmitChMu.Lock()
++	d.retransmitChClosed = true
++	close(d.retransmitCh)
++	d.retransmitChMu.Unlock()
++
+ 	d.params.Listener.OnDownTrackClose(!flush)
+ }
+ 
+@@ -1700,6 +1727,16 @@ func (d *DownTrack) Pause() VideoAllocation {
+ 
+ func (d *DownTrack) Resync() {
+ 	d.forwarder.Resync()
++	d.flushSequencer()
++}
++
++// flushSequencer discards recorded packet metadata on a stream restart so that NACK
++// retransmissions cannot use metadata that describes packets no longer in the receiver's
++// (resynced) bucket.
++func (d *DownTrack) flushSequencer() {
++	if d.sequencer != nil {
++		d.sequencer.flush()
++	}
+ }
+ 
+ func (d *DownTrack) ReceiverRestart(rcvr TrackReceiver) {
+@@ -1715,6 +1752,7 @@ func (d *DownTrack) ReceiverRestart(rcvr TrackReceiver) {
+ 	receiver := d.Receiver()
+ 	d.params.Logger.Infow("upstream receiver restart", "mime", receiver.Mime().String())
+ 	d.forwarder.Restart()
++	d.flushSequencer()
+ 	d.forwarder.DetermineCodec(codec, receiver.HeaderExtensions(), receiver.VideoLayerMode())
+ }
+ 
+@@ -2032,7 +2070,7 @@ func (d *DownTrack) handleRTCP(bytes []byte) {
+ 					numNACKs += uint32(len(packetList))
+ 					nacks = append(nacks, packetList...)
+ 				}
+-				go d.retransmitPackets(nacks)
++				d.postRetransmitPackets(nacks)
+ 			}
+ 
+ 		case *rtcp.TransportLayerCC:
+@@ -2140,6 +2178,18 @@ func (d *DownTrack) retransmitPacket(epm *extPacketMeta, sourcePkt []byte, isPro
+ 		d.params.Logger.Errorw("could not unmarshal rtp packet to send via RTX", err)
+ 		return 0, err
+ 	}
++	// Defensive panic-safety net: the codec header size was recorded when the packet was first
++	// forwarded and is re-read here against a bucket packet. A stream restart flushes the
++	// sequencer (see flushSequencer), so metadata and payload should always agree; guard
++	// against a slice overflow regardless.
++	if int(epm.numCodecBytesIn) > len(pkt.Payload) {
++		d.params.Logger.Warnw(
++			"recorded codec header size overflows payload", errPayloadOverflow,
++			"numCodecBytesIn", epm.numCodecBytesIn,
++			"payloadSize", len(pkt.Payload),
++		)
++		return 0, errPayloadOverflow
++	}
+ 	hdr := RTPHeaderFactory.Get().(*rtp.Header)
+ 	*hdr = rtp.Header{
+ 		Version:        pkt.Header.Version,
+@@ -2253,6 +2303,49 @@ func (d *DownTrack) retransmitPacket(epm *extPacketMeta, sourcePkt []byte, isPro
+ 	return headerSize + len(payload), nil
+ }
+ 
++// postRetransmitPackets buffers the NACKed sequence numbers, capped at
++// maxPendingNACKs, and signals the retransmit worker without blocking.
++func (d *DownTrack) postRetransmitPackets(nacks []uint16) {
++	if d.sequencer == nil || len(nacks) == 0 {
++		return
++	}
++
++	d.pendingNACKsMu.Lock()
++	d.pendingNACKs = append(d.pendingNACKs, nacks...)
++	if len(d.pendingNACKs) > maxPendingNACKs {
++		// drop the oldest NACKs under a NACK flood
++		d.pendingNACKs = d.pendingNACKs[len(d.pendingNACKs)-maxPendingNACKs:]
++	}
++	d.pendingNACKsMu.Unlock()
++
++	d.retransmitChMu.RLock()
++	if !d.retransmitChClosed {
++		select {
++		case d.retransmitCh <- struct{}{}:
++		default:
++		}
++	}
++	d.retransmitChMu.RUnlock()
++}
++
++func (d *DownTrack) retransmitWorker() {
++	for {
++		_, more := <-d.retransmitCh
++		if !more {
++			return
++		}
++
++		d.pendingNACKsMu.Lock()
++		nacks := d.pendingNACKs
++		d.pendingNACKs = nil
++		d.pendingNACKsMu.Unlock()
++
++		if len(nacks) > 0 {
++			d.retransmitPackets(nacks)
++		}
++	}
++}
++
+ func (d *DownTrack) retransmitPackets(nacks []uint16) {
+ 	if d.sequencer == nil {
+ 		return
+diff --git a/pkg/sfu/playoutdelay.go b/pkg/sfu/playoutdelay.go
+index 42217f74..8f54bf7f 100644
+--- a/pkg/sfu/playoutdelay.go
++++ b/pkg/sfu/playoutdelay.go
+@@ -98,7 +98,10 @@ func NewPlayoutDelayController(minDelay, maxDelay uint32, logger logger.Logger,
+ 		rtpStats:         rtpStats,
+ 		senderSnapshotID: rtpStats.NewSenderSnapshotId(),
+ 	}
+-	return c, c.createExtData()
++
++	c.lock.Lock()
++	defer c.lock.Unlock()
++	return c, c.createExtDataLocked()
+ }
+ 
+ func (c *PlayoutDelayController) GetState() PlayoutDelayControllerState {
+@@ -157,8 +160,8 @@ func (c *PlayoutDelayController) SetJitter(jitter uint32) {
+ 		}
+ 	}
+ 	c.currentDelay = targetDelay
++	c.createExtDataLocked()
+ 	c.lock.Unlock()
+-	c.createExtData()
+ }
+ 
+ func (c *PlayoutDelayController) OnSeqAcked(seq uint16) {
+@@ -186,7 +189,7 @@ func (c *PlayoutDelayController) GetDelayExtension(seq uint16) []byte {
+ 	return nil
+ }
+ 
+-func (c *PlayoutDelayController) createExtData() error {
++func (c *PlayoutDelayController) createExtDataLocked() error {
+ 	delay := pd.PlayoutDelayFromValue(
+ 		uint16(c.currentDelay),
+ 		uint16(c.maxDelay),
+diff --git a/pkg/sfu/receiver_base.go b/pkg/sfu/receiver_base.go
+index 89156682..ecc08d04 100644
+--- a/pkg/sfu/receiver_base.go
++++ b/pkg/sfu/receiver_base.go
+@@ -155,6 +155,8 @@ type ReceiverBase struct {
+ 	restartInProgress    bool
+ 
+ 	isClosed atomic.Bool
++
++	dropPayloadTypeMismatchCount atomic.Uint32
+ }
+ 
+ func NewReceiverBase(params ReceiverBaseParams, trackInfo *livekit.TrackInfo, codecState ReceiverCodecState) *ReceiverBase {
+@@ -932,11 +934,15 @@ func (r *ReceiverBase) forwardRTP(
+ 
+ 		if extPkt.Packet.PayloadType != uint8(r.params.Codec.PayloadType) {
+ 			// drop packets as we don't support codec fallback directly
+-			r.params.Logger.Debugw(
+-				"dropping packet - payload mismatch",
+-				"packetPayloadType", extPkt.Packet.PayloadType,
+-				"payloadType", r.params.Codec.PayloadType,
+-			)
++			dropPayloadTypeMismatchCount := r.dropPayloadTypeMismatchCount.Inc()
++			if (dropPayloadTypeMismatchCount-1)%100 == 0 {
++				r.params.Logger.Debugw(
++					"dropping packet - payload mismatch",
++					"packetPayloadType", extPkt.Packet.PayloadType,
++					"payloadType", r.params.Codec.PayloadType,
++					"count", dropPayloadTypeMismatchCount,
++				)
++			}
+ 			numPacketsDropped++
+ 			continue
+ 		}
+diff --git a/pkg/sfu/redprimaryreceiver.go b/pkg/sfu/redprimaryreceiver.go
+index ca81ce89..17b639ab 100644
+--- a/pkg/sfu/redprimaryreceiver.go
++++ b/pkg/sfu/redprimaryreceiver.go
+@@ -115,7 +115,7 @@ func (r *RedPrimaryReceiver) ForwardRTP(pkt *buffer.ExtPacket, spatialLayer int3
+ 					"packetExtractedTS", pkts[i].Timestamp,
+ 					"packetETS", pPkt.ExtTimestamp,
+ 					"pktHistory", r.pktHistory,
+-					"redHeader", pkt.Packet.Payload[:10],
++					"redHeader", pkt.Packet.Payload[:min(len(pkt.Packet.Payload), 10)],
+ 					"payloadSize", len(pkt.Packet.Payload),
+ 					"lastSeq", r.lastSeq,
+ 					"highestFowardedExtSequenceNumber", r.highestForwardedExtSequenceNumber,
+diff --git a/pkg/sfu/sequencer.go b/pkg/sfu/sequencer.go
+index 1e08ef9c..0507120c 100644
+--- a/pkg/sfu/sequencer.go
++++ b/pkg/sfu/sequencer.go
+@@ -148,6 +148,26 @@ func (s *sequencer) setRTT(rtt uint32) {
+ 	}
+ }
+ 
++// flush discards all recorded packet metadata. It must be called on a stream restart: the
++// metadata maps outgoing sequence numbers to source packets in the receiver's bucket, and a
++// restart resyncs that bucket, so retransmitting against stale metadata would send the wrong
++// packet (or read past the re-read payload). After flush, NACKs for pre-restart packets are
++// ignored until the sequencer is re-initialized by the next push.
++func (s *sequencer) flush() {
++	s.Lock()
++	defer s.Unlock()
++
++	s.initialized = false
++	s.extStartSN = 0
++	s.extHighestSN = 0
++	s.extHighestTS = 0
++	s.snOffset = 0
++	clear(s.meta)
++	if s.snRangeMap != nil {
++		s.snRangeMap = utils.NewRangeMap[uint64, uint64]((s.size + 1) / 2)
++	}
++}
++
+ func (s *sequencer) push(
+ 	packetTime int64,
+ 	extIncomingSN, extModifiedSN uint64,
+diff --git a/pkg/sfu/sequencer_test.go b/pkg/sfu/sequencer_test.go
+index 862ac531..be91af8b 100644
+--- a/pkg/sfu/sequencer_test.go
++++ b/pkg/sfu/sequencer_test.go
+@@ -78,6 +78,39 @@ func Test_sequencer(t *testing.T) {
+ 	require.Equal(t, 1, len(m))
+ }
+ 
++func Test_sequencer_flush(t *testing.T) {
++	seq := newSequencer(500, false, logger.GetLogger())
++	off := uint16(15)
++
++	for i := uint64(1); i < 100; i++ {
++		seq.push(time.Now().UnixNano(), i, i+uint64(off), 123, true, 2, nil, 0, nil, nil)
++	}
++	preFlush := []uint16{57 + off, 58 + off}
++
++	// flush discards all recorded metadata on a stream restart
++	seq.flush()
++
++	// even after enough time elapses, a NACK for a pre-flush packet retransmits nothing
++	time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
++	require.Equal(t, 0, len(seq.getExtPacketMetas(preFlush)))
++
++	// the sequencer re-initializes on the next push and works normally for new packets
++	for i := uint64(200); i < 210; i++ {
++		seq.push(time.Now().UnixNano(), i, i+uint64(off), 456, true, 3, nil, 0, nil, nil)
++	}
++	postFlush := []uint16{205 + off}
++	require.Equal(t, 0, len(seq.getExtPacketMetas(postFlush))) // not enough time elapsed yet
++	time.Sleep((ignoreRetransmission + 10) * time.Millisecond)
++	res := seq.getExtPacketMetas(postFlush)
++	require.Equal(t, 1, len(res))
++	require.Equal(t, uint16(205+off), res[0].targetSeqNo)
++	require.Equal(t, uint64(205), res[0].sourceSeqNo)
++	require.Equal(t, int8(3), res[0].layer)
++
++	// pre-flush packets remain non-retransmittable
++	require.Equal(t, 0, len(seq.getExtPacketMetas(preFlush)))
++}
++
+ func Test_sequencer_getNACKSeqNo_exclusion(t *testing.T) {
+ 	type args struct {
+ 		seqNo []uint16
+diff --git a/pkg/telemetry/events.go b/pkg/telemetry/events.go
+index bf684156..989dd870 100644
+--- a/pkg/telemetry/events.go
++++ b/pkg/telemetry/events.go
+@@ -111,6 +111,7 @@ func (t *telemetryService) ParticipantActive(
+ 	participant *livekit.ParticipantInfo,
+ 	clientMeta *livekit.AnalyticsClientMeta,
+ 	isMigration bool,
++	isWarp bool,
+ 	guard *ReferenceGuard,
+ ) {
+ 	t.enqueue(func() {
+@@ -135,7 +136,7 @@ func (t *telemetryService) ParticipantActive(
+ 			prometheus.AddParticipant()
+ 		}
+ 		worker.SetConnected()
+-		prometheus.IncrementParticipantRtcActive(1)
++		prometheus.IncrementParticipantRtcActive(1, isWarp)
+ 
+ 		ev := newParticipantEvent(livekit.AnalyticsEventType_PARTICIPANT_ACTIVE, room, participant)
+ 		ev.ClientMeta = clientMeta
+diff --git a/pkg/telemetry/events_test.go b/pkg/telemetry/events_test.go
+index 3677791b..03fca0e4 100644
+--- a/pkg/telemetry/events_test.go
++++ b/pkg/telemetry/events_test.go
+@@ -86,7 +86,7 @@ func Test_OnParticipantLeft_EventIsSent(t *testing.T) {
+ 	guard := &telemetry.ReferenceGuard{}
+ 
+ 	// do
+-	fixture.sut.ParticipantActive(context.Background(), room, participantInfo, &livekit.AnalyticsClientMeta{}, false, guard)
++	fixture.sut.ParticipantActive(context.Background(), room, participantInfo, &livekit.AnalyticsClientMeta{}, false, false, guard)
+ 	fixture.sut.ParticipantLeft(context.Background(), room, participantInfo, true, guard)
+ 	time.Sleep(time.Millisecond * 500)
+ 
+@@ -179,7 +179,7 @@ func Test_OnParticipantActive_EventIsSent(t *testing.T) {
+ 		ClientConnectTime: 420,
+ 	}
+ 
+-	fixture.sut.ParticipantActive(context.Background(), room, participantInfo, clientMetaConnect, false, guard)
++	fixture.sut.ParticipantActive(context.Background(), room, participantInfo, clientMetaConnect, false, false, guard)
+ 	time.Sleep(time.Millisecond * 500)
+ 
+ 	require.Equal(t, 2, fixture.analytics.SendEventCallCount())
+diff --git a/pkg/telemetry/prometheus/packets.go b/pkg/telemetry/prometheus/packets.go
+index 6ca9ce43..37e67e89 100644
+--- a/pkg/telemetry/prometheus/packets.go
++++ b/pkg/telemetry/prometheus/packets.go
+@@ -15,6 +15,8 @@
+ package prometheus
+ 
+ import (
++	"strconv"
++
+ 	"github.com/prometheus/client_golang/prometheus"
+ 	"go.uber.org/atomic"
+ 
+@@ -149,7 +151,7 @@ func initPacketStats(nodeID string, nodeType livekit.NodeType) {
+ 		Subsystem:   "participant_join",
+ 		Name:        "total",
+ 		ConstLabels: prometheus.Labels{"node_id": nodeID, "node_type": nodeType.String()},
+-	}, []string{"state"})
++	}, []string{"state", "warp"})
+ 	promConnections = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+ 		Namespace:   livekitNamespace,
+ 		Subsystem:   "connection",
+@@ -297,71 +299,72 @@ func RecordRTT(country string, direction Direction, trackSource livekit.TrackSou
+ func IncrementParticipantJoin(join uint32) {
+ 	if join > 0 {
+ 		participantSignalConnected.Add(uint64(join))
+-		promParticipantJoin.WithLabelValues("signal_connected").Add(float64(join))
++		promParticipantJoin.WithLabelValues("signal_connected", "").Add(float64(join))
+ 	}
+ }
+ 
+ func IncrementParticipantJoinFail(fail uint32) {
+ 	if fail > 0 {
+-		promParticipantJoin.WithLabelValues("signal_failed").Add(float64(fail))
++		promParticipantJoin.WithLabelValues("signal_failed", "").Add(float64(fail))
+ 	}
+ }
+ 
+ func IncrementParticipantJoinValidationFail(validationFail uint32) {
+ 	if validationFail > 0 {
+-		promParticipantJoin.WithLabelValues("signal_validation_failed").Add(float64(validationFail))
++		promParticipantJoin.WithLabelValues("signal_validation_failed", "").Add(float64(validationFail))
+ 	}
+ }
+ 
+ func IncrementParticipantJoinUpgradeFail(upgradeFail uint32) {
+ 	if upgradeFail > 0 {
+-		promParticipantJoin.WithLabelValues("signal_upgrade_failed").Add(float64(upgradeFail))
++		promParticipantJoin.WithLabelValues("signal_upgrade_failed", "").Add(float64(upgradeFail))
+ 	}
+ }
+ 
+ func IncrementParticipantJoinWriteInitialResponseFail(writeInitialResponseFail uint32) {
+ 	if writeInitialResponseFail > 0 {
+-		promParticipantJoin.WithLabelValues("signal_write_initial_response_failed").Add(float64(writeInitialResponseFail))
++		promParticipantJoin.WithLabelValues("signal_write_initial_response_failed", "").Add(float64(writeInitialResponseFail))
+ 	}
+ }
+ 
+ func IncrementParticipantRtcInit(init uint32) {
+ 	if init > 0 {
+ 		participantRTCInit.Add(uint64(init))
+-		promParticipantJoin.WithLabelValues("rtc_init").Add(float64(init))
++		promParticipantJoin.WithLabelValues("rtc_init", "").Add(float64(init))
+ 	}
+ }
+ 
+ func IncrementParticipantRtcConnected(connected uint32) {
+ 	if connected > 0 {
+ 		participantRTCConnected.Add(uint64(connected))
+-		promParticipantJoin.WithLabelValues("rtc_connected").Add(float64(connected))
++		promParticipantJoin.WithLabelValues("rtc_connected", "").Add(float64(connected))
+ 	}
+ }
+ 
+-func IncrementParticipantRtcActive(active uint32) {
++func IncrementParticipantRtcActive(active uint32, warp bool) {
+ 	if active > 0 {
+ 		participantRTCActive.Add(uint64(active))
+-		promParticipantJoin.WithLabelValues("rtc_active").Add(float64(active))
++		promParticipantJoin.WithLabelValues("rtc_active", strconv.FormatBool(warp)).Add(float64(active))
+ 	}
+ }
+ 
+-func IncrementParticipantRtcCanceled(canceled uint64) {
++func IncrementParticipantRtcCanceled(canceled uint64, warp bool) {
+ 	if canceled > 0 {
+ 		participantRTCCanceled.Add(canceled)
+-		promParticipantJoin.WithLabelValues("rtc_canceled").Add(float64(canceled))
++		promParticipantJoin.WithLabelValues("rtc_canceled", strconv.FormatBool(warp)).Add(float64(canceled))
+ 	}
+ }
+ 
+-func IncrementParticipantRtcSuccess(success uint64) {
++// todo: check if need to record warp to rtcSucc/Failure
++func IncrementParticipantRtcSuccess(success uint64, warp bool) {
+ 	if success > 0 {
+-		promParticipantJoin.WithLabelValues("rtc_success").Add(float64(success))
++		promParticipantJoin.WithLabelValues("rtc_success", strconv.FormatBool(warp)).Add(float64(success))
+ 	}
+ }
+ 
+-func IncrementParticipantRtcFailure(failure uint64) {
++func IncrementParticipantRtcFailure(failure uint64, warp bool) {
+ 	if failure > 0 {
+-		promParticipantJoin.WithLabelValues("rtc_failure").Add(float64(failure))
++		promParticipantJoin.WithLabelValues("rtc_failure", strconv.FormatBool(warp)).Add(float64(failure))
+ 	}
+ }
+ 
+diff --git a/pkg/telemetry/prometheus/rooms.go b/pkg/telemetry/prometheus/rooms.go
+index 0733413a..9a7a9c35 100644
+--- a/pkg/telemetry/prometheus/rooms.go
++++ b/pkg/telemetry/prometheus/rooms.go
+@@ -113,7 +113,7 @@ func initRoomStats(nodeID string, nodeType livekit.NodeType) {
+ 		Name:        "start_time_ms",
+ 		ConstLabels: prometheus.Labels{"node_id": nodeID, "node_type": nodeType.String()},
+ 		Buckets:     prometheus.ExponentialBucketsRange(100, 10000, 15),
+-	}, []string{"protocol_version"})
++	}, []string{"protocol_version", "warp"})
+ 	promSessionDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+ 		Namespace:   livekitNamespace,
+ 		Subsystem:   "session",
+@@ -291,8 +291,8 @@ func RecordSessionJoinLatency(protocolVersion int, d time.Duration) {
+ 	promSessionJoinLatency.WithLabelValues(strconv.Itoa(protocolVersion)).Observe(float64(d.Milliseconds()))
+ }
+ 
+-func RecordSessionStartTime(protocolVersion int, d time.Duration) {
+-	promSessionStartTime.WithLabelValues(strconv.Itoa(protocolVersion)).Observe(float64(d.Milliseconds()))
++func RecordSessionStartTime(protocolVersion int, warp bool, d time.Duration) {
++	promSessionStartTime.WithLabelValues(strconv.Itoa(protocolVersion), strconv.FormatBool(warp)).Observe(float64(d.Milliseconds()))
+ }
+ 
+ func RecordSessionDuration(protocolVersion int, d time.Duration) {
+diff --git a/pkg/telemetry/telemetryfakes/fake_telemetry_service.go b/pkg/telemetry/telemetryfakes/fake_telemetry_service.go
+index 5c0f2888..25a241be 100644
+--- a/pkg/telemetry/telemetryfakes/fake_telemetry_service.go
++++ b/pkg/telemetry/telemetryfakes/fake_telemetry_service.go
+@@ -83,7 +83,7 @@ type FakeTelemetryService struct {
+ 		arg2 string
+ 		arg3 *livekit.EgressInfo
+ 	}
+-	ParticipantActiveStub        func(context.Context, *livekit.Room, *livekit.ParticipantInfo, *livekit.AnalyticsClientMeta, bool, *telemetry.ReferenceGuard)
++	ParticipantActiveStub        func(context.Context, *livekit.Room, *livekit.ParticipantInfo, *livekit.AnalyticsClientMeta, bool, bool, *telemetry.ReferenceGuard)
+ 	participantActiveMutex       sync.RWMutex
+ 	participantActiveArgsForCall []struct {
+ 		arg1 context.Context
+@@ -91,7 +91,8 @@ type FakeTelemetryService struct {
+ 		arg3 *livekit.ParticipantInfo
+ 		arg4 *livekit.AnalyticsClientMeta
+ 		arg5 bool
+-		arg6 *telemetry.ReferenceGuard
++		arg6 bool
++		arg7 *telemetry.ReferenceGuard
+ 	}
+ 	ParticipantJoinedStub        func(context.Context, *livekit.Room, *livekit.ParticipantInfo, *livekit.ClientInfo, *livekit.AnalyticsClientMeta, bool, *telemetry.ReferenceGuard)
+ 	participantJoinedMutex       sync.RWMutex
+@@ -698,7 +699,7 @@ func (fake *FakeTelemetryService) NotifyEgressEventArgsForCall(i int) (context.C
+ 	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+ }
+ 
+-func (fake *FakeTelemetryService) ParticipantActive(arg1 context.Context, arg2 *livekit.Room, arg3 *livekit.ParticipantInfo, arg4 *livekit.AnalyticsClientMeta, arg5 bool, arg6 *telemetry.ReferenceGuard) {
++func (fake *FakeTelemetryService) ParticipantActive(arg1 context.Context, arg2 *livekit.Room, arg3 *livekit.ParticipantInfo, arg4 *livekit.AnalyticsClientMeta, arg5 bool, arg6 bool, arg7 *telemetry.ReferenceGuard) {
+ 	fake.participantActiveMutex.Lock()
+ 	fake.participantActiveArgsForCall = append(fake.participantActiveArgsForCall, struct {
+ 		arg1 context.Context
+@@ -706,13 +707,14 @@ func (fake *FakeTelemetryService) ParticipantActive(arg1 context.Context, arg2 *
+ 		arg3 *livekit.ParticipantInfo
+ 		arg4 *livekit.AnalyticsClientMeta
+ 		arg5 bool
+-		arg6 *telemetry.ReferenceGuard
+-	}{arg1, arg2, arg3, arg4, arg5, arg6})
++		arg6 bool
++		arg7 *telemetry.ReferenceGuard
++	}{arg1, arg2, arg3, arg4, arg5, arg6, arg7})
+ 	stub := fake.ParticipantActiveStub
+-	fake.recordInvocation("ParticipantActive", []interface{}{arg1, arg2, arg3, arg4, arg5, arg6})
++	fake.recordInvocation("ParticipantActive", []interface{}{arg1, arg2, arg3, arg4, arg5, arg6, arg7})
+ 	fake.participantActiveMutex.Unlock()
+ 	if stub != nil {
+-		fake.ParticipantActiveStub(arg1, arg2, arg3, arg4, arg5, arg6)
++		fake.ParticipantActiveStub(arg1, arg2, arg3, arg4, arg5, arg6, arg7)
+ 	}
+ }
+ 
+@@ -722,17 +724,17 @@ func (fake *FakeTelemetryService) ParticipantActiveCallCount() int {
+ 	return len(fake.participantActiveArgsForCall)
+ }
+ 
+-func (fake *FakeTelemetryService) ParticipantActiveCalls(stub func(context.Context, *livekit.Room, *livekit.ParticipantInfo, *livekit.AnalyticsClientMeta, bool, *telemetry.ReferenceGuard)) {
++func (fake *FakeTelemetryService) ParticipantActiveCalls(stub func(context.Context, *livekit.Room, *livekit.ParticipantInfo, *livekit.AnalyticsClientMeta, bool, bool, *telemetry.ReferenceGuard)) {
+ 	fake.participantActiveMutex.Lock()
+ 	defer fake.participantActiveMutex.Unlock()
+ 	fake.ParticipantActiveStub = stub
+ }
+ 
+-func (fake *FakeTelemetryService) ParticipantActiveArgsForCall(i int) (context.Context, *livekit.Room, *livekit.ParticipantInfo, *livekit.AnalyticsClientMeta, bool, *telemetry.ReferenceGuard) {
++func (fake *FakeTelemetryService) ParticipantActiveArgsForCall(i int) (context.Context, *livekit.Room, *livekit.ParticipantInfo, *livekit.AnalyticsClientMeta, bool, bool, *telemetry.ReferenceGuard) {
+ 	fake.participantActiveMutex.RLock()
+ 	defer fake.participantActiveMutex.RUnlock()
+ 	argsForCall := fake.participantActiveArgsForCall[i]
+-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5, argsForCall.arg6
++	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5, argsForCall.arg6, argsForCall.arg7
+ }
+ 
+ func (fake *FakeTelemetryService) ParticipantJoined(arg1 context.Context, arg2 *livekit.Room, arg3 *livekit.ParticipantInfo, arg4 *livekit.ClientInfo, arg5 *livekit.AnalyticsClientMeta, arg6 bool, arg7 *telemetry.ReferenceGuard) {
+diff --git a/pkg/telemetry/telemetryservice.go b/pkg/telemetry/telemetryservice.go
+index 28c90400..bdf9c820 100644
+--- a/pkg/telemetry/telemetryservice.go
++++ b/pkg/telemetry/telemetryservice.go
+@@ -40,7 +40,7 @@ type TelemetryService interface {
+ 	// ParticipantJoined - a participant establishes signal connection to a room
+ 	ParticipantJoined(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientInfo *livekit.ClientInfo, clientMeta *livekit.AnalyticsClientMeta, shouldSendEvent bool, guard *ReferenceGuard)
+ 	// ParticipantActive - a participant establishes media connection
+-	ParticipantActive(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientMeta *livekit.AnalyticsClientMeta, isMigration bool, guard *ReferenceGuard)
++	ParticipantActive(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientMeta *livekit.AnalyticsClientMeta, isMigration bool, isWarp bool, guard *ReferenceGuard)
+ 	// ParticipantResumed - there has been an ICE restart or connection resume attempt, and we've received their signal connection
+ 	ParticipantResumed(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, nodeID livekit.NodeID, reason livekit.ReconnectReason)
+ 	// ParticipantLeft - the participant leaves the room, only sent if ParticipantActive has been called before
+@@ -108,7 +108,7 @@ func (n NullTelemetryService) RoomStarted(ctx context.Context, room *livekit.Roo
+ func (n NullTelemetryService) RoomEnded(ctx context.Context, room *livekit.Room)   {}
+ func (n NullTelemetryService) ParticipantJoined(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientInfo *livekit.ClientInfo, clientMeta *livekit.AnalyticsClientMeta, shouldSendEvent bool, guard *ReferenceGuard) {
+ }
+-func (n NullTelemetryService) ParticipantActive(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientMeta *livekit.AnalyticsClientMeta, isMigration bool, guard *ReferenceGuard) {
++func (n NullTelemetryService) ParticipantActive(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientMeta *livekit.AnalyticsClientMeta, isMigration bool, isWarp bool, guard *ReferenceGuard) {
+ }
+ func (n NullTelemetryService) ParticipantResumed(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, nodeID livekit.NodeID, reason livekit.ReconnectReason) {
+ }
+diff --git a/renovate.json b/renovate.json
+index 213b7913..f4320b2d 100644
+--- a/renovate.json
++++ b/renovate.json
+@@ -1,34 +1,79 @@
+ {
+   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+-  "extends": ["config:base", "helpers:pinGitHubActionDigests"],
++  "extends": [
++    "config:recommended",
++    "helpers:pinGitHubActionDigests"
++  ],
+   "minimumReleaseAge": "2 weeks",
+   "commitBody": "Generated by renovateBot",
++  "prConcurrentLimit": 5,
++  "vulnerabilityAlerts": {
++    "enabled": true,
++    "minimumReleaseAge": "2 days",
++    "prConcurrentLimit": 0,
++    "prHourlyLimit": 0,
++    "schedule": []
++  },
+   "packageRules": [
+     {
+-      "schedule": "before 6am every monday",
+       "matchManagers": ["github-actions"],
+       "groupName": "github workflows"
+     },
+     {
+-      "schedule": "before 6am every monday",
+       "matchManagers": ["dockerfile"],
+-      "groupName": "docker deps"
++      "groupName": "docker deps",
++      "pinDigests": true
+     },
+     {
+-      "schedule": "before 6am every monday",
++      "description": "Go modules are never grouped: each module gets its own PR so a bad bump can be reverted on its own",
+       "matchManagers": ["gomod"],
+-      "groupName": "go deps"
++      "groupName": null
+     },
+     {
++      "description": "Exception to the rule above: the pion modules are co-released and depend on each other, so bumping them one at a time produces PRs that don't build",
+       "matchManagers": ["gomod"],
+-      "matchPackagePrefixes": ["github.com/pion"],
++      "matchPackageNames": ["github.com/pion{/,}**"],
+       "groupName": "pion deps"
+     },
+     {
++      "description": "First-party deps, no need to quarantine new releases",
++      "matchManagers": ["gomod"],
++      "matchPackageNames": [
++        "github.com/livekit{/,}**"
++      ],
++      "minimumReleaseAge": null
++    },
++    {
++      "description": "The go directive is the module minimum, owned by the go toolchain and dependency requirements; the build toolchain is pinned in the Dockerfile builder image instead",
+       "matchManagers": ["gomod"],
+-      "matchPackagePrefixes": ["github.com/livekit"],
+-      "groupName": "livekit deps"
++      "matchDepTypes": ["golang"],
++      "enabled": false
++    },
++    {
++      "description": "Build toolchain pin (Dockerfile golang image): a patch bump (stays on the current minor) and a minor bump each get their own approvable PR",
++      "matchManagers": ["dockerfile"],
++      "matchPackageNames": ["golang"],
++      "groupName": null,
++      "separateMinorPatch": true
+     }
+   ],
+-  "postUpdateOptions": ["gomodTidy"]
++  "customManagers": [
++    {
++      "customType": "regex",
++      "description": "Bump the builder image's Alpine suffix (golang:X.Y.Z-alpineA.B) along with its pinned digest. The base docker manager only bumps the Go version and holds the Alpine suffix fixed. This looks up the golang image (not alpine) with regex versioning that treats the Alpine minor as the version to bump and the Go version as the fixed compatibility, so Renovate only proposes an Alpine that actually exists as a published golang tag. The digest is captured so a suffix bump rewrites the pin instead of leaving a stale one.",
++      "managerFilePatterns": [
++        "/(^|/)Dockerfile$/",
++        "/(^|/)[^/]*\\.Dockerfile$/"
++      ],
++      "matchStrings": ["FROM golang:(?<currentValue>\\d+\\.\\d+\\.\\d+-alpine\\d+\\.\\d+)@(?<currentDigest>sha256:[0-9a-f]+)"],
++      "datasourceTemplate": "docker",
++      "depNameTemplate": "golang",
++      "versioningTemplate": "regex:^(?<compatibility>\\d+\\.\\d+\\.\\d+)-alpine(?<major>\\d+)\\.(?<minor>\\d+)$"
++    }
++  ],
++  "postUpdateOptions": [
++    "gomodTidy"
++  ],
++  "schedule": ["before 9am on monday"],
++  "updateNotScheduled": false
+ }
+diff --git a/test/client/client.go b/test/client/client.go
+index bb38cdaf..bd8c76f2 100644
+--- a/test/client/client.go
++++ b/test/client/client.go
+@@ -867,9 +867,9 @@ func (c *RTCClient) SetAttributes(attrs map[string]string) error {
+ 
+ func (c *RTCClient) hasPrimaryEverConnected() bool {
+ 	if c.subscriberAsPrimary.Load() {
+-		return c.subscriber.HasEverConnected()
++		return c.subscriber.PeerConnectionHasEverConnected()
+ 	} else {
+-		return c.publisher.HasEverConnected()
++		return c.publisher.PeerConnectionHasEverConnected()
+ 	}
+ }
+ 
+@@ -1113,7 +1113,7 @@ func (c *RTCClient) ensurePublisherConnected() error {
+ 		return c.ctx.Err()
+ 	}
+ 
+-	if c.publisher.HasEverConnected() {
++	if c.publisher.PeerConnectionHasEverConnected() {
+ 		return nil
+ 	}
+ 
+diff --git a/test/integration_helpers.go b/test/integration_helpers.go
+index 367294e4..0ac06feb 100644
+--- a/test/integration_helpers.go
++++ b/test/integration_helpers.go
+@@ -63,8 +63,12 @@ func init() {
+ }
+ 
+ func setupSingleNodeTest(name string) (*service.LivekitServer, func()) {
++	return setupSingleNodeTestWithConfig(name, nil)
++}
++
++func setupSingleNodeTestWithConfig(name string, configUpdater func(*config.Config)) (*service.LivekitServer, func()) {
+ 	logger.Infow("----------------STARTING TEST----------------", "test", name)
+-	s := createSingleNodeServer(nil)
++	s := createSingleNodeServer(configUpdater)
+ 	go func() {
+ 		if err := s.Start(); err != nil {
+ 			logger.Errorw("server returned error", err)
+diff --git a/test/signal_message_size_limit_test.go b/test/signal_message_size_limit_test.go
+new file mode 100644
+index 00000000..80ef7fd9
+--- /dev/null
++++ b/test/signal_message_size_limit_test.go
+@@ -0,0 +1,223 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package test
++
++import (
++	"errors"
++	"fmt"
++	"net"
++	"net/http"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gorilla/websocket"
++	"github.com/stretchr/testify/require"
++	"google.golang.org/protobuf/proto"
++
++	"github.com/livekit/protocol/livekit"
++
++	"github.com/livekit/livekit-server/pkg/config"
++	"github.com/livekit/livekit-server/pkg/rtc/types"
++	testclient "github.com/livekit/livekit-server/test/client"
++)
++
++// TestSignalMessageSizeLimit drives the full /rtc signalling path: a real client
++// connects to a single-node server configured with a small read-message size
++// limit and sends an oversized frame. The server must reject it at the transport
++// and close the connection with a 1009 (message too big) close code.
++func TestSignalMessageSizeLimit(t *testing.T) {
++	if testing.Short() {
++		t.SkipNow()
++		return
++	}
++
++	const limit = 1024
++	_, finish := setupSingleNodeTestWithConfig("TestSignalMessageSizeLimit", func(conf *config.Config) {
++		conf.Limit.SignalMessageSizeLimit = limit
++	})
++	defer finish()
++
++	token := joinToken(testRoom, "oversized", nil)
++	opts := &testclient.Options{AutoSubscribe: true}
++	testRTCServicePathToTestClientOptions(testRTCServicePathv0, opts)
++
++	ws, err := testclient.NewWebSocketConn(fmt.Sprintf("ws://localhost:%d", defaultServerPort), token, opts)
++	require.NoError(t, err)
++	defer ws.Close()
++
++	// send a frame well over the configured limit
++	require.NoError(t, ws.WriteMessage(websocket.BinaryMessage, make([]byte, limit*4)))
++
++	// the server rejects the oversized frame and closes the connection; drain any
++	// buffered server messages (e.g. JoinResponse) until the close surfaces
++	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
++	for {
++		if _, _, err = ws.ReadMessage(); err != nil {
++			break
++		}
++	}
++	require.True(t, websocket.IsCloseError(err, websocket.CloseMessageTooBig), "got %v", err)
++}
++
++// TestSignalMessageSizeLimitDisabled verifies that a limit of 0 leaves the
++// connection unbounded: a frame larger than the default limit is not rejected by
++// the transport with a 1009 close, and the server still delivers its signalling
++// messages (e.g. the JoinResponse).
++func TestSignalMessageSizeLimitDisabled(t *testing.T) {
++	if testing.Short() {
++		t.SkipNow()
++		return
++	}
++
++	_, finish := setupSingleNodeTestWithConfig("TestSignalMessageSizeLimitDisabled", func(conf *config.Config) {
++		conf.Limit.SignalMessageSizeLimit = 0
++	})
++	defer finish()
++
++	token := joinToken(testRoom, "oversized-disabled", nil)
++	opts := &testclient.Options{AutoSubscribe: true}
++	testRTCServicePathToTestClientOptions(testRTCServicePathv0, opts)
++
++	ws, err := testclient.NewWebSocketConn(fmt.Sprintf("ws://localhost:%d", defaultServerPort), token, opts)
++	require.NoError(t, err)
++	defer ws.Close()
++
++	// send a frame larger than the default 2 MiB limit; with the limit disabled the
++	// transport must not reject it
++	require.NoError(t, ws.WriteMessage(websocket.BinaryMessage, make([]byte, 3<<20)))
++
++	// the server still delivers signalling (the JoinResponse) and never closes with
++	// a 1009; drain until an error and assert it is not a message-too-big close
++	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
++	var reads int
++	for {
++		if _, _, err = ws.ReadMessage(); err != nil {
++			break
++		}
++		reads++
++	}
++	require.Positive(t, reads, "expected to read at least one server message")
++	require.False(t, websocket.IsCloseError(err, websocket.CloseMessageTooBig), "got %v", err)
++}
++
++// dialCompressed opens a permessage-deflate signalling connection to /rtc and
++// returns a valid, highly compressible SignalRequest whose marshaled (uncompressed)
++// size exceeds sizeAtLeast. On the wire the frame compresses to a few hundred
++// bytes, staying well under the transport read limit, so only the decompressed
++// bound can reject it.
++func dialCompressed(t *testing.T, identity string, sizeAtLeast int) (*websocket.Conn, []byte) {
++	t.Helper()
++
++	token := joinToken(testRoom, identity, nil)
++	header := make(http.Header)
++	testclient.SetAuthorizationToken(header, token)
++
++	dialer := websocket.Dialer{EnableCompression: true}
++	url := fmt.Sprintf(
++		"ws://localhost:%d/rtc?protocol=%d&auto_subscribe=true&sdk=go",
++		defaultServerPort, types.CurrentProtocol,
++	)
++	ws, _, err := dialer.Dial(url, header)
++	require.NoError(t, err)
++	ws.EnableWriteCompression(true)
++
++	req := &livekit.SignalRequest{
++		Message: &livekit.SignalRequest_UpdateMetadata{
++			UpdateMetadata: &livekit.UpdateParticipantMetadata{
++				Metadata: strings.Repeat("a", sizeAtLeast),
++			},
++		},
++	}
++	payload, err := proto.Marshal(req)
++	require.NoError(t, err)
++	require.Greater(t, len(payload), sizeAtLeast)
++
++	return ws, payload
++}
++
++// TestSignalMessageSizeLimitDecompressed reproduces the permessage-deflate
++// amplification case: a valid frame stays tiny on the wire (well under the
++// transport read limit) but inflates past the limit once decompressed. The
++// decompressed-size guard must reject it and the server must close the connection.
++func TestSignalMessageSizeLimitDecompressed(t *testing.T) {
++	if testing.Short() {
++		t.SkipNow()
++		return
++	}
++
++	const limit = 64 << 10 // 64 KiB
++	_, finish := setupSingleNodeTestWithConfig("TestSignalMessageSizeLimitDecompressed", func(conf *config.Config) {
++		conf.Limit.SignalMessageSizeLimit = limit
++	})
++	defer finish()
++
++	ws, payload := dialCompressed(t, "compressed", limit*8)
++	defer ws.Close()
++	require.NoError(t, ws.WriteMessage(websocket.BinaryMessage, payload))
++
++	// the server rejects the oversized decompressed message and tears down the
++	// connection: draining eventually yields a close/EOF rather than a read timeout
++	_ = ws.SetReadDeadline(time.Now().Add(5 * time.Second))
++	var err error
++	for {
++		if _, _, err = ws.ReadMessage(); err != nil {
++			break
++		}
++	}
++	require.Error(t, err)
++	require.False(t, isTimeout(err), "connection should be closed by the server, not time out; got %v", err)
++	require.False(t, websocket.IsCloseError(err, websocket.CloseMessageTooBig), "got %v", err)
++}
++
++// TestSignalMessageSizeLimitDecompressedDisabled is the counterpart to
++// TestSignalMessageSizeLimitDecompressed: with the limit disabled the same valid
++// large frame is accepted and the connection stays open (the drain times out
++// rather than being closed).
++func TestSignalMessageSizeLimitDecompressedDisabled(t *testing.T) {
++	if testing.Short() {
++		t.SkipNow()
++		return
++	}
++
++	_, finish := setupSingleNodeTestWithConfig("TestSignalMessageSizeLimitDecompressedDisabled", func(conf *config.Config) {
++		conf.Limit.SignalMessageSizeLimit = 0
++	})
++	defer finish()
++
++	ws, payload := dialCompressed(t, "compressed-disabled", 1<<20)
++	defer ws.Close()
++	require.NoError(t, ws.WriteMessage(websocket.BinaryMessage, payload))
++
++	// the message is accepted; the connection stays open, so draining blocks until
++	// the read deadline instead of observing a server-initiated close
++	_ = ws.SetReadDeadline(time.Now().Add(2 * time.Second))
++	var err error
++	for {
++		if _, _, err = ws.ReadMessage(); err != nil {
++			break
++		}
++	}
++	require.Error(t, err)
++	require.True(t, isTimeout(err), "connection should stay open and time out; got %v", err)
++}
++
++func isTimeout(err error) bool {
++	var netErr net.Error
++	if errors.As(err, &netErr) {
++		return netErr.Timeout()
++	}
++	return false
++}
+diff --git a/tools/tools.go b/tools/tools.go
+deleted file mode 100644
+index f77dcd86..00000000
+--- a/tools/tools.go
++++ /dev/null
+@@ -1,23 +0,0 @@
+-// Copyright 2023 LiveKit, Inc.
+-//
+-// Licensed under the Apache License, Version 2.0 (the "License");
+-// you may not use this file except in compliance with the License.
+-// You may obtain a copy of the License at
+-//
+-//     http://www.apache.org/licenses/LICENSE-2.0
+-//
+-// Unless required by applicable law or agreed to in writing, software
+-// distributed under the License is distributed on an "AS IS" BASIS,
+-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-// See the License for the specific language governing permissions and
+-// limitations under the License.
+-
+-//go:build tools
+-// +build tools
+-
+-package tools
+-
+-import (
+-	_ "github.com/google/wire/cmd/wire"
+-	_ "github.com/maxbrunsfeld/counterfeiter/v6"
+-)

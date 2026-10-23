@@ -1,0 +1,3769 @@
+diff --git a/config-sample.yaml b/config-sample.yaml
+index 78410e84..253fa46a 100644
+--- a/config-sample.yaml
++++ b/config-sample.yaml
+@@ -134,6 +134,11 @@ rtc:
+   #   #                  logs a warning and falls back to no-queue. see livekit/livekit#4724
+   #   # an unrecognized value is rejected at startup.
+   #   send_side_bwe_pacer: no-queue
++  # # FlexFEC-03 forward error correction, disabled by default.
++  # # Accepts FEC from publishers and uses it to repair lost packets before
++  # # forwarding.
++  # flexfec:
++  #   upstream_enabled: false
+   # # allows automatic connection fallback to TCP and TURN/TLS (if configured) when UDP has been unstable, default true
+   # allow_tcp_fallback: true
+   # # signaling RTT (in milliseconds) below which ICE/TCP is attempted on a UDP failure; at or above it,
+diff --git a/pkg/config/config.go b/pkg/config/config.go
+index f404b993..d3867f0a 100644
+--- a/pkg/config/config.go
++++ b/pkg/config/config.go
+@@ -157,6 +157,8 @@ type RTCConfig struct {
+ 
+ 	CongestionControl CongestionControlConfig `yaml:"congestion_control,omitempty"`
+ 
++	FlexFEC FlexFECConfig `yaml:"flexfec,omitempty"`
++
+ 	// allow TCP and TURN/TLS fallback
+ 	AllowTCPFallback *bool `yaml:"allow_tcp_fallback,omitempty"`
+ 
+@@ -253,6 +255,12 @@ func (c CongestionControlConfig) Validate() error {
+ 	}
+ }
+ 
++// FlexFECConfig controls FlexFEC-03 recovery on the publisher -> SFU leg.
++type FlexFECConfig struct {
++	// negotiate flexfec-03 with publishers and use it to recover lost upstream packets
++	UpstreamEnabled bool `yaml:"upstream_enabled,omitempty"`
++}
++
+ type PlayoutDelayConfig struct {
+ 	Enabled bool `yaml:"enabled,omitempty"`
+ 	Min     int  `yaml:"min,omitempty"`
+diff --git a/pkg/rtc/config.go b/pkg/rtc/config.go
+index f4994826..bcdd664b 100644
+--- a/pkg/rtc/config.go
++++ b/pkg/rtc/config.go
+@@ -37,6 +37,8 @@ type WebRTCConfig struct {
+ 	Receiver      ReceiverConfig
+ 	Publisher     DirectionConfig
+ 	Subscriber    DirectionConfig
++
++	flexFEC config.FlexFECConfig
+ }
+ 
+ type ReceiverConfig struct {
+@@ -57,10 +59,17 @@ type RTCPFeedbackConfig struct {
+ type DirectionConfig struct {
+ 	RTPHeaderExtension RTPHeaderExtensionConfig
+ 	RTCPFeedback       RTCPFeedbackConfig
++	FlexFEC            FlexFECDirectionConfig
++}
++
++// FlexFECDirectionConfig enables flexfec-03 for a transport direction.
++type FlexFECDirectionConfig struct {
++	Enabled bool
+ }
+ 
+ func NewWebRTCConfig(conf *config.Config) (*WebRTCConfig, error) {
+ 	rtcConf := conf.RTC
++	flexFEC := rtcConf.FlexFEC
+ 
+ 	webRTCConfig, err := rtcconfig.NewWebRTCConfig(&rtcConf.RTCConfig, conf.Development)
+ 	if err != nil {
+@@ -90,13 +99,14 @@ func NewWebRTCConfig(conf *config.Config) (*WebRTCConfig, error) {
+ 			PacketBufferSizeVideo: rtcConf.PacketBufferSizeVideo,
+ 			PacketBufferSizeAudio: rtcConf.PacketBufferSizeAudio,
+ 		},
+-		Publisher:  getPublisherConfig(false),
++		Publisher:  getPublisherConfig(false, flexFEC),
+ 		Subscriber: getSubscriberConfig(rtcConf.CongestionControl.UseSendSideBWEInterceptor || rtcConf.CongestionControl.UseSendSideBWE),
++		flexFEC:    flexFEC,
+ 	}, nil
+ }
+ 
+ func (c *WebRTCConfig) UpdatePublisherConfig(consolidated bool) {
+-	c.Publisher = getPublisherConfig(consolidated)
++	c.Publisher = getPublisherConfig(consolidated, c.flexFEC)
+ }
+ 
+ func (c *WebRTCConfig) UpdateSubscriberConfig(ccConf config.CongestionControlConfig) {
+@@ -108,9 +118,13 @@ func (c *WebRTCConfig) SetBufferFactory(factory *buffer.Factory) {
+ 	c.SettingEngine.BufferFactory = factory.GetOrNew
+ }
+ 
+-func getPublisherConfig(consolidated bool) DirectionConfig {
++func getPublisherConfig(consolidated bool, flexFEC config.FlexFECConfig) DirectionConfig {
++	publisherFlexFEC := FlexFECDirectionConfig{
++		Enabled: flexFEC.UpstreamEnabled,
++	}
+ 	if consolidated {
+ 		return DirectionConfig{
++			FlexFEC: publisherFlexFEC,
+ 			RTPHeaderExtension: RTPHeaderExtensionConfig{
+ 				Audio: []string{
+ 					sdp.SDESMidURI,
+@@ -145,6 +159,7 @@ func getPublisherConfig(consolidated bool) DirectionConfig {
+ 	}
+ 
+ 	return DirectionConfig{
++		FlexFEC: publisherFlexFEC,
+ 		RTPHeaderExtension: RTPHeaderExtensionConfig{
+ 			Audio: []string{
+ 				sdp.SDESMidURI,
+diff --git a/pkg/rtc/mediaengine.go b/pkg/rtc/mediaengine.go
+index 3ac28b43..5d0828d8 100644
+--- a/pkg/rtc/mediaengine.go
++++ b/pkg/rtc/mediaengine.go
+@@ -137,6 +137,15 @@ func createMediaEngine(codecs []*livekit.Codec, config DirectionConfig, filterOu
+ 		return nil, err
+ 	}
+ 
++	if config.FlexFEC.Enabled {
++		// registering a flexfec codec makes pion allocate FEC SSRCs for video
++		// senders and emit a=ssrc-group:FEC-FR in offers, and lets answers
++		// accept flexfec offered by publishers
++		if err := me.RegisterCodec(protoCodecs.FlexFEC03CodecParameters, webrtc.RTPCodecTypeVideo); err != nil {
++			return nil, err
++		}
++	}
++
+ 	if err := registerHeaderExtensions(me, config.RTPHeaderExtension); err != nil {
+ 		return nil, err
+ 	}
+@@ -208,6 +217,7 @@ func filterCodecs(
+ 	enabledCodecs []*livekit.Codec,
+ 	rtcpFeedbackConfig RTCPFeedbackConfig,
+ 	filterOutH264HighProfile bool,
++	enableFlexFEC bool,
+ ) []webrtc.RTPCodecParameters {
+ 	filteredCodecs := make([]webrtc.RTPCodecParameters, 0, len(codecs))
+ 	for _, c := range codecs {
+@@ -215,6 +225,15 @@ func filterCodecs(
+ 			continue
+ 		}
+ 
++		// flexfec-03 is not part of the enabled codec lists, retain it when
++		// the transport direction has FlexFEC enabled
++		if mime.IsMimeTypeStringFlexFEC03(c.RTPCodecCapability.MimeType) {
++			if enableFlexFEC {
++				filteredCodecs = append(filteredCodecs, c)
++			}
++			continue
++		}
++
+ 		for _, enabledCodec := range enabledCodecs {
+ 			if mime.NormalizeMimeType(enabledCodec.Mime) == mime.NormalizeMimeType(c.RTPCodecCapability.MimeType) {
+ 				if !mime.IsMimeTypeStringEqual(c.RTPCodecCapability.MimeType, mime.MimeTypeRTX.String()) {
+diff --git a/pkg/rtc/mediatrack.go b/pkg/rtc/mediatrack.go
+index 9793e210..895216f4 100644
+--- a/pkg/rtc/mediatrack.go
++++ b/pkg/rtc/mediatrack.go
+@@ -37,6 +37,7 @@ import (
+ 	"github.com/livekit/livekit-server/pkg/sfu/connectionquality"
+ 	"github.com/livekit/livekit-server/pkg/sfu/interceptor"
+ 	"github.com/livekit/livekit-server/pkg/telemetry"
++	"github.com/livekit/livekit-server/pkg/telemetry/prometheus"
+ 	util "github.com/livekit/mediatransportutil"
+ )
+ 
+@@ -581,6 +582,10 @@ func (t *MediaTrack) AddReceiver(receiver *webrtc.RTPReceiver, track sfu.TrackRe
+ 
+ 	buff.OnNotifyRTX(t.MediaTrackReceiver.setLayerRtxInfo)
+ 
++	buff.OnFECRecovery(func(received int, recovered int, discarded int, bytesReceived int) {
++		prometheus.RecordFECUpstream(received, recovered, discarded, uint64(bytesReceived))
++	})
++
+ 	// if subscriber request fps before fps calculated, update them after fps updated.
+ 	buff.OnFpsChanged(func() {
+ 		t.MediaTrackSubscriptions.UpdateVideoLayers()
+diff --git a/pkg/rtc/transport.go b/pkg/rtc/transport.go
+index 0652fdef..1632ea50 100644
+--- a/pkg/rtc/transport.go
++++ b/pkg/rtc/transport.go
+@@ -1042,6 +1042,7 @@ func (t *PCTransport) queueOrConfigureSender(
+ 		filterOutH264HighProfile: !t.params.IsOfferer,
+ 		enableAudioStereo:        enableAudioStereo,
+ 		enableAudioNACK:          enableAudioNACK,
++		enableFlexFEC:            t.params.DirectionConfig.FlexFEC.Enabled,
+ 	}
+ 	if !t.params.IsOfferer {
+ 		t.sendersPendingConfigMu.Lock()
+@@ -1720,6 +1721,15 @@ func (t *PCTransport) HandleRemoteDescription(sd webrtc.SessionDescription, remo
+ 				t.params.Config.BufferFactory.SetRTXPair(repair, base, "")
+ 			}
+ 		}
++
++		if t.params.DirectionConfig.FlexFEC.Enabled {
++			if fecFlows := fecPairsFromSDP(parsed, t.params.Logger); len(fecFlows) > 0 {
++				t.params.Logger.Debugw("fec pairs found from sdp", "ssrcs", fecFlows)
++				for fec, base := range fecFlows {
++					t.params.Config.BufferFactory.SetFECPair(fec, base)
++				}
++			}
++		}
+ 		return nil
+ 	}
+ 
+@@ -2999,6 +3009,15 @@ func (t *PCTransport) handleRemoteOfferReceived(sd *webrtc.SessionDescription, p
+ 		}
+ 	}
+ 
++	if t.params.DirectionConfig.FlexFEC.Enabled {
++		if fecFlows := fecPairsFromSDP(parsed, t.params.Logger); len(fecFlows) > 0 {
++			t.params.Logger.Debugw("fec pairs found from sdp", "ssrcs", fecFlows)
++			for fec, base := range fecFlows {
++				t.params.Config.BufferFactory.SetFECPair(fec, base)
++			}
++		}
++	}
++
+ 	if t.currentOfferIceCredential == "" || offerRestartICE {
+ 		t.currentOfferIceCredential = iceCredential
+ 	}
+@@ -3172,6 +3191,7 @@ type configureSenderParams struct {
+ 	filterOutH264HighProfile bool
+ 	enableAudioStereo        bool
+ 	enableAudioNACK          bool
++	enableFlexFEC            bool
+ }
+ 
+ func configureSender(params configureSenderParams, offerAudioPT map[mime.MimeType]webrtc.PayloadType) {
+@@ -3180,6 +3200,7 @@ func configureSender(params configureSenderParams, offerAudioPT map[mime.MimeTyp
+ 		params.enabledCodecs,
+ 		params.rtcpFeedbackConfig,
+ 		params.filterOutH264HighProfile,
++		params.enableFlexFEC,
+ 	)
+ 
+ 	if params.transceiver.Kind() == webrtc.RTPCodecTypeAudio {
+@@ -3285,6 +3306,7 @@ func configureSenderCodecs(
+ 	enabledCodecs []*livekit.Codec,
+ 	rtcpFeedbackConfig RTCPFeedbackConfig,
+ 	filterOutH264HighProfile bool,
++	enableFlexFEC bool,
+ ) {
+ 	if len(enabledCodecs) == 0 {
+ 		return
+@@ -3300,6 +3322,7 @@ func configureSenderCodecs(
+ 		enabledCodecs,
+ 		rtcpFeedbackConfig,
+ 		filterOutH264HighProfile,
++		enableFlexFEC,
+ 	)
+ 	tr.SetCodecPreferences(filteredCodecs)
+ }
+@@ -3326,6 +3349,7 @@ func (t *PCTransport) restrictReceiverCodecsToPublishList() {
+ 			t.params.EnabledPublishCodecs,
+ 			t.params.DirectionConfig.RTCPFeedback,
+ 			false,
++			t.params.DirectionConfig.FlexFEC.Enabled,
+ 		)
+ 		if len(filtered) == 0 {
+ 			continue
+@@ -3377,6 +3401,14 @@ func configureReceiverCodecs(
+ 		// if the client don't comply with codec order in SDP answer, only keep preferred codecs to force client to use it
+ 		if compliesWithCodecOrderInSDPAnswer {
+ 			reorderedCodecs = append(reorderedCodecs, leftCodecs...)
++		} else {
++			// flexfec applies to whichever video codec is negotiated, retain
++			// it even when trimming to the preferred codec
++			for _, c := range leftCodecs {
++				if mime.IsMimeTypeStringFlexFEC03(c.RTPCodecCapability.MimeType) {
++					reorderedCodecs = append(reorderedCodecs, c)
++				}
++			}
+ 		}
+ 	} else {
+ 		reorderedCodecs = append(reorderedCodecs, leftCodecs...)
+@@ -3427,6 +3459,37 @@ func nonSimulcastRTXRepairsFromSDP(s *sdp.SessionDescription, logger logger.Logg
+ 	return rtxRepairFlows
+ }
+ 
++// fecPairsFromSDP extracts FlexFEC repair flows declared via
++// `a=ssrc-group:FEC-FR <media ssrc> <fec ssrc>` (RFC 5956) from the remote
++// description, returning a map of fec ssrc -> protected media ssrc.
++func fecPairsFromSDP(s *sdp.SessionDescription, logger logger.Logger) map[uint32]uint32 {
++	fecFlows := map[uint32]uint32{}
++	for _, media := range s.MediaDescriptions {
++		for _, attr := range media.Attributes {
++			if attr.Key != sdp.AttrKeySSRCGroup {
++				continue
++			}
++			fields := strings.Fields(attr.Value)
++			if len(fields) != 3 || fields[0] != sdp.SemanticTokenForwardErrorCorrectionFramework {
++				continue
++			}
++			baseSsrc, err := strconv.ParseUint(fields[1], 10, 32)
++			if err != nil {
++				logger.Warnw("failed to parse SSRC", err, "ssrc", fields[1])
++				continue
++			}
++			fecSsrc, err := strconv.ParseUint(fields[2], 10, 32)
++			if err != nil {
++				logger.Warnw("failed to parse SSRC", err, "ssrc", fields[2])
++				continue
++			}
++			fecFlows[uint32(fecSsrc)] = uint32(baseSsrc)
++		}
++	}
++
++	return fecFlows
++}
++
+ // ----------------------
+ 
+ type iceCandidatePairStatsEncoder struct {
+diff --git a/pkg/rtc/transport_fec_test.go b/pkg/rtc/transport_fec_test.go
+new file mode 100644
+index 00000000..363beee0
+--- /dev/null
++++ b/pkg/rtc/transport_fec_test.go
+@@ -0,0 +1,206 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package rtc
++
++import (
++	"testing"
++
++	"github.com/pion/sdp/v3"
++	"github.com/pion/webrtc/v4"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/livekit-server/pkg/config"
++	protoCodecs "github.com/livekit/protocol/codecs"
++	"github.com/livekit/protocol/livekit"
++	"github.com/livekit/protocol/logger"
++)
++
++func TestFECPairsFromSDP(t *testing.T) {
++	offer := `v=0
++o=- 8541913762120318441 2 IN IP4 127.0.0.1
++s=-
++t=0 0
++m=video 9 UDP/TLS/RTP/SAVPF 96 97 115
++c=IN IP4 0.0.0.0
++a=mid:0
++a=sendonly
++a=rtpmap:96 VP8/90000
++a=rtpmap:97 rtx/90000
++a=fmtp:97 apt=96
++a=rtpmap:115 flexfec-03/90000
++a=fmtp:115 repair-window=10000000
++a=ssrc-group:FID 1111 2222
++a=ssrc-group:FEC-FR 1111 3333
++a=ssrc:1111 cname:test
++a=ssrc:2222 cname:test
++a=ssrc:3333 cname:test
++`
++	parsed := &sdp.SessionDescription{}
++	require.NoError(t, parsed.Unmarshal([]byte(offer)))
++
++	fecPairs := fecPairsFromSDP(parsed, logger.GetLogger())
++	require.Len(t, fecPairs, 1)
++	assert.Equal(t, uint32(1111), fecPairs[uint32(3333)])
++
++	// FID pairs are not picked up as FEC
++	rtxPairs := nonSimulcastRTXRepairsFromSDP(parsed, logger.GetLogger())
++	require.Len(t, rtxPairs, 1)
++	assert.Equal(t, uint32(1111), rtxPairs[uint32(2222)])
++}
++
++func TestFECPairsFromSDPNoGroups(t *testing.T) {
++	offer := `v=0
++o=- 8541913762120318441 2 IN IP4 127.0.0.1
++s=-
++t=0 0
++m=video 9 UDP/TLS/RTP/SAVPF 96
++c=IN IP4 0.0.0.0
++a=mid:0
++a=sendonly
++a=rtpmap:96 VP8/90000
++a=ssrc:1111 cname:test
++`
++	parsed := &sdp.SessionDescription{}
++	require.NoError(t, parsed.Unmarshal([]byte(offer)))
++	assert.Empty(t, fecPairsFromSDP(parsed, logger.GetLogger()))
++}
++
++func TestFECPairsFromSDPIgnoresMalformedGroups(t *testing.T) {
++	description := &sdp.SessionDescription{
++		MediaDescriptions: []*sdp.MediaDescription{{
++			Attributes: []sdp.Attribute{
++				{Key: sdp.AttrKeySSRCGroup},
++				{Key: sdp.AttrKeySSRCGroup, Value: "FEC-FR 1111"},
++				{Key: sdp.AttrKeySSRCGroup, Value: "FEC-FR invalid 3333"},
++				{Key: sdp.AttrKeySSRCGroup, Value: "FEC-FR 1111 invalid"},
++				{Key: sdp.AttrKeySSRCGroup, Value: "FEC-FR 1111 3333 4444"},
++			},
++		}},
++	}
++
++	require.NotPanics(t, func() {
++		assert.Empty(t, fecPairsFromSDP(description, logger.GetLogger()))
++	})
++}
++
++func TestFECPairsFromSDPHandlesWhitespace(t *testing.T) {
++	description := &sdp.SessionDescription{
++		MediaDescriptions: []*sdp.MediaDescription{{
++			Attributes: []sdp.Attribute{{
++				Key:   sdp.AttrKeySSRCGroup,
++				Value: "  FEC-FR   1111\t3333  ",
++			}},
++		}},
++	}
++
++	assert.Equal(t, map[uint32]uint32{3333: 1111}, fecPairsFromSDP(description, logger.GetLogger()))
++}
++
++func TestFlexFECPayloadTypeDoesNotCollide(t *testing.T) {
++	flexFECPayloadType := protoCodecs.FlexFEC03CodecParameters.PayloadType
++	assert.LessOrEqual(t, flexFECPayloadType, webrtc.PayloadType(127))
++	for _, codec := range protoCodecs.VideoCodecsParameters {
++		assert.NotEqual(t, codec.PayloadType, flexFECPayloadType, codec.MimeType)
++		assert.NotEqual(t, codec.PayloadType+1, flexFECPayloadType, codec.MimeType+" RTX")
++	}
++	for _, codec := range []webrtc.RTPCodecParameters{
++		protoCodecs.OpusCodecParameters,
++		protoCodecs.RedCodecParameters,
++		protoCodecs.PCMUCodecParameters,
++		protoCodecs.PCMACodecParameters,
++	} {
++		assert.NotEqual(t, codec.PayloadType, flexFECPayloadType, codec.MimeType)
++	}
++}
++
++func TestMediaEngineRegistersFlexFEC(t *testing.T) {
++	enabledCodecs := []*livekit.Codec{
++		{Mime: "video/VP8"},
++		{Mime: "video/rtx"},
++	}
++
++	for _, test := range []struct {
++		name    string
++		enabled bool
++	}{
++		{name: "disabled", enabled: false},
++		{name: "enabled", enabled: true},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			me, err := createMediaEngine(enabledCodecs, DirectionConfig{
++				FlexFEC: FlexFECDirectionConfig{
++					Enabled: test.enabled,
++				},
++				RTCPFeedback: RTCPFeedbackConfig{
++					Video: []webrtc.RTCPFeedback{{Type: webrtc.TypeRTCPFBTransportCC}},
++				},
++			}, false)
++			require.NoError(t, err)
++
++			pc, err := webrtc.NewAPI(webrtc.WithMediaEngine(me)).NewPeerConnection(webrtc.Configuration{})
++			require.NoError(t, err)
++			defer pc.Close()
++			_, err = pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo)
++			require.NoError(t, err)
++			offer, err := pc.CreateOffer(nil)
++			require.NoError(t, err)
++
++			flexFECParams := protoCodecs.FlexFEC03CodecParameters
++			assert.Equal(t, "repair-window=10000000", flexFECParams.SDPFmtpLine)
++			filtered := filterCodecs(
++				[]webrtc.RTPCodecParameters{flexFECParams},
++				enabledCodecs,
++				RTCPFeedbackConfig{},
++				false,
++				test.enabled,
++			)
++			if test.enabled {
++				require.Len(t, filtered, 1)
++				assert.Equal(t, webrtc.MimeTypeFlexFEC03, filtered[0].MimeType)
++				assert.Contains(t, offer.SDP, "a=rtpmap:115 flexfec-03/90000")
++				assert.Contains(t, offer.SDP, "a=fmtp:115 repair-window=10000000")
++			} else {
++				assert.Empty(t, filtered)
++				assert.NotContains(t, offer.SDP, "flexfec-03")
++			}
++		})
++	}
++}
++
++func TestWebRTCConfigFlexFEC(t *testing.T) {
++	newConfig := func(t *testing.T) *config.Config {
++		t.Helper()
++		conf, err := config.NewConfig("", true, nil, nil)
++		require.NoError(t, err)
++		conf.RTC.TCPPort = 0
++		return conf
++	}
++
++	t.Run("defaults and publisher updates", func(t *testing.T) {
++		conf := newConfig(t)
++		conf.RTC.FlexFEC = config.FlexFECConfig{UpstreamEnabled: true}
++
++		webRTCConfig, err := NewWebRTCConfig(conf)
++		require.NoError(t, err)
++		assert.Equal(t, FlexFECDirectionConfig{
++			Enabled: true,
++		}, webRTCConfig.Publisher.FlexFEC)
++		assert.False(t, webRTCConfig.Subscriber.FlexFEC.Enabled)
++
++		webRTCConfig.UpdatePublisherConfig(true)
++		assert.True(t, webRTCConfig.Publisher.FlexFEC.Enabled)
++	})
++}
+diff --git a/pkg/sfu/buffer/buffer.go b/pkg/sfu/buffer/buffer.go
+index b5527550..cca32e2e 100644
+--- a/pkg/sfu/buffer/buffer.go
++++ b/pkg/sfu/buffer/buffer.go
+@@ -23,6 +23,7 @@ import (
+ 	"github.com/pion/rtp"
+ 	"github.com/pion/webrtc/v4"
+ 
++	"github.com/livekit/livekit-server/pkg/sfu/flexfec"
+ 	sutils "github.com/livekit/livekit-server/pkg/utils"
+ 	"github.com/livekit/mediatransportutil/pkg/bucket"
+ 	"github.com/livekit/mediatransportutil/pkg/twcc"
+@@ -35,10 +36,15 @@ const (
+ 
+ 	InitPacketBufferSizeVideo = 300
+ 	InitPacketBufferSizeAudio = 70
++
++	// An unpaired FEC repair stream only needs a short bridge until its primary
++	// stream appears. The decoder itself retains at most this many FEC states.
++	maxPendingFECRepairPackets = 100
+ )
+ 
+ var (
+-	errInvalidCodec = errors.New("invalid codec")
++	errInvalidCodec           = errors.New("invalid codec")
++	errFECMediaPacketNotFound = errors.New("fec media packet not found")
+ )
+ 
+ var _ BufferProvider = (*Buffer)(nil)
+@@ -48,6 +54,21 @@ type pendingPacket struct {
+ 	packet      []byte
+ }
+ 
++type fecRecoveryDelta struct {
++	received      int
++	recovered     int
++	discarded     int
++	bytesReceived int
++}
++
++func (d fecRecoveryDelta) invoke(callback func(received int, recovered int, discarded int, bytesReceived int)) {
++	if callback != nil && (d.recovered > 0 || d.received > 0 || d.discarded > 0) {
++		callback(d.received, d.recovered, d.discarded, d.bytesReceived)
++	}
++}
++
++type cbFECRecovery func(received int, recovered int, discarded int, bytesReceived int)
++
+ // Buffer contains all packets
+ type Buffer struct {
+ 	*BufferBase
+@@ -73,6 +94,13 @@ type Buffer struct {
+ 	primaryBufferForRTX *Buffer
+ 	rtxPktBuf           []byte
+ 
++	primaryBufferForFEC *Buffer
++	isFECRepair         bool
++	fecSSRC             uint32
++	fecDecoder          *flexfec.Decoder
++	fecPktBuf           []byte
++	onFECRecovery       cbFECRecovery
++
+ 	streamInfoProbe       *StreamInfoProbe
+ 	warnedPendingOverflow bool
+ }
+@@ -95,12 +123,13 @@ type StreamInfoProbe struct {
+ func NewBuffer(ssrc uint32, maxVideoPkts, maxAudioPkts int) *Buffer {
+ 	b := &Buffer{}
+ 	b.BufferBase = NewBufferBase(BufferBaseParams{
+-		SSRC:               ssrc,
+-		MaxVideoPkts:       maxVideoPkts,
+-		MaxAudioPkts:       maxAudioPkts,
+-		LoggerComponents:   []string{sutils.ComponentPub, sutils.ComponentSFU},
+-		SendPLI:            b.sendPLI,
+-		IsReportingEnabled: true,
++		SSRC:                  ssrc,
++		MaxVideoPkts:          maxVideoPkts,
++		MaxAudioPkts:          maxAudioPkts,
++		LoggerComponents:      []string{sutils.ComponentPub, sutils.ComponentSFU},
++		SendPLI:               b.sendPLI,
++		OnStreamRestartLocked: b.recreateFECDecoderLocked,
++		IsReportingEnabled:    true,
+ 	})
+ 	return b
+ }
+@@ -132,26 +161,24 @@ func (b *Buffer) Bind(params webrtc.RTPParameters, codec webrtc.RTPCodecCapabili
+ 		return err
+ 	}
+ 
+-	b.lastReportAt = mono.UnixNano()
++	now := mono.UnixNano()
++	b.lastReportAt = now
+ 
+ 	if len(b.pPackets) != 0 {
+ 		b.logger.Debugw("releasing queued packets on bind", "count", len(b.pPackets))
+ 	}
+-	var rtcpPackets []rtcp.Packet
+ 	for _, pp := range b.pPackets {
+-		rtcpPackets = append(rtcpPackets, b.calc(pp.packet, nil, pp.arrivalTime, true, false)...)
++		b.ingestLocked(pp.packet, nil, pp.arrivalTime, true, false)
+ 	}
+ 	b.pPackets = nil
+ 
++	rtcpPackets := b.getRTCPPackets(now)
++
+ 	b.isBound = true
++	b.maybeCreateFECDecoderLocked()
+ 	b.Unlock()
+ 
+-	if len(rtcpPackets) != 0 {
+-		if cb := b.getOnRtcpFeedback(); cb != nil {
+-			cb(rtcpPackets)
+-		}
+-	}
+-
++	b.packetPostProcess(rtcpPackets, fecRecoveryDelta{}, nil)
+ 	return nil
+ }
+ 
+@@ -202,18 +229,32 @@ func (b *Buffer) Write(pkt []byte) (n int, err error) {
+ 		return
+ 	}
+ 
+-	if !b.isBound {
+-		packet := make([]byte, len(pkt))
+-		copy(packet, pkt)
++	// handle FlexFEC packet
++	if pb := b.primaryBufferForFEC; pb != nil {
++		b.Unlock()
++
++		// skip padding only packets
++		if rtpPacket.Padding && len(rtpPacket.Payload) == 0 {
++			return
++		}
+ 
++		pb.writeFEC(rtpPacket, now)
++		return
++	}
++
++	if !b.isBound {
+ 		if len(b.pPackets) == 0 {
+ 			b.logger.Debugw("received first packet")
+ 		}
+ 
+-		startIdx := 0
+-		overflow := len(b.pPackets) - max(b.BufferBase.MaxVideoPkts(), b.BufferBase.MaxAudioPkts())
+-		if overflow > 0 {
+-			startIdx = overflow
++		pendingLimit := max(b.BufferBase.MaxVideoPkts(), b.BufferBase.MaxAudioPkts())
++		if b.isFECRepair {
++			pendingLimit = min(pendingLimit, maxPendingFECRepairPackets)
++		}
++		pendingLimit = max(pendingLimit, 1)
++		if overflow := len(b.pPackets) - pendingLimit + 1; overflow > 0 {
++			clear(b.pPackets[:overflow])
++			b.pPackets = b.pPackets[overflow:]
+ 
+ 			// a stream that keeps arriving but never binds drops every packet from here
+ 			// on; for an RTX stream it means the pairing was never established
+@@ -226,7 +267,10 @@ func (b *Buffer) Write(pkt []byte) (n int, err error) {
+ 				)
+ 			}
+ 		}
+-		b.pPackets = append(b.pPackets[startIdx:], pendingPacket{
++
++		packet := make([]byte, len(pkt))
++		copy(packet, pkt)
++		b.pPackets = append(b.pPackets, pendingPacket{
+ 			packet:      packet,
+ 			arrivalTime: now,
+ 		})
+@@ -236,14 +280,22 @@ func (b *Buffer) Write(pkt []byte) (n int, err error) {
+ 		return
+ 	}
+ 
+-	rtcpPackets := b.calc(pkt, rtpPacket, now, false, false)
+-	b.Unlock()
++	b.ingestLocked(pkt, rtpPacket, now, false, false)
+ 
+-	if len(rtcpPackets) != 0 {
+-		if cb := b.getOnRtcpFeedback(); cb != nil {
+-			cb(rtcpPackets)
+-		}
++	var fecDelta fecRecoveryDelta
++	var onFECRecovery cbFECRecovery
++	if b.fecDecoder != nil {
++		// feed media into the FEC decoder, a media arrival can complete a
++		// previously unrecoverable FEC window. Recovered packets update NACK
++		// state before feedback is generated below, so a packet repaired by
++		// FEC is not needlessly NACKed.
++		fecDelta, onFECRecovery = b.feedFECLocked(rtpPacket, now)
+ 	}
++
++	rtcpPackets := b.getRTCPPackets(now)
++	b.Unlock()
++
++	b.packetPostProcess(rtcpPackets, fecDelta, onFECRecovery)
+ 	return
+ }
+ 
+@@ -327,24 +379,16 @@ func (b *Buffer) NotifyRTX(ssrc uint32, repairSSRC uint32, rsid string) {
+ }
+ 
+ func (b *Buffer) writeRTX(rtxPkt *rtp.Packet, arrivalTime int64) {
+-	rtcpPackets := b.writeRTXLocked(rtxPkt, arrivalTime)
+-	if len(rtcpPackets) != 0 {
+-		if cb := b.getOnRtcpFeedback(); cb != nil {
+-			cb(rtcpPackets)
+-		}
+-	}
+-}
+-
+-func (b *Buffer) writeRTXLocked(rtxPkt *rtp.Packet, arrivalTime int64) []rtcp.Packet {
+ 	b.Lock()
+-	defer b.Unlock()
+ 	if !b.isBound {
+-		return nil
++		b.Unlock()
++		return
+ 	}
+ 
+ 	if rtxPkt.PayloadType != b.rtxPayloadType {
+ 		b.logger.Debugw("unexpected rtx payload type", "expected", b.rtxPayloadType, "actual", rtxPkt.PayloadType)
+-		return nil
++		b.Unlock()
++		return
+ 	}
+ 
+ 	if b.rtxPktBuf == nil {
+@@ -353,7 +397,8 @@ func (b *Buffer) writeRTXLocked(rtxPkt *rtp.Packet, arrivalTime int64) []rtcp.Pa
+ 
+ 	if len(rtxPkt.Payload) < 2 {
+ 		b.logger.Warnw("rtx payload too short", nil, "size", len(rtxPkt.Payload))
+-		return nil
++		b.Unlock()
++		return
+ 	}
+ 
+ 	repairedPkt := *rtxPkt
+@@ -364,10 +409,239 @@ func (b *Buffer) writeRTXLocked(rtxPkt *rtp.Packet, arrivalTime int64) []rtcp.Pa
+ 	n, err := repairedPkt.MarshalTo(b.rtxPktBuf)
+ 	if err != nil {
+ 		b.logger.Errorw("could not marshal repaired packet", err, "ssrc", b.BufferBase.SSRC(), "sn", repairedPkt.SequenceNumber)
+-		return nil
++		b.Unlock()
++		return
+ 	}
+ 
+-	return b.calc(b.rtxPktBuf[:n], &repairedPkt, arrivalTime, false, true)
++	b.ingestLocked(b.rtxPktBuf[:n], &repairedPkt, arrivalTime, false, true)
++
++	var fecDelta fecRecoveryDelta
++	var onFECRecovery cbFECRecovery
++	if b.fecDecoder != nil {
++		fecDelta, onFECRecovery = b.feedFECLocked(&repairedPkt, arrivalTime)
++	}
++
++	rtcpPackets := b.getRTCPPackets(arrivalTime)
++	b.Unlock()
++
++	b.packetPostProcess(rtcpPackets, fecDelta, onFECRecovery)
++}
++
++func (b *Buffer) SetPrimaryBufferForFEC(primaryBuffer *Buffer) {
++	b.Lock()
++	b.primaryBufferForFEC = primaryBuffer
++	pkts := b.pPackets
++	b.pPackets = nil
++	ssrc := b.BufferBase.SSRC()
++	b.Unlock()
++
++	// Let the primary know the repair stream SSRC so its decoder is ready
++	// before the first FEC packet arrives.
++	primaryBuffer.setFECSSRC(ssrc)
++
++	for _, pp := range pkts {
++		var rtpPacket rtp.Packet
++		err := rtpPacket.Unmarshal(pp.packet)
++		if err != nil {
++			continue
++		}
++		if rtpPacket.Padding && len(rtpPacket.Payload) == 0 {
++			continue
++		}
++		primaryBuffer.writeFEC(&rtpPacket, pp.arrivalTime)
++	}
++}
++
++func (b *Buffer) setFECRepairBufferLimit() {
++	b.Lock()
++	defer b.Unlock()
++
++	b.isFECRepair = true
++	if len(b.pPackets) <= maxPendingFECRepairPackets {
++		return
++	}
++
++	// Pairing can be announced after repair packets start arriving. Compact the
++	// retained tail so both the dropped packet bytes and oversized slice backing
++	// array become collectible.
++	start := len(b.pPackets) - maxPendingFECRepairPackets
++	retained := make([]pendingPacket, maxPendingFECRepairPackets)
++	copy(retained, b.pPackets[start:])
++	clear(b.pPackets)
++	b.pPackets = retained
++}
++
++func (b *Buffer) setFECSSRC(ssrc uint32) {
++	b.Lock()
++	b.fecSSRC = ssrc
++	b.maybeCreateFECDecoderLocked()
++	b.Unlock()
++}
++
++// maybeCreateFECDecoderLocked creates the FEC decoder as soon as the repair
++// stream SSRC is known and the buffer is bound with a negotiated flexfec
++// payload type. Protected media is read from the primary RTP packet bucket.
++func (b *Buffer) maybeCreateFECDecoderLocked() {
++	if b.fecDecoder != nil || b.fecSSRC == 0 || !b.isBound || b.fecPayloadType == 0 {
++		return
++	}
++
++	b.fecDecoder = flexfec.NewDecoder(b.fecSSRC, b.BufferBase.SSRC(), b.getFECMediaPacketLocked, b.logger)
++	b.logger.Debugw("flexfec decoder created", "fecSSRC", b.fecSSRC, "mediaSSRC", b.BufferBase.SSRC())
++}
++
++// recreateFECDecoderLocked drops FlexFEC state from the previous sequence
++// space. Stream restart resyncs the packet bucket and sequence map, so repair
++// packets retained by the old decoder would recover against the wrong media
++// or be treated as duplicates of the new repair stream.
++func (b *Buffer) recreateFECDecoderLocked() {
++	if b.fecDecoder == nil {
++		return
++	}
++
++	b.fecDecoder = nil
++	b.maybeCreateFECDecoderLocked()
++}
++
++func (b *Buffer) getFECMediaPacketLocked(sequenceNumber uint16, dst []byte) (int, error) {
++	if b.bucket == nil || b.rtpStats == nil {
++		return 0, errFECMediaPacketNotFound
++	}
++
++	// FlexFEC masks use the publisher's sequence-number space. BufferBase
++	// removes padding-only packets from the downstream space, so resolve the
++	// original extended sequence number and apply the same adjustment used
++	// when the packet was inserted into the bucket.
++	highestSequenceNumber := b.rtpStats.ExtendedHighestSequenceNumber()
++	extendedSequenceNumber := int64(highestSequenceNumber) + int64(int16(sequenceNumber-uint16(highestSequenceNumber)))
++	if extendedSequenceNumber < 0 {
++		return 0, errFECMediaPacketNotFound
++	}
++
++	extendedSN := uint64(extendedSequenceNumber)
++	sequenceNumberAdjustment, err := b.snRangeMap.GetValue(extendedSN)
++	if err != nil || sequenceNumberAdjustment > extendedSN {
++		return 0, errFECMediaPacketNotFound
++	}
++
++	return b.bucket.GetPacket(dst, extendedSN-sequenceNumberAdjustment)
++}
++
++// OnFECRecovery is called with counter deltas whenever FEC packets are
++// processed since the previous callback: FEC packets received, media packets
++// recovered, FEC packets discarded and FEC bytes received.
++func (b *Buffer) OnFECRecovery(fn cbFECRecovery) {
++	b.Lock()
++	b.onFECRecovery = fn
++	b.Unlock()
++}
++
++// FECDecoderStats returns cumulative FlexFEC decode counters of the buffer.
++func (b *Buffer) FECDecoderStats() flexfec.DecoderStats {
++	b.RLock()
++	defer b.RUnlock()
++
++	if b.fecDecoder == nil {
++		return flexfec.DecoderStats{}
++	}
++	return b.fecDecoder.Stats()
++}
++
++// writeFEC handles a packet of the coupled FlexFEC repair stream, recovered
++// media packets are injected into the regular packet pipeline.
++func (b *Buffer) writeFEC(fecPkt *rtp.Packet, arrivalTime int64) {
++	b.Lock()
++	if !b.isBound {
++		b.Unlock()
++		return
++	}
++
++	// the FEC stream is never bound in pion, run its TWCC accounting here so
++	// publisher send side BWE sees the FEC packets acked. The repair stream
++	// shares the media m-line, extension ids match the primary stream.
++	if b.twcc != nil && b.twccExtID != 0 {
++		if ext := fecPkt.GetExtension(b.twccExtID); len(ext) >= 2 {
++			b.twcc.Push(fecPkt.SSRC, binary.BigEndian.Uint16(ext[0:2]), arrivalTime, fecPkt.Marker)
++		}
++	}
++
++	if b.fecPayloadType == 0 || fecPkt.PayloadType != b.fecPayloadType {
++		b.logger.Debugw("unexpected fec payload type", "expected", b.fecPayloadType, "actual", fecPkt.PayloadType)
++		b.Unlock()
++		return
++	}
++
++	if b.fecDecoder == nil {
++		// normally created when the pair is declared, fall back to the
++		// observed repair stream SSRC
++		b.fecSSRC = fecPkt.SSRC
++		b.maybeCreateFECDecoderLocked()
++		if b.fecDecoder == nil {
++			b.logger.Infow("flexfec decoder unavailable after creation attempt", "fecSSRC", b.fecSSRC, "mediaSSRC", b.BufferBase.SSRC(), "payloadType", b.fecPayloadType)
++			b.Unlock()
++			return
++		}
++	}
++
++	fecDelta, onFECRecovery := b.feedFECLocked(fecPkt, arrivalTime)
++	rtcpPackets := b.getRTCPPackets(arrivalTime)
++	b.Unlock()
++
++	b.packetPostProcess(rtcpPackets, fecDelta, onFECRecovery)
++}
++
++// feedFECLocked runs a media or FEC packet through the FEC decoder and
++// injects recovered packets into the packet pipeline. Must be called with the
++// buffer lock held and a non-nil decoder.
++func (b *Buffer) feedFECLocked(
++	pkt *rtp.Packet,
++	arrivalTime int64,
++) (fecRecoveryDelta, cbFECRecovery) {
++	statsBefore := b.fecDecoder.Stats()
++	recovered := b.fecDecoder.DecodeFEC(pkt)
++	statsAfter := b.fecDecoder.Stats()
++
++	fecPackets := statsAfter.FECPacketsReceived - statsBefore.FECPacketsReceived
++	fecBytes := statsAfter.FECBytesReceived - statsBefore.FECBytesReceived
++	fecPacketsDiscarded := statsAfter.FECPacketsDiscarded - statsBefore.FECPacketsDiscarded
++	fecPacketsRecovered := statsAfter.PacketsRecovered - statsBefore.PacketsRecovered
++	if b.rtpStats != nil {
++		b.rtpStats.UpdateFEC(
++			fecPackets,
++			fecBytes,
++			fecPacketsDiscarded,
++			fecPacketsRecovered,
++		)
++	}
++
++	if len(recovered) > 0 && b.fecPktBuf == nil {
++		b.fecPktBuf = make([]byte, bucket.RTPMaxPktSize)
++	}
++	for _, rp := range recovered {
++		n, err := rp.MarshalTo(b.fecPktBuf)
++		if err != nil {
++			b.logger.Warnw("could not marshal fec recovered packet", err, "ssrc", b.BufferBase.SSRC(), "sn", rp.SequenceNumber)
++			continue
++		}
++
++		// recovered packets flow through the regular pipeline: they are
++		// forwarded downstream and stop NACKs for the lost sequence numbers.
++		// They do not re-enter the decoder because chained recovery already
++		// completed within DecodeFEC. RTCP is generated once by the caller
++		// after all recovered packets have updated NACK state.
++		b.ingestLocked(b.fecPktBuf[:n], rp, arrivalTime, false, true)
++	}
++
++	if cb := b.onFECRecovery; cb != nil {
++		return fecRecoveryDelta{
++			received:      int(fecPackets),
++			recovered:     int(fecPacketsRecovered),
++			discarded:     int(fecPacketsDiscarded),
++			bytesReceived: int(fecBytes),
++		}, cb
++	}
++
++	return fecRecoveryDelta{}, nil
+ }
+ 
+ func (b *Buffer) Read(buff []byte) (n int, err error) {
+@@ -444,7 +718,11 @@ func (b *Buffer) sendPLI() {
+ 	}
+ }
+ 
+-func (b *Buffer) calc(rawPkt []byte, rtpPacket *rtp.Packet, arrivalTime int64, isBuffered bool, isRTX bool) []rtcp.Packet {
++// ingestLocked runs a packet through the incoming packet pipeline, updating RTP
++// stats, NACK state and the packet bucket. It intentionally does not generate
++// RTCP so that FEC recovery can update NACK state before feedback is generated
++// once. Must be called with the buffer lock held.
++func (b *Buffer) ingestLocked(rawPkt []byte, rtpPacket *rtp.Packet, arrivalTime int64, isBuffered bool, isRTX bool) {
+ 	b.BufferBase.HandleIncomingPacketLocked(
+ 		rawPkt,
+ 		rtpPacket,
+@@ -454,8 +732,24 @@ func (b *Buffer) calc(rawPkt []byte, rtpPacket *rtp.Packet, arrivalTime int64, i
+ 		nil,
+ 		0,
+ 	)
++}
++
++// packetPostProcess runs processing after a packet is handled.
++// `rtcpPackets` should be RTCP feedback from the current NACK state, which
++// already reflects any FEC recovery performed during this write.
++// This is to ensure that packets recovered via FEC is not NACKed.
++func (b *Buffer) packetPostProcess(
++	rtcpPackets []rtcp.Packet,
++	fecDelta fecRecoveryDelta,
++	onFECRecovery cbFECRecovery,
++) {
++	fecDelta.invoke(onFECRecovery)
+ 
+-	return b.getRTCPPackets(arrivalTime)
++	if len(rtcpPackets) != 0 {
++		if cb := b.getOnRtcpFeedback(); cb != nil {
++			cb(rtcpPackets)
++		}
++	}
+ }
+ 
+ func (b *Buffer) getRTCPPackets(arrivalTime int64) []rtcp.Packet {
+diff --git a/pkg/sfu/buffer/buffer_base.go b/pkg/sfu/buffer/buffer_base.go
+index e124b131..5ddfe043 100644
+--- a/pkg/sfu/buffer/buffer_base.go
++++ b/pkg/sfu/buffer/buffer_base.go
+@@ -153,14 +153,15 @@ const (
+ )
+ 
+ type BufferBaseParams struct {
+-	SSRC                uint32
+-	MaxVideoPkts        int
+-	MaxAudioPkts        int
+-	LoggerComponents    []string
+-	SendPLI             func()
+-	IsReportingEnabled  bool
+-	IsOOBSequenceNumber bool
+-	IsDDRestartEnabled  bool
++	SSRC                  uint32
++	MaxVideoPkts          int
++	MaxAudioPkts          int
++	LoggerComponents      []string
++	SendPLI               func()
++	OnStreamRestartLocked func()
++	IsReportingEnabled    bool
++	IsOOBSequenceNumber   bool
++	IsDDRestartEnabled    bool
+ }
+ 
+ type BufferBase struct {
+@@ -187,6 +188,7 @@ type BufferBase struct {
+ 	rtpParameters  webrtc.RTPParameters
+ 	payloadType    uint8
+ 	rtxPayloadType uint8
++	fecPayloadType uint8
+ 
+ 	snRangeMap *utils.RangeMap[uint64, uint64]
+ 
+@@ -332,6 +334,14 @@ func (b *BufferBase) BindLocked(rtpParameters webrtc.RTPParameters, codec webrtc
+ 		}
+ 	}
+ 
++	// find FlexFEC payload type, the repair stream is codec agnostic (no apt)
++	for _, codec := range rtpParameters.Codecs {
++		if strings.EqualFold(codec.MimeType, webrtc.MimeTypeFlexFEC03) {
++			b.fecPayloadType = uint8(codec.PayloadType)
++			break
++		}
++	}
++
+ 	for _, ext := range rtpParameters.HeaderExtensions {
+ 		switch ext.URI {
+ 		case dd.ExtensionURI:
+@@ -591,6 +601,10 @@ func (b *BufferBase) restartStreamLocked(reason string, isDetected bool) {
+ 
+ 	b.StartKeyFrameSeeder()
+ 
++	if f := b.params.OnStreamRestartLocked; f != nil {
++		f()
++	}
++
+ 	if isDetected {
+ 		b.isRestartPending = true
+ 
+diff --git a/pkg/sfu/buffer/buffer_fec_test.go b/pkg/sfu/buffer/buffer_fec_test.go
+new file mode 100644
+index 00000000..65f92adb
+--- /dev/null
++++ b/pkg/sfu/buffer/buffer_fec_test.go
+@@ -0,0 +1,716 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package buffer
++
++import (
++	"crypto/aes"
++	"crypto/cipher"
++	"encoding/binary"
++	"sync"
++	"testing"
++	"time"
++
++	pionflexfec "github.com/pion/interceptor/pkg/flexfec"
++	"github.com/pion/rtcp"
++	"github.com/pion/rtp"
++	"github.com/pion/transport/v4/packetio"
++	"github.com/pion/webrtc/v4"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/livekit-server/pkg/sfu/testutils/rtptest"
++	"github.com/livekit/mediatransportutil/pkg/twcc"
++)
++
++const (
++	fecTestMediaSSRC = uint32(0x11111111)
++	fecTestFECSSRC   = uint32(0x22222222)
++	fecTestFECPT     = uint8(115)
++)
++
++var flexFECCodec = webrtc.RTPCodecParameters{
++	RTPCodecCapability: webrtc.RTPCodecCapability{
++		MimeType:    webrtc.MimeTypeFlexFEC03,
++		ClockRate:   90000,
++		SDPFmtpLine: "repair-window=10000000",
++	},
++	PayloadType: webrtc.PayloadType(fecTestFECPT),
++}
++
++func bindFECTestBuffer(t *testing.T, buff *Buffer) {
++	t.Helper()
++	buff.codecType = webrtc.RTPCodecTypeVideo
++	require.NoError(t, buff.Bind(webrtc.RTPParameters{
++		Codecs: []webrtc.RTPCodecParameters{vp8Codec, flexFECCodec},
++	}, vp8Codec.RTPCodecCapability, 0))
++}
++
++func writePacket(t *testing.T, buff *Buffer, pkt *rtp.Packet) {
++	t.Helper()
++	raw, err := pkt.Marshal()
++	require.NoError(t, err)
++	_, err = buff.Write(raw)
++	require.NoError(t, err)
++}
++
++// readExtSequenceNumbers drains count ExtPackets and returns sequence number
++// -> extended sequence number of everything seen.
++func readExtSequenceNumbers(t *testing.T, buff *Buffer, count int) map[uint16]uint64 {
++	t.Helper()
++	seen := make(map[uint16]uint64, count)
++	var buf [1500]byte
++	for i := 0; i < count; i++ {
++		extPkt, err := buff.ReadExtended(buf[:])
++		require.NoError(t, err)
++		require.NotNil(t, extPkt)
++		seen[extPkt.Packet.SequenceNumber] = extPkt.ExtSequenceNumber
++	}
++	return seen
++}
++
++// requireRecoveredInBucket asserts that the dropped packet was placed into
++// the buffer's bucket (where downstream NACKs are served from), matching the
++// behavior of RTX repaired packets.
++func requireRecoveredInBucket(t *testing.T, buff *Buffer, dropped *rtp.Packet, extSNBySN map[uint16]uint64, refSN uint16) {
++	t.Helper()
++	refExtSN, ok := extSNBySN[refSN]
++	require.True(t, ok, "reference sequence number %d not seen", refSN)
++	droppedExtSN := refExtSN + uint64(dropped.SequenceNumber-refSN)
++
++	var buf [1500]byte
++	n, err := buff.GetPacket(buf[:], droppedExtSN)
++	require.NoError(t, err, "recovered packet not found in bucket")
++
++	var pkt rtp.Packet
++	require.NoError(t, pkt.Unmarshal(buf[:n]))
++	require.Equal(t, dropped.SequenceNumber, pkt.SequenceNumber)
++	assert.Equal(t, dropped.Timestamp, pkt.Timestamp)
++	assert.Equal(t, dropped.Payload, pkt.Payload)
++}
++
++func TestBufferFECPendingPacketLimit(t *testing.T) {
++	makeRepairPacket := func(sequenceNumber uint16) rtp.Packet {
++		return rtp.Packet{
++			Header: rtp.Header{
++				Version:        2,
++				PayloadType:    fecTestFECPT,
++				SequenceNumber: sequenceNumber,
++				SSRC:           fecTestFECSSRC,
++			},
++			Payload: make([]byte, 1200),
++		}
++	}
++	writeRepairPackets := func(t *testing.T, buff *Buffer, count int) {
++		t.Helper()
++		for i := range count {
++			packet := makeRepairPacket(uint16(i))
++			writePacket(t, buff, &packet)
++		}
++	}
++	assertRetainedTail := func(t *testing.T, buff *Buffer, total int) {
++		t.Helper()
++		require.Len(t, buff.pPackets, maxPendingFECRepairPackets)
++
++		var first, last rtp.Packet
++		require.NoError(t, first.Unmarshal(buff.pPackets[0].packet))
++		require.NoError(t, last.Unmarshal(buff.pPackets[len(buff.pPackets)-1].packet))
++		assert.EqualValues(t, total-maxPendingFECRepairPackets, first.SequenceNumber)
++		assert.EqualValues(t, total-1, last.SequenceNumber)
++	}
++
++	const packetCount = maxPendingFECRepairPackets + 50
++	t.Run("pair declared before repair stream", func(t *testing.T) {
++		factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++		factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++		fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++
++		writeRepairPackets(t, fecBuff, packetCount)
++		assertRetainedTail(t, fecBuff, packetCount)
++	})
++
++	t.Run("pair declared after repair packets", func(t *testing.T) {
++		factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++		fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++		writeRepairPackets(t, fecBuff, packetCount)
++		require.Len(t, fecBuff.pPackets, packetCount)
++
++		factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++		assertRetainedTail(t, fecBuff, packetCount)
++		assert.LessOrEqual(t, cap(fecBuff.pPackets), maxPendingFECRepairPackets)
++	})
++}
++
++func TestBufferFECRecoversDroppedPacket(t *testing.T) {
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++
++	bindFECTestBuffer(t, primary)
++
++	var recoveredDelta, receivedDelta int
++	primary.OnFECRecovery(func(received int, recovered int, discarded int, bytesReceived int) {
++		recoveredDelta += recovered
++		receivedDelta += received
++	})
++
++	media := rtptest.GenerateVP8Packets(100, 10, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	encoder := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC)
++	fecPackets := encoder.EncodeFec(media, 2)
++	require.NotEmpty(t, fecPackets)
++
++	const droppedIdx = 3
++	for i := range media {
++		if i == droppedIdx {
++			continue
++		}
++		writePacket(t, primary, &media[i])
++	}
++	for i := range fecPackets {
++		writePacket(t, fecBuff, &fecPackets[i])
++	}
++
++	stats := primary.FECDecoderStats()
++	assert.EqualValues(t, len(fecPackets), stats.FECPacketsReceived)
++	assert.EqualValues(t, 1, stats.PacketsRecovered)
++	assert.EqualValues(t, 0, stats.FECPacketsDiscarded)
++	assert.Equal(t, 1, recoveredDelta)
++	assert.Equal(t, len(fecPackets), receivedDelta)
++
++	fecPayloadBytes := 0
++	for i := range fecPackets {
++		fecPayloadBytes += len(fecPackets[i].Payload)
++	}
++	rtpStats := primary.GetStats()
++	require.NotNil(t, rtpStats)
++	assert.EqualValues(t, len(fecPackets), rtpStats.FecPackets)
++	assert.EqualValues(t, fecPayloadBytes, rtpStats.FecBytes)
++	assert.EqualValues(t, 0, rtpStats.FecPacketsDiscarded)
++	assert.EqualValues(t, 1, rtpStats.FecPacketsRecovered)
++
++	// the 9 received packets flow through the ext packet pipeline, the
++	// recovered one fills the bucket like an RTX repair
++	extSNBySN := readExtSequenceNumbers(t, primary, len(media)-1)
++	requireRecoveredInBucket(t, primary, &media[droppedIdx], extSNBySN, media[0].SequenceNumber)
++}
++
++func TestBufferFECRecoversEncryptedPayload(t *testing.T) {
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	bindFECTestBuffer(t, primary)
++
++	block, err := aes.NewCipher([]byte("flexfec-e2ee-key"))
++	require.NoError(t, err)
++	aead, err := cipher.NewGCM(block)
++	require.NoError(t, err)
++
++	media := rtptest.GenerateVP8Packets(120, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	plaintexts := make([][]byte, len(media))
++	for i := range media {
++		plaintexts[i] = append([]byte("encrypted-video-frame-"), byte(i))
++		nonce := make([]byte, aead.NonceSize())
++		binary.BigEndian.PutUint64(nonce[len(nonce)-8:], uint64(media[i].SequenceNumber))
++		// E2EE encrypts the encoded frame before RTP packetization. The VP8
++		// payload descriptor remains clear while the frame bytes are opaque to
++		// the SFU and authenticated end-to-end.
++		media[i].Payload = append([]byte{0x10}, aead.Seal(nil, nonce, plaintexts[i], nil)...)
++	}
++
++	fecPackets := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC).EncodeFec(media, 1)
++	require.Len(t, fecPackets, 1)
++
++	const droppedIdx = 2
++	for i := range media {
++		if i != droppedIdx {
++			writePacket(t, primary, &media[i])
++		}
++	}
++	writePacket(t, fecBuff, &fecPackets[0])
++
++	require.EqualValues(t, 1, primary.FECDecoderStats().PacketsRecovered)
++	extSNBySN := readExtSequenceNumbers(t, primary, len(media)-1)
++	requireRecoveredInBucket(t, primary, &media[droppedIdx], extSNBySN, media[0].SequenceNumber)
++
++	refExtSN := extSNBySN[media[0].SequenceNumber]
++	droppedExtSN := refExtSN + uint64(media[droppedIdx].SequenceNumber-media[0].SequenceNumber)
++	var raw [1500]byte
++	n, err := primary.GetPacket(raw[:], droppedExtSN)
++	require.NoError(t, err)
++	var recovered rtp.Packet
++	require.NoError(t, recovered.Unmarshal(raw[:n]))
++
++	nonce := make([]byte, aead.NonceSize())
++	binary.BigEndian.PutUint64(nonce[len(nonce)-8:], uint64(recovered.SequenceNumber))
++	decrypted, err := aead.Open(nil, nonce, recovered.Payload[1:], nil)
++	require.NoError(t, err, "FlexFEC recovery must preserve authenticated ciphertext byte-for-byte")
++	assert.Equal(t, plaintexts[droppedIdx], decrypted)
++}
++
++func TestBufferFECRecoveryCallbackCanReenterBuffer(t *testing.T) {
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++	bindFECTestBuffer(t, primary)
++
++	callbackDone := make(chan struct{}, 1)
++	primary.OnFECRecovery(func(received int, recovered int, discarded int, bytesReceived int) {
++		primary.FECDecoderStats()
++		callbackDone <- struct{}{}
++	})
++
++	media := rtptest.GenerateVP8Packets(150, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	for i := range media {
++		writePacket(t, primary, &media[i])
++	}
++	fecPackets := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC).EncodeFec(media, 1)
++	require.NotEmpty(t, fecPackets)
++
++	rawFEC, err := fecPackets[0].Marshal()
++	require.NoError(t, err)
++	writeDone := make(chan error, 1)
++	go func() {
++		_, err := fecBuff.Write(rawFEC)
++		writeDone <- err
++	}()
++
++	select {
++	case <-callbackDone:
++	case <-time.After(time.Second):
++		t.Fatal("FEC recovery callback deadlocked while re-entering the buffer")
++	}
++
++	select {
++	case err := <-writeDone:
++		require.NoError(t, err)
++	case <-time.After(time.Second):
++		t.Fatal("FEC packet write did not return after callback")
++	}
++}
++
++func TestBufferFECPairAfterPackets(t *testing.T) {
++	// FEC packets arriving before the ssrc-group is known are queued as
++	// pending and replayed when the pair is established. Protected media is
++	// recovered from the primary packet bucket even when pairing is late.
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	bindFECTestBuffer(t, primary)
++
++	encoder := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC)
++	media := rtptest.GenerateVP8Packets(200, 10, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	fecPackets := encoder.EncodeFec(media, 2)
++	require.NotEmpty(t, fecPackets)
++
++	const firstDroppedIdx = 5
++	for i := range media {
++		if i == firstDroppedIdx {
++			continue
++		}
++		writePacket(t, primary, &media[i])
++	}
++
++	// fec buffer created by first packet arrival, before the pair is declared
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	for i := range fecPackets {
++		writePacket(t, fecBuff, &fecPackets[i])
++	}
++
++	stats := primary.FECDecoderStats()
++	require.EqualValues(t, 0, stats.FECPacketsReceived)
++
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++
++	// Pending FEC is replayed and can use media already in the primary bucket.
++	stats = primary.FECDecoderStats()
++	assert.EqualValues(t, len(fecPackets), stats.FECPacketsReceived)
++	assert.EqualValues(t, 1, stats.PacketsRecovered)
++
++	// the next window recovers normally
++	media2 := rtptest.GenerateVP8Packets(210, 10, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	fecPackets2 := encoder.EncodeFec(media2, 2)
++	require.NotEmpty(t, fecPackets2)
++
++	const droppedIdx = 4
++	for i := range media2 {
++		if i == droppedIdx {
++			continue
++		}
++		writePacket(t, primary, &media2[i])
++	}
++	for i := range fecPackets2 {
++		writePacket(t, fecBuff, &fecPackets2[i])
++	}
++
++	stats = primary.FECDecoderStats()
++	assert.EqualValues(t, 2, stats.PacketsRecovered)
++
++	extSNBySN := readExtSequenceNumbers(t, primary, len(media)-1+len(media2)-1)
++	requireRecoveredInBucket(t, primary, &media[firstDroppedIdx], extSNBySN, media[0].SequenceNumber)
++	requireRecoveredInBucket(t, primary, &media2[droppedIdx], extSNBySN, media2[0].SequenceNumber)
++}
++
++func TestBufferFECCoupledBeforeBuffersExist(t *testing.T) {
++	// pair declared first (from SDP), buffers created later on first packet
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	bindFECTestBuffer(t, primary)
++
++	media := rtptest.GenerateVP8Packets(300, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	encoder := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC)
++	fecPackets := encoder.EncodeFec(media, 1)
++	require.NotEmpty(t, fecPackets)
++
++	const droppedIdx = 2
++	for i := range media {
++		if i == droppedIdx {
++			continue
++		}
++		writePacket(t, primary, &media[i])
++	}
++	for i := range fecPackets {
++		writePacket(t, fecBuff, &fecPackets[i])
++	}
++
++	stats := primary.FECDecoderStats()
++	assert.EqualValues(t, 1, stats.PacketsRecovered)
++
++	extSNBySN := readExtSequenceNumbers(t, primary, len(media)-1)
++	requireRecoveredInBucket(t, primary, &media[droppedIdx], extSNBySN, media[0].SequenceNumber)
++}
++
++func TestBufferFECSequenceNumberWrap(t *testing.T) {
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	bindFECTestBuffer(t, primary)
++
++	media := rtptest.GenerateVP8Packets(65533, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	for i := range media {
++		media[i].Timestamp = 90000 + 3000*uint32(i)
++	}
++	fecPackets := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC).EncodeFec(media, 1)
++	require.NotEmpty(t, fecPackets)
++
++	const droppedIdx = 3 // sequence number 0
++	for i := range media {
++		if i != droppedIdx {
++			writePacket(t, primary, &media[i])
++		}
++	}
++	for i := range fecPackets {
++		writePacket(t, fecBuff, &fecPackets[i])
++	}
++
++	require.EqualValues(t, 1, primary.FECDecoderStats().PacketsRecovered)
++	extSNBySN := readExtSequenceNumbers(t, primary, len(media)-1)
++	requireRecoveredInBucket(t, primary, &media[droppedIdx], extSNBySN, media[0].SequenceNumber)
++}
++
++func TestBufferFECRecoveryAfterPaddingRemoval(t *testing.T) {
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	bindFECTestBuffer(t, primary)
++
++	media := rtptest.GenerateVP8Packets(800, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	fecPackets := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC).EncodeFec(media, 1)
++	require.Len(t, fecPackets, 1)
++
++	// Insert a padding-only packet into the publisher sequence-number space.
++	// The FEC packet protects the five media packets but not the padding packet.
++	for i := 1; i < len(media); i++ {
++		media[i].SequenceNumber++
++	}
++	mask := uint16(0x8000)
++	for _, offset := range []uint{0, 2, 3, 4, 5} {
++		mask |= 1 << (14 - offset)
++	}
++	binary.BigEndian.PutUint16(fecPackets[0].Payload[18:20], mask)
++
++	padding := rtp.Packet{
++		Header: rtp.Header{
++			Version:        2,
++			Padding:        true,
++			PaddingSize:    20,
++			PayloadType:    uint8(vp8Codec.PayloadType),
++			SequenceNumber: 801,
++			Timestamp:      media[0].Timestamp,
++			SSRC:           fecTestMediaSSRC,
++		},
++	}
++
++	writePacket(t, primary, &media[0])
++	writePacket(t, primary, &padding)
++	const droppedIdx = 2
++	for i := 1; i < len(media); i++ {
++		if i != droppedIdx {
++			writePacket(t, primary, &media[i])
++		}
++	}
++	writePacket(t, fecBuff, &fecPackets[0])
++
++	require.EqualValues(t, 1, primary.FECDecoderStats().PacketsRecovered)
++	extSNBySN := readExtSequenceNumbers(t, primary, len(media)-1)
++	baseExtSN, ok := extSNBySN[media[0].SequenceNumber]
++	require.True(t, ok)
++
++	// The removed padding packet shifts the recovered packet down by one in
++	// the bucket/downstream sequence-number space.
++	var raw [1500]byte
++	n, err := primary.GetPacket(raw[:], baseExtSN+2)
++	require.NoError(t, err)
++	var recovered rtp.Packet
++	require.NoError(t, recovered.Unmarshal(raw[:n]))
++	assert.Equal(t, media[droppedIdx].SequenceNumber-1, recovered.SequenceNumber)
++	assert.Equal(t, media[droppedIdx].Timestamp, recovered.Timestamp)
++	assert.Equal(t, media[droppedIdx].PayloadType, recovered.PayloadType)
++	assert.Equal(t, media[droppedIdx].SSRC, recovered.SSRC)
++	assert.Equal(t, media[droppedIdx].Payload, recovered.Payload)
++}
++
++func TestBufferFECIgnoresUnexpectedPayloadType(t *testing.T) {
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++
++	// bound without flexfec in negotiated codecs
++	primary.codecType = webrtc.RTPCodecTypeVideo
++	require.NoError(t, primary.Bind(webrtc.RTPParameters{
++		Codecs: []webrtc.RTPCodecParameters{vp8Codec},
++	}, vp8Codec.RTPCodecCapability, 0))
++
++	media := rtptest.GenerateVP8Packets(400, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	encoder := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC)
++	fecPackets := encoder.EncodeFec(media, 1)
++	require.NotEmpty(t, fecPackets)
++
++	for i := range media {
++		writePacket(t, primary, &media[i])
++	}
++	for i := range fecPackets {
++		writePacket(t, fecBuff, &fecPackets[i])
++	}
++
++	// no flexfec payload type negotiated, decoder must not be created
++	stats := primary.FECDecoderStats()
++	assert.EqualValues(t, 0, stats.FECPacketsReceived)
++	assert.EqualValues(t, 0, stats.PacketsRecovered)
++}
++
++func TestBufferFECIgnoresShortTWCCExtension(t *testing.T) {
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++	bindFECTestBuffer(t, primary)
++
++	const twccExtID = 3
++	primary.SetTWCCAndExtID(twcc.NewTransportWideCCResponder(), twccExtID)
++
++	fecPacket := rtp.Packet{
++		Header: rtp.Header{
++			Version:        2,
++			PayloadType:    fecTestFECPT,
++			SequenceNumber: 1,
++			SSRC:           fecTestFECSSRC,
++		},
++		Payload: []byte{0},
++	}
++	require.NoError(t, fecPacket.SetExtension(twccExtID, []byte{1}))
++
++	writePacket(t, fecBuff, &fecPacket)
++	assert.EqualValues(t, 1, primary.FECDecoderStats().FECPacketsDiscarded)
++}
++
++func TestBufferFECNACKSuppression(t *testing.T) {
++	// a recovered packet must clear the pending NACK for its sequence number
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++	bindFECTestBuffer(t, primary)
++
++	media := rtptest.GenerateVP8Packets(700, 10, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	encoder := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC)
++	fecPackets := encoder.EncodeFec(media, 2)
++	require.NotEmpty(t, fecPackets)
++
++	const droppedIdx = 6
++	for i := range media {
++		if i == droppedIdx {
++			continue
++		}
++		writePacket(t, primary, &media[i])
++	}
++
++	// the only gap is the dropped packet, exactly one queued NACK
++	require.NotNil(t, primary.nacker)
++	require.Len(t, primary.nacker.Nacks(), 1, "expected queued NACK for dropped packet")
++
++	for i := range fecPackets {
++		writePacket(t, fecBuff, &fecPackets[i])
++	}
++	require.EqualValues(t, 1, primary.FECDecoderStats().PacketsRecovered)
++
++	require.Empty(t, primary.nacker.Nacks(), "NACK for recovered packet not suppressed")
++}
++
++func TestBufferFECNACKNotSentForRecoveredPacket(t *testing.T) {
++	// A late media arrival can complete a retained FEC window. RTCP feedback
++	// must be generated after FEC recovery so the sequence number repaired by
++	// FEC is not NACKed, while an unrelated unrecoverable gap is still NACKed.
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++	bindFECTestBuffer(t, primary)
++
++	var mu sync.Mutex
++	nackedSNs := make(map[uint16]bool)
++	primary.OnRtcpFeedback(func(fb []rtcp.Packet) {
++		mu.Lock()
++		defer mu.Unlock()
++		for _, pkt := range fb {
++			if nack, ok := pkt.(*rtcp.TransportLayerNack); ok {
++				for _, pair := range nack.Nacks {
++					pair.Range(func(sn uint16) bool {
++						nackedSNs[sn] = true
++						return true
++					})
++				}
++			}
++		}
++	})
++
++	// single FEC packet protecting the whole window; dropping two of the
++	// protected packets keeps the window unrecoverable until one arrives
++	media := rtptest.GenerateVP8Packets(100, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC) // 100..104
++	fecPackets := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC).EncodeFec(media, 1)
++	require.Len(t, fecPackets, 1)
++
++	writePacket(t, primary, &media[0]) // 100
++	writePacket(t, primary, &media[1]) // 101
++	writePacket(t, primary, &media[4]) // 104 -> gap 102, 103
++
++	// an unrelated gap outside the FEC-protected window that FEC cannot recover
++	extra := rtptest.GenerateVP8Packets(105, 3, uint8(vp8Codec.PayloadType), fecTestMediaSSRC) // 105..107
++	writePacket(t, primary, &extra[0])                                                         // 105
++	writePacket(t, primary, &extra[2])                                                         // 107 -> gap 106
++	const unrecoverableSN = uint16(106)
++
++	// FEC packet retained: two protected packets (102, 103) still missing
++	writePacket(t, fecBuff, &fecPackets[0])
++	require.EqualValues(t, 0, primary.FECDecoderStats().PacketsRecovered)
++	require.Len(t, primary.nacker.Nacks(), 3, "expected queued NACKs for 102, 103, 106")
++
++	// let the queued NACKs age past the minimum NACK interval so they would be
++	// sent on the next RTCP generation, and ignore any feedback emitted during
++	// setup
++	time.Sleep(30 * time.Millisecond)
++	mu.Lock()
++	nackedSNs = make(map[uint16]bool)
++	mu.Unlock()
++
++	// late arrival of 102 leaves only 103 missing, recovered in the same write
++	writePacket(t, primary, &media[2]) // 102
++	require.EqualValues(t, 1, primary.FECDecoderStats().PacketsRecovered)
++
++	// only the unrecoverable gap should remain queued; 102 arrived and 103 was
++	// recovered, both cleared from the NACK queue
++	require.Len(t, primary.nacker.Nacks(), 1)
++
++	mu.Lock()
++	defer mu.Unlock()
++	assert.True(t, nackedSNs[unrecoverableSN], "expected NACK for unrecoverable gap %d", unrecoverableSN)
++	assert.False(t, nackedSNs[media[2].SequenceNumber], "arrived packet %d must not be NACKed", media[2].SequenceNumber)
++	assert.False(t, nackedSNs[media[3].SequenceNumber], "FEC-recovered packet %d must not be NACKed", media[3].SequenceNumber)
++}
++
++func TestBufferFECDecoderRecreatedOnStreamRestart(t *testing.T) {
++	factory := NewFactoryOfBufferFactory(500, 200).CreateBufferFactory()
++
++	primary := factory.GetOrNew(packetio.RTPBufferPacket, fecTestMediaSSRC).(*Buffer)
++	fecBuff := factory.GetOrNew(packetio.RTPBufferPacket, fecTestFECSSRC).(*Buffer)
++	factory.SetFECPair(fecTestFECSSRC, fecTestMediaSSRC)
++	bindFECTestBuffer(t, primary)
++
++	media := rtptest.GenerateVP8Packets(100, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	fecPackets := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC).EncodeFec(media, 1)
++	require.Len(t, fecPackets, 1)
++
++	const droppedIdx = 2
++	for i := range media {
++		if i != droppedIdx {
++			writePacket(t, primary, &media[i])
++		}
++	}
++	writePacket(t, fecBuff, &fecPackets[0])
++	require.EqualValues(t, 1, primary.FECDecoderStats().PacketsRecovered)
++
++	decoderBefore := primary.fecDecoder
++	require.NotNil(t, decoderBefore)
++
++	// Receiver restart and detected discontinuity both land here.
++	primary.RestartStream("test")
++
++	decoderAfter := primary.fecDecoder
++	require.NotNil(t, decoderAfter)
++	require.NotSame(t, decoderBefore, decoderAfter)
++	stats := primary.FECDecoderStats()
++	assert.Zero(t, stats.FECPacketsReceived)
++	assert.Zero(t, stats.PacketsRecovered)
++	assert.Zero(t, stats.FECPacketsDiscarded)
++
++	// A new encoder reuses the repair sequence number of the pre-restart FEC
++	// packet. The old decoder would discard it as a duplicate.
++	media2 := rtptest.GenerateVP8Packets(500, 5, uint8(vp8Codec.PayloadType), fecTestMediaSSRC)
++	fecPackets2 := pionflexfec.NewFlexEncoder03(fecTestFECPT, fecTestFECSSRC).EncodeFec(media2, 1)
++	require.Len(t, fecPackets2, 1)
++	require.Equal(t, fecPackets[0].SequenceNumber, fecPackets2[0].SequenceNumber)
++
++	const droppedIdx2 = 1
++	for i := range media2 {
++		if i != droppedIdx2 {
++			writePacket(t, primary, &media2[i])
++		}
++	}
++	writePacket(t, fecBuff, &fecPackets2[0])
++
++	stats = primary.FECDecoderStats()
++	assert.EqualValues(t, 1, stats.FECPacketsReceived)
++	assert.EqualValues(t, 1, stats.PacketsRecovered)
++	assert.EqualValues(t, 0, stats.FECPacketsDiscarded)
++
++	extSNBySN := readExtSequenceNumbers(t, primary, len(media2)-1)
++	requireRecoveredInBucket(t, primary, &media2[droppedIdx2], extSNBySN, media2[0].SequenceNumber)
++}
+diff --git a/pkg/sfu/buffer/factory.go b/pkg/sfu/buffer/factory.go
+index 8fb6d46d..fd7561e7 100644
+--- a/pkg/sfu/buffer/factory.go
++++ b/pkg/sfu/buffer/factory.go
+@@ -40,6 +40,7 @@ func (f *FactoryOfBufferFactory) CreateBufferFactory() *Factory {
+ 		rtpBuffers:           make(map[uint32]*Buffer),
+ 		rtcpReaders:          make(map[uint32]*RTCPReader),
+ 		rtxPair:              make(map[uint32]uint32),
++		fecPair:              make(map[uint32]uint32),
+ 	}
+ }
+ 
+@@ -50,6 +51,7 @@ type Factory struct {
+ 	rtpBuffers           map[uint32]*Buffer
+ 	rtcpReaders          map[uint32]*RTCPReader
+ 	rtxPair              map[uint32]uint32 // repair -> base
++	fecPair              map[uint32]uint32 // fec -> base
+ }
+ 
+ func (f *Factory) GetOrNew(packetType packetio.BufferPacketType, ssrc uint32) io.ReadWriteCloser {
+@@ -89,10 +91,27 @@ func (f *Factory) GetOrNew(packetType packetio.BufferPacketType, ssrc uint32) io
+ 				break
+ 			}
+ 		}
++		for fec, base := range f.fecPair {
++			if fec == ssrc {
++				buffer.setFECRepairBufferLimit()
++				baseBuffer, ok := f.rtpBuffers[base]
++				if ok {
++					buffer.SetPrimaryBufferForFEC(baseBuffer)
++				}
++				break
++			} else if base == ssrc {
++				fecBuffer, ok := f.rtpBuffers[fec]
++				if ok {
++					fecBuffer.SetPrimaryBufferForFEC(buffer)
++				}
++				break
++			}
++		}
+ 		buffer.OnClose(func() {
+ 			f.Lock()
+ 			delete(f.rtpBuffers, ssrc)
+ 			delete(f.rtxPair, ssrc)
++			delete(f.fecPair, ssrc)
+ 			f.Unlock()
+ 		})
+ 		return buffer
+@@ -147,3 +166,18 @@ func (f *Factory) SetRTXPair(repair, base uint32, rsid string) {
+ 		}
+ 	}
+ }
++
++func (f *Factory) SetFECPair(fec, base uint32) {
++	f.Lock()
++	fecBuffer, baseBuffer := f.rtpBuffers[fec], f.rtpBuffers[base]
++	if fecBuffer == nil || baseBuffer == nil {
++		f.fecPair[fec] = base
++	}
++	f.Unlock()
++	if fecBuffer != nil && baseBuffer == nil {
++		fecBuffer.setFECRepairBufferLimit()
++	}
++	if fecBuffer != nil && baseBuffer != nil {
++		fecBuffer.SetPrimaryBufferForFEC(baseBuffer)
++	}
++}
+diff --git a/pkg/sfu/flexfec/decoder.go b/pkg/sfu/flexfec/decoder.go
+new file mode 100644
+index 00000000..11427f2f
+--- /dev/null
++++ b/pkg/sfu/flexfec/decoder.go
+@@ -0,0 +1,524 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++// Package flexfec implements a FlexFEC-03 decoder used to recover RTP packets
++// lost on the publisher leg before they are forwarded downstream.
++// https://datatracker.ietf.org/doc/html/draft-ietf-payload-flexible-fec-scheme-03
++//
++// The recovery logic is ported from pion/interceptor pkg/flexfec
++// (https://github.com/pion/interceptor, MIT License, Copyright The Pion
++// community), which is itself modeled on libwebrtc's ForwardErrorCorrection
++// receiver. Deviations from the pion implementation:
++//   - FEC packets are deep-copied only when retained (callers reuse packet
++//     memory), while protected media is read from the owning packet store
++//   - packet masks are expanded on demand instead of retaining per-packet
++//     protection entries
++//   - recovery XORs the stored RTP wire representation directly
++//   - failed recoveries are not emitted as empty packets
++//   - usage counters for metrics
++package flexfec
++
++import (
++	"encoding/binary"
++	"errors"
++	"fmt"
++	"sort"
++
++	"github.com/pion/rtp"
++
++	"github.com/livekit/protocol/logger"
++)
++
++var (
++	errPacketTruncated                = errors.New("packet truncated")
++	errRetransmissionBitSet           = errors.New("packet with retransmission bit set not supported")
++	errInflexibleGeneratorMatrix      = errors.New("packet with inflexible generator matrix not supported")
++	errMultipleSSRCProtection         = errors.New("multiple ssrc protection not supported")
++	errLastOptionalMaskKBitSetToFalse = errors.New("k-bit of last optional mask is set to false")
++	errEmptyMask                      = errors.New("empty fec packet mask")
++	errUnknownProtectedSSRC           = errors.New("fec is protecting unknown ssrc")
++	errMediaPacketNotFound            = errors.New("protected media packet not found")
++	errInvalidRecoveredPacketSize     = errors.New("invalid recovered packet size")
++)
++
++const (
++	// number of media arrivals before sequence gaps trigger a state reset
++	mediaPacketsBeforeGapCheck = 100
++	// maximum number of FEC packets retained
++	maxFECPackets = 100
++	// maximum number of sequence numbers represented by the three packet masks
++	maxProtectedPackets = fecMask0Bits + fecMask1Bits + fecMask2Bits
++	// matches the maximum packet size of the primary RTP packet bucket
++	maxMediaPacketSize = 1500
++)
++
++// FlexFEC-03 header bit fields.
++// https://datatracker.ietf.org/doc/html/draft-ietf-payload-flexible-fec-scheme-03#section-6.1
++const (
++	fecRetransmissionBit = 0x80 // R bit, first FEC header byte
++	fecInflexibleBit     = 0x40 // F bit, first FEC header byte
++	fecMaskKBit          = 0x80 // K bit, terminates the run of packet-mask chunks
++
++	// Data-bit width of each packet-mask chunk (the chunk minus its K bit).
++	fecMask0Bits = 15
++	fecMask1Bits = 31
++	fecMask2Bits = 63
++
++	// Value masks that clear the K bit from each packet-mask chunk.
++	fecMask0Value = 0x7FFF
++	fecMask1Value = 0x7FFFFFFF
++	fecMask2Value = 0x7FFFFFFFFFFFFFFF
++)
++
++// DecoderStats accumulates FEC usage counters. Snapshot via Decoder.Stats.
++type DecoderStats struct {
++	// FEC packets fed to the decoder
++	FECPacketsReceived uint64
++	// FEC bytes fed to the decoder (RTP payload sizes)
++	FECBytesReceived uint64
++	// FEC packets that could not be used: parse failures, foreign protected
++	// SSRC, empty masks and duplicates
++	FECPacketsDiscarded uint64
++	// media packets reconstructed from FEC
++	PacketsRecovered uint64
++}
++
++// MediaPacketLookup copies a protected media packet into dst. The caller
++// serializes access with writes to the underlying packet store.
++type MediaPacketLookup func(sequenceNumber uint16, dst []byte) (int, error)
++
++// Decoder recovers lost media packets of a single protected SSRC from a
++// FlexFEC-03 repair stream. It is not safe for concurrent use; the owning
++// buffer serializes access.
++type Decoder struct {
++	logger             logger.Logger
++	fecSSRC            uint32
++	protectedSSRC      uint32
++	mediaPacketLookup  MediaPacketLookup
++	mediaPacketBuf     [maxMediaPacketSize]byte
++	newestMediaSeq     uint16
++	mediaPacketsSeen   int
++	hasNewestMediaSeq  bool
++	receivedFECPackets []fecPacketState
++	stats              DecoderStats
++}
++
++func NewDecoder(
++	fecSSRC uint32,
++	protectedSSRC uint32,
++	mediaPacketLookup MediaPacketLookup,
++	logger logger.Logger,
++) *Decoder {
++	return &Decoder{
++		logger:            logger,
++		fecSSRC:           fecSSRC,
++		protectedSSRC:     protectedSSRC,
++		mediaPacketLookup: mediaPacketLookup,
++	}
++}
++
++func (d *Decoder) Stats() DecoderStats {
++	return d.stats
++}
++
++// DecodeFEC ingests a packet of either the FEC stream (fecSSRC) or the
++// protected media stream (protectedSSRC) and returns any media packets that
++// became recoverable. Ownership of returned packets transfers to the caller.
++func (d *Decoder) DecodeFEC(receivedPacket *rtp.Packet) []*rtp.Packet {
++	switch receivedPacket.SSRC {
++	case d.fecSSRC:
++		d.stats.FECPacketsReceived++
++		d.stats.FECBytesReceived += uint64(len(receivedPacket.Payload))
++		d.discardOldFECPackets(receivedPacket.SequenceNumber)
++		d.insertFECPacket(receivedPacket)
++	case d.protectedSSRC:
++		d.observeMediaPacket(receivedPacket.SequenceNumber)
++	default:
++		return nil
++	}
++
++	recovered := d.attemptRecovery()
++	d.stats.PacketsRecovered += uint64(len(recovered))
++	return recovered
++}
++
++func (d *Decoder) observeMediaPacket(sequenceNumber uint16) {
++	if d.hasNewestMediaSeq && d.mediaPacketsSeen >= mediaPacketsBeforeGapCheck &&
++		isNewerSeq(d.newestMediaSeq, sequenceNumber) &&
++		seqDiff(sequenceNumber, d.newestMediaSeq) > uint16(mediaPacketsBeforeGapCheck) {
++		d.logger.Infow("flexfec: big gap in media sequence numbers - resetting buffers")
++		d.receivedFECPackets = nil
++		d.mediaPacketsSeen = 0
++		d.newestMediaSeq = sequenceNumber
++	}
++
++	if !d.hasNewestMediaSeq || isNewerSeq(d.newestMediaSeq, sequenceNumber) {
++		d.newestMediaSeq = sequenceNumber
++		d.hasNewestMediaSeq = true
++	}
++	if d.mediaPacketsSeen < mediaPacketsBeforeGapCheck {
++		d.mediaPacketsSeen++
++	}
++}
++
++func (d *Decoder) discardOldFECPackets(sequenceNumber uint16) {
++	// Keep the retained sequence-number span well below half of the sequence
++	// space. This keeps ordering unambiguous across wrap-around and reduces the
++	// possibility of decoding against stale state.
++	if len(d.receivedFECPackets) > 0 {
++		toRemove := 0
++		for _, fecPkt := range d.receivedFECPackets {
++			if seqDiff(sequenceNumber, fecPkt.packet.SequenceNumber) > 0x3fff {
++				toRemove++
++			} else {
++				// no need to keep iterating, since receivedFECPackets is sorted
++				break
++			}
++		}
++		if toRemove > 0 {
++			clear(d.receivedFECPackets[:toRemove])
++			d.receivedFECPackets = d.receivedFECPackets[toRemove:]
++		}
++	}
++}
++
++func (d *Decoder) insertFECPacket(fecPkt *rtp.Packet) {
++	for i := range d.receivedFECPackets {
++		if d.receivedFECPackets[i].packet.SequenceNumber == fecPkt.SequenceNumber {
++			d.stats.FECPacketsDiscarded++
++			return
++		}
++	}
++
++	fec, err := parseFlexFEC03Header(fecPkt.Payload)
++	if err != nil {
++		d.stats.FECPacketsDiscarded++
++		d.logger.Debugw("flexfec: failed to parse header", "error", err)
++		return
++	}
++
++	if fec.protectedSSRC != d.protectedSSRC {
++		d.stats.FECPacketsDiscarded++
++		d.logger.Debugw(
++			"flexfec: discarding packet protecting foreign ssrc",
++			"error", errUnknownProtectedSSRC,
++			"expectedSSRC", d.protectedSSRC,
++			"protectedSSRC", fec.protectedSSRC,
++		)
++		return
++	}
++
++	if fec.mask0 == 0 && fec.mask1 == 0 && fec.mask2 == 0 {
++		d.stats.FECPacketsDiscarded++
++		d.logger.Debugw("flexfec: discarding packet", "error", errEmptyMask)
++		return
++	}
++
++	if d.countMissingPackets(fec, nil) == 0 {
++		return
++	}
++
++	// The caller may reuse packet memory after DecodeFEC returns. Take
++	// ownership only now that this FEC state needs to be retained.
++	ownedFECPkt := fecPkt.Clone()
++	ownedFEC := fec
++	ownedFEC.payload = ownedFECPkt.Payload[len(fecPkt.Payload)-len(fec.payload):]
++
++	state := fecPacketState{packet: ownedFECPkt, flexFEC: ownedFEC}
++	d.receivedFECPackets = append(d.receivedFECPackets, state)
++	if len(d.receivedFECPackets) > 1 && !isNewerSeq(
++		d.receivedFECPackets[len(d.receivedFECPackets)-2].packet.SequenceNumber,
++		state.packet.SequenceNumber,
++	) {
++		insertAt := sort.Search(len(d.receivedFECPackets)-1, func(i int) bool {
++			return isNewerSeq(state.packet.SequenceNumber, d.receivedFECPackets[i].packet.SequenceNumber)
++		})
++		copy(d.receivedFECPackets[insertAt+1:], d.receivedFECPackets[insertAt:len(d.receivedFECPackets)-1])
++		d.receivedFECPackets[insertAt] = state
++	}
++
++	if len(d.receivedFECPackets) > maxFECPackets {
++		d.removeFECPacketAt(0)
++	}
++}
++
++func (d *Decoder) attemptRecovery() []*rtp.Packet {
++	var recoveredPackets []*rtp.Packet
++	for {
++		packetsRecovered := 0
++		for i := 0; i < len(d.receivedFECPackets); {
++			fecPkt := &d.receivedFECPackets[i]
++			packetsMissing := d.countMissingPackets(fecPkt.flexFEC, recoveredPackets)
++			if packetsMissing == 0 {
++				d.removeFECPacketAt(i)
++				continue
++			}
++
++			if packetsMissing != 1 {
++				i++
++				continue
++			}
++
++			recovered, err := d.recoverPacket(fecPkt, recoveredPackets)
++			if err != nil {
++				d.logger.Debugw("flexfec: failed to recover packet", "error", err)
++				d.stats.FECPacketsDiscarded++
++				d.removeFECPacketAt(i)
++				continue
++			}
++
++			d.removeFECPacketAt(i)
++			recoveredPackets = append(recoveredPackets, recovered)
++			packetsRecovered++
++		}
++
++		if packetsRecovered == 0 {
++			break
++		}
++	}
++
++	return recoveredPackets
++}
++
++func (d *Decoder) countMissingPackets(fec flexFEC, recoveredPackets []*rtp.Packet) int {
++	var protectedSeqBuf [maxProtectedPackets]uint16
++	protectedSeqs := fec.protectedSequences(protectedSeqBuf[:0])
++	missing := 0
++	for _, sequenceNumber := range protectedSeqs {
++		if _, err := d.getMediaPacket(sequenceNumber, recoveredPackets, d.mediaPacketBuf[:]); err != nil {
++			missing++
++			if missing > 1 {
++				break
++			}
++		}
++	}
++
++	return missing
++}
++
++func (d *Decoder) getMediaPacket(
++	sequenceNumber uint16,
++	recoveredPackets []*rtp.Packet,
++	dst []byte,
++) (int, error) {
++	for _, recoveredPacket := range recoveredPackets {
++		if recoveredPacket.SequenceNumber == sequenceNumber {
++			return recoveredPacket.MarshalTo(dst)
++		}
++	}
++	if d.mediaPacketLookup == nil {
++		return 0, errMediaPacketNotFound
++	}
++
++	return d.mediaPacketLookup(sequenceNumber, dst)
++}
++
++func (d *Decoder) removeFECPacketAt(index int) {
++	last := len(d.receivedFECPackets) - 1
++	copy(d.receivedFECPackets[index:], d.receivedFECPackets[index+1:])
++	d.receivedFECPackets[last] = fecPacketState{}
++	d.receivedFECPackets = d.receivedFECPackets[:last]
++}
++
++func (d *Decoder) recoverPacket(fec *fecPacketState, recoveredPackets []*rtp.Packet) (*rtp.Packet, error) {
++	// https://datatracker.ietf.org/doc/html/draft-ietf-payload-flexible-fec-scheme-03#section-6.3.2
++
++	// 2. For the repair packet in T, extract the FEC bit string as the
++	//    first 80 bits of the FEC header.
++	var headerRecovery [12]byte
++	copy(headerRecovery[:], fec.packet.Payload[:10])
++	var protectedSeqBuf [maxProtectedPackets]uint16
++	protectedSeqs := fec.flexFEC.protectedSequences(protectedSeqBuf[:0])
++
++	missing := 0
++	var sequenceNumber uint16
++	for _, protectedSeq := range protectedSeqs {
++		n, err := d.getMediaPacket(protectedSeq, recoveredPackets, d.mediaPacketBuf[:])
++		if err != nil {
++			missing++
++			sequenceNumber = protectedSeq
++			continue
++		}
++		if n < 12 {
++			return nil, fmt.Errorf("%w: protected packet length %d", errInvalidRecoveredPacketSize, n)
++		}
++
++		// 1. For each source packet received in T, XOR the first 64 header
++		// bits with the sequence-number field replaced by the packet length
++		// after the fixed 12-byte RTP header.
++		packet := d.mediaPacketBuf[:n]
++		headerRecovery[0] ^= packet[0]
++		headerRecovery[1] ^= packet[1]
++		packetLength := uint16(n - 12) // #nosec G115 -- RTP packet size is bounded above
++		headerRecovery[2] ^= byte(packetLength >> 8)
++		headerRecovery[3] ^= byte(packetLength)
++		for i := 4; i < 8; i++ {
++			headerRecovery[i] ^= packet[i]
++		}
++	}
++	if missing != 1 {
++		return nil, fmt.Errorf("cannot recover with %d missing packets", missing)
++	}
++
++	// set version to 2
++	headerRecovery[0] |= 0x80
++	headerRecovery[0] &= 0xbf
++	payloadLength := binary.BigEndian.Uint16(headerRecovery[2:4])
++	if int(payloadLength) > len(fec.flexFEC.payload) || int(payloadLength)+12 > maxMediaPacketSize {
++		return nil, fmt.Errorf("%w: recovered packet length %d", errInvalidRecoveredPacketSize, int(payloadLength)+12)
++	}
++	binary.BigEndian.PutUint16(headerRecovery[2:4], sequenceNumber)
++	binary.BigEndian.PutUint32(headerRecovery[8:12], d.protectedSSRC)
++
++	recoveredRaw := make([]byte, 12+int(payloadLength))
++	copy(recoveredRaw[:12], headerRecovery[:])
++	copy(recoveredRaw[12:], fec.flexFEC.payload)
++	for _, protectedSeq := range protectedSeqs {
++		n, err := d.getMediaPacket(protectedSeq, recoveredPackets, d.mediaPacketBuf[:])
++		if err != nil {
++			continue
++		}
++		if n < 12 {
++			return nil, fmt.Errorf("%w: protected packet length %d", errInvalidRecoveredPacketSize, n)
++		}
++		for i := 0; i < min(int(payloadLength), n-12); i++ {
++			recoveredRaw[12+i] ^= d.mediaPacketBuf[12+i]
++		}
++	}
++
++	packet := &rtp.Packet{}
++	if err := packet.Unmarshal(recoveredRaw); err != nil {
++		return nil, fmt.Errorf("unmarshal recovered: %w", err)
++	}
++
++	return packet, nil
++}
++
++func appendMaskSequences(dst []uint16, mask uint64, bitCount uint16, seqNumBase uint16) []uint16 {
++	for i := uint16(0); i < bitCount; i++ {
++		if (mask>>(bitCount-1-i))&1 == 1 {
++			dst = append(dst, seqNumBase+i)
++		}
++	}
++
++	return dst
++}
++
++type fecPacketState struct {
++	packet  *rtp.Packet
++	flexFEC flexFEC
++}
++
++type flexFEC struct {
++	protectedSSRC uint32
++	seqNumBase    uint16
++	mask0         uint16
++	mask1         uint32
++	mask2         uint64
++	payload       []byte
++}
++
++func (f flexFEC) protectedSequences(dst []uint16) []uint16 {
++	dst = appendMaskSequences(dst, uint64(f.mask0), fecMask0Bits, f.seqNumBase)
++	if f.mask1 != 0 {
++		dst = appendMaskSequences(dst, uint64(f.mask1), fecMask1Bits, f.seqNumBase+fecMask0Bits)
++	}
++	if f.mask2 != 0 {
++		dst = appendMaskSequences(dst, f.mask2, fecMask2Bits, f.seqNumBase+fecMask0Bits+fecMask1Bits)
++	}
++
++	return dst
++}
++
++func parseFlexFEC03Header(data []byte) (flexFEC, error) {
++	if len(data) < 20 {
++		return flexFEC{}, fmt.Errorf("%w: length %d", errPacketTruncated, len(data))
++	}
++
++	rBit := (data[0] & fecRetransmissionBit) != 0
++	if rBit {
++		return flexFEC{}, errRetransmissionBitSet
++	}
++
++	fBit := (data[0] & fecInflexibleBit) != 0
++	if fBit {
++		return flexFEC{}, errInflexibleGeneratorMatrix
++	}
++
++	ssrcCount := data[8]
++	if ssrcCount != 1 {
++		return flexFEC{}, fmt.Errorf("%w: count %d", errMultipleSSRCProtection, ssrcCount)
++	}
++
++	protectedSSRC := binary.BigEndian.Uint32(data[12:])
++	seqNumBase := binary.BigEndian.Uint16(data[16:])
++	rawPacketMask := data[18:]
++	var payload []byte
++
++	kBit0 := (rawPacketMask[0] & fecMaskKBit) != 0
++	maskPart0 := binary.BigEndian.Uint16(rawPacketMask[0:2]) & fecMask0Value
++	var maskPart1 uint32
++	var maskPart2 uint64
++
++	if kBit0 {
++		payload = rawPacketMask[2:]
++	} else {
++		if len(data) < 24 {
++			return flexFEC{}, fmt.Errorf("%w: length %d", errPacketTruncated, len(data))
++		}
++
++		kBit1 := (rawPacketMask[2] & fecMaskKBit) != 0
++		maskPart1 = binary.BigEndian.Uint32(rawPacketMask[2:]) & fecMask1Value
++
++		if kBit1 {
++			payload = rawPacketMask[6:]
++		} else {
++			if len(data) < 32 {
++				return flexFEC{}, fmt.Errorf("%w: length %d", errPacketTruncated, len(data))
++			}
++
++			kBit2 := (rawPacketMask[6] & fecMaskKBit) != 0
++			maskPart2 = binary.BigEndian.Uint64(rawPacketMask[6:]) & fecMask2Value
++
++			if kBit2 {
++				payload = rawPacketMask[14:]
++			} else {
++				return flexFEC{}, errLastOptionalMaskKBitSetToFalse
++			}
++		}
++	}
++
++	return flexFEC{
++		protectedSSRC: protectedSSRC,
++		seqNumBase:    seqNumBase,
++		mask0:         maskPart0,
++		mask1:         maskPart1,
++		mask2:         maskPart2,
++		payload:       payload,
++	}, nil
++}
++
++func seqDiff(a, b uint16) uint16 {
++	return min(a-b, b-a)
++}
++
++func isNewerSeq(prevValue, value uint16) bool {
++	// half-way mark
++	breakpoint := uint16(0x8000)
++	if value-prevValue == breakpoint {
++		return value > prevValue
++	}
++
++	return value != prevValue && (value-prevValue) < breakpoint
++}
+diff --git a/pkg/sfu/flexfec/decoder_benchmark_test.go b/pkg/sfu/flexfec/decoder_benchmark_test.go
+new file mode 100644
+index 00000000..15fb7881
+--- /dev/null
++++ b/pkg/sfu/flexfec/decoder_benchmark_test.go
+@@ -0,0 +1,114 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package flexfec
++
++import (
++	"testing"
++
++	pionflexfec "github.com/pion/interceptor/pkg/flexfec"
++	"github.com/pion/rtp"
++
++	"github.com/livekit/protocol/logger"
++)
++
++func benchmarkMediaPackets(count, payloadSize int) []rtp.Packet {
++	packets := make([]rtp.Packet, count)
++	for i := range packets {
++		packets[i] = rtp.Packet{
++			Header: rtp.Header{
++				Version:        2,
++				PayloadType:    testMediaPT,
++				SequenceNumber: 100 + uint16(i),
++				Timestamp:      3000 * uint32(i),
++				SSRC:           testMediaSSRC,
++			},
++			Payload: make([]byte, payloadSize),
++		}
++	}
++	return packets
++}
++
++func benchmarkMediaLookup(media []rtp.Packet, missingIndex int) MediaPacketLookup {
++	packets := make(map[uint16][]byte, len(media))
++	for i := range media {
++		if i == missingIndex {
++			continue
++		}
++		raw, err := media[i].Marshal()
++		if err != nil {
++			panic(err)
++		}
++		packets[media[i].SequenceNumber] = raw
++	}
++
++	return func(sequenceNumber uint16, dst []byte) (int, error) {
++		packet, ok := packets[sequenceNumber]
++		if !ok {
++			return 0, errTestMediaPacketNotFound
++		}
++		return copy(dst, packet), nil
++	}
++}
++
++func BenchmarkDecoderMediaSteadyState1200(b *testing.B) {
++	decoder := NewDecoder(testFECSSRC, testMediaSSRC, nil, logger.GetLogger())
++	packet := benchmarkMediaPackets(1, 1200)[0]
++
++	b.ReportAllocs()
++	b.ResetTimer()
++	for i := 0; i < b.N; i++ {
++		packet.SequenceNumber = uint16(i)
++		packet.Timestamp = uint32(i) * 3000
++		decoder.DecodeFEC(&packet)
++	}
++}
++
++func BenchmarkDecoderCompleteWindow10x1200(b *testing.B) {
++	media := benchmarkMediaPackets(10, 1200)
++	fecPackets := pionflexfec.NewFlexEncoder03(testFECPT, testFECSSRC).EncodeFec(media, 1)
++	lookup := benchmarkMediaLookup(media, -1)
++
++	b.ReportAllocs()
++	b.ResetTimer()
++	for i := 0; i < b.N; i++ {
++		decoder := NewDecoder(testFECSSRC, testMediaSSRC, lookup, logger.GetLogger())
++		for j := range media {
++			decoder.DecodeFEC(&media[j])
++		}
++		if recovered := decoder.DecodeFEC(&fecPackets[0]); len(recovered) != 0 {
++			b.Fatalf("expected no recovered packets, got %d", len(recovered))
++		}
++	}
++}
++
++func BenchmarkDecoderRecoveryWindow10x1200(b *testing.B) {
++	media := benchmarkMediaPackets(10, 1200)
++	fecPackets := pionflexfec.NewFlexEncoder03(testFECPT, testFECSSRC).EncodeFec(media, 1)
++	lookup := benchmarkMediaLookup(media, 4)
++
++	b.ReportAllocs()
++	b.ResetTimer()
++	for i := 0; i < b.N; i++ {
++		decoder := NewDecoder(testFECSSRC, testMediaSSRC, lookup, logger.GetLogger())
++		for j := range media {
++			if j != 4 {
++				decoder.DecodeFEC(&media[j])
++			}
++		}
++		if recovered := decoder.DecodeFEC(&fecPackets[0]); len(recovered) != 1 {
++			b.Fatalf("expected one recovered packet, got %d", len(recovered))
++		}
++	}
++}
+diff --git a/pkg/sfu/flexfec/decoder_test.go b/pkg/sfu/flexfec/decoder_test.go
+new file mode 100644
+index 00000000..2946df6a
+--- /dev/null
++++ b/pkg/sfu/flexfec/decoder_test.go
+@@ -0,0 +1,625 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package flexfec
++
++import (
++	"encoding/binary"
++	"errors"
++	"math/rand"
++	"testing"
++
++	pionflexfec "github.com/pion/interceptor/pkg/flexfec"
++	"github.com/pion/rtp"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/protocol/logger"
++)
++
++const (
++	testFECSSRC   = uint32(1234)
++	testMediaSSRC = uint32(5678)
++	testFECPT     = uint8(115)
++	testMediaPT   = uint8(96)
++)
++
++var errTestMediaPacketNotFound = errors.New("test media packet not found")
++
++type testDecoder struct {
++	*Decoder
++	mediaPackets map[uint16][]byte
++}
++
++func newTestDecoder(fecSSRC, protectedSSRC uint32, lgr logger.Logger) *testDecoder {
++	d := &testDecoder{mediaPackets: make(map[uint16][]byte)}
++	d.Decoder = NewDecoder(fecSSRC, protectedSSRC, d.getMediaPacket, lgr)
++	return d
++}
++
++func (d *testDecoder) getMediaPacket(sequenceNumber uint16, dst []byte) (int, error) {
++	packet, ok := d.mediaPackets[sequenceNumber]
++	if !ok {
++		return 0, errTestMediaPacketNotFound
++	}
++	if len(dst) < len(packet) {
++		return 0, errors.New("test media packet buffer too small")
++	}
++
++	return copy(dst, packet), nil
++}
++
++func (d *testDecoder) DecodeFEC(packet *rtp.Packet) []*rtp.Packet {
++	if packet.SSRC == d.protectedSSRC {
++		raw, err := packet.Marshal()
++		if err != nil {
++			panic(err)
++		}
++		d.mediaPackets[packet.SequenceNumber] = raw
++	}
++
++	recovered := d.Decoder.DecodeFEC(packet)
++	for _, recoveredPacket := range recovered {
++		raw, err := recoveredPacket.Marshal()
++		if err != nil {
++			panic(err)
++		}
++		d.mediaPackets[recoveredPacket.SequenceNumber] = raw
++	}
++	return recovered
++}
++
++func makeMediaPackets(t *testing.T, baseSN uint16, count int) []rtp.Packet {
++	t.Helper()
++	rng := rand.New(rand.NewSource(int64(baseSN)))
++	packets := make([]rtp.Packet, 0, count)
++	for i := 0; i < count; i++ {
++		payload := make([]byte, 100+rng.Intn(900))
++		rng.Read(payload)
++		packets = append(packets, rtp.Packet{
++			Header: rtp.Header{
++				Version:        2,
++				PayloadType:    testMediaPT,
++				SequenceNumber: baseSN + uint16(i),
++				Timestamp:      3000 * uint32(i),
++				SSRC:           testMediaSSRC,
++				Marker:         i == count-1,
++			},
++			Payload: payload,
++		})
++	}
++	return packets
++}
++
++func encodeFEC(t *testing.T, mediaPackets []rtp.Packet, numFEC uint32) []rtp.Packet {
++	t.Helper()
++	encoder := pionflexfec.NewFlexEncoder03(testFECPT, testFECSSRC)
++	fecPackets := encoder.EncodeFec(mediaPackets, numFEC)
++	require.NotEmpty(t, fecPackets)
++	return fecPackets
++}
++
++func requirePacketEqual(t *testing.T, expected *rtp.Packet, actual *rtp.Packet) {
++	t.Helper()
++	require.Equal(t, expected.SequenceNumber, actual.SequenceNumber)
++	require.Equal(t, expected.Timestamp, actual.Timestamp)
++	require.Equal(t, expected.PayloadType, actual.PayloadType)
++	require.Equal(t, expected.SSRC, actual.SSRC)
++	require.Equal(t, expected.Marker, actual.Marker)
++	require.Equal(t, expected.Payload, actual.Payload)
++}
++
++func TestDecoderRecoversSingleLoss(t *testing.T) {
++	media := makeMediaPackets(t, 100, 5)
++	fec := encodeFEC(t, media, 1)
++
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	// drop media[2], feed the rest
++	var recovered []*rtp.Packet
++	for i := range media {
++		if i == 2 {
++			continue
++		}
++		recovered = append(recovered, decoder.DecodeFEC(&media[i])...)
++	}
++	require.Empty(t, recovered)
++
++	for i := range fec {
++		recovered = append(recovered, decoder.DecodeFEC(&fec[i])...)
++	}
++
++	require.Len(t, recovered, 1)
++	requirePacketEqual(t, &media[2], recovered[0])
++	assert.Empty(t, decoder.receivedFECPackets)
++
++	stats := decoder.Stats()
++	assert.Equal(t, uint64(len(fec)), stats.FECPacketsReceived)
++	assert.Equal(t, uint64(1), stats.PacketsRecovered)
++	assert.Equal(t, uint64(0), stats.FECPacketsDiscarded)
++}
++
++func TestDecoderRecoversPacketWithExtendedHeader(t *testing.T) {
++	media := makeMediaPackets(t, 150, 5)
++	for i := range media {
++		media[i].CSRC = []uint32{uint32(1000 + i)}
++		require.NoError(t, media[i].SetExtension(3, []byte{byte(i), byte(i + 1)}))
++	}
++	fec := encodeFEC(t, media, 1)
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	for i := range media {
++		if i != 2 {
++			require.Empty(t, decoder.DecodeFEC(&media[i]))
++		}
++	}
++	recovered := decoder.DecodeFEC(&fec[0])
++	require.Len(t, recovered, 1)
++
++	expectedRaw, err := media[2].Marshal()
++	require.NoError(t, err)
++	actualRaw, err := recovered[0].Marshal()
++	require.NoError(t, err)
++	assert.Equal(t, expectedRaw, actualRaw)
++}
++
++func TestDecoderRecoversWithLateMedia(t *testing.T) {
++	// FEC arrives while two packets are missing; recovery happens once one of
++	// them shows up late. Exercises retained FEC state and packet lookup.
++	media := makeMediaPackets(t, 200, 5)
++	fec := encodeFEC(t, media, 1)
++
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	var recovered []*rtp.Packet
++	for _, i := range []int{0, 3, 4} {
++		recovered = append(recovered, decoder.DecodeFEC(&media[i])...)
++	}
++	for i := range fec {
++		recovered = append(recovered, decoder.DecodeFEC(&fec[i])...)
++	}
++	// two packets missing from the protected window, nothing recoverable yet
++	require.Empty(t, recovered)
++	require.Len(t, decoder.receivedFECPackets, 1)
++
++	// late arrival of media[1] leaves only media[2] missing
++	recovered = decoder.DecodeFEC(&media[1])
++	require.Len(t, recovered, 1)
++	requirePacketEqual(t, &media[2], recovered[0])
++	assert.Empty(t, decoder.receivedFECPackets)
++}
++
++func TestDecoderRecoversMultipleWindows(t *testing.T) {
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++	encoder := pionflexfec.NewFlexEncoder03(testFECPT, testFECSSRC)
++
++	var allRecovered []*rtp.Packet
++	dropped := make(map[uint16]*rtp.Packet)
++	baseSN := uint16(1000)
++	for window := 0; window < 10; window++ {
++		media := makeMediaPackets(t, baseSN, 10)
++		fecPackets := encoder.EncodeFec(media, 1)
++		require.NotEmpty(t, fecPackets)
++
++		dropIdx := window % 10
++		for i := range media {
++			if i == dropIdx {
++				dropped[media[i].SequenceNumber] = &media[i]
++				continue
++			}
++			allRecovered = append(allRecovered, decoder.DecodeFEC(&media[i])...)
++		}
++		for i := range fecPackets {
++			allRecovered = append(allRecovered, decoder.DecodeFEC(&fecPackets[i])...)
++		}
++		baseSN += 10
++	}
++
++	require.Len(t, allRecovered, 10)
++	for _, rec := range allRecovered {
++		expected, ok := dropped[rec.SequenceNumber]
++		require.True(t, ok, "recovered unexpected sequence number %d", rec.SequenceNumber)
++		requirePacketEqual(t, expected, rec)
++	}
++	assert.Equal(t, uint64(10), decoder.Stats().PacketsRecovered)
++}
++
++func TestDecoderSequenceNumberWrap(t *testing.T) {
++	media := makeMediaPackets(t, 65533, 5) // spans 65533..1
++	fec := encodeFEC(t, media, 1)
++
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	var recovered []*rtp.Packet
++	for i := range media {
++		if i == 3 { // sequence number 0
++			continue
++		}
++		recovered = append(recovered, decoder.DecodeFEC(&media[i])...)
++	}
++	for i := range fec {
++		recovered = append(recovered, decoder.DecodeFEC(&fec[i])...)
++	}
++
++	require.Len(t, recovered, 1)
++	requirePacketEqual(t, &media[3], recovered[0])
++}
++
++func TestDecoderFECWindowOrder(t *testing.T) {
++	media := makeMediaPackets(t, 50, 5)
++	fec := encodeFEC(t, media, 1)[0]
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	for _, i := range []int{0, 3, 4} {
++		require.Empty(t, decoder.DecodeFEC(&media[i]))
++	}
++	for _, seq := range []uint16{102, 100, 101} {
++		fec.SequenceNumber = seq
++		require.Empty(t, decoder.DecodeFEC(&fec))
++	}
++
++	require.Len(t, decoder.receivedFECPackets, 3)
++	for i, seq := range []uint16{100, 101, 102} {
++		assert.Equal(t, seq, decoder.receivedFECPackets[i].packet.SequenceNumber)
++	}
++}
++
++func TestDecoderFECSequenceNumberWrap(t *testing.T) {
++	media := makeMediaPackets(t, 75, 5)
++	fec := encodeFEC(t, media, 1)[0]
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	for _, i := range []int{0, 3, 4} {
++		require.Empty(t, decoder.DecodeFEC(&media[i]))
++	}
++	for _, sequenceNumber := range []uint16{65535, 0} {
++		fec.SequenceNumber = sequenceNumber
++		require.Empty(t, decoder.DecodeFEC(&fec))
++	}
++
++	require.Len(t, decoder.receivedFECPackets, 2)
++	assert.Equal(t, uint16(65535), decoder.receivedFECPackets[0].packet.SequenceNumber)
++	assert.Equal(t, uint16(0), decoder.receivedFECPackets[1].packet.SequenceNumber)
++
++	recovered := decoder.DecodeFEC(&media[1])
++	require.Len(t, recovered, 1)
++	requirePacketEqual(t, &media[2], recovered[0])
++	assert.Empty(t, decoder.receivedFECPackets)
++}
++
++func TestDecoderBoundsRetainedFECState(t *testing.T) {
++	media := makeMediaPackets(t, 90, 5)
++	fec := encodeFEC(t, media, 1)[0]
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	for _, i := range []int{0, 3, 4} {
++		require.Empty(t, decoder.DecodeFEC(&media[i]))
++	}
++	for sequenceNumber := range uint16(maxFECPackets + 5) {
++		fec.SequenceNumber = sequenceNumber
++		require.Empty(t, decoder.DecodeFEC(&fec))
++	}
++
++	require.Len(t, decoder.receivedFECPackets, maxFECPackets)
++	assert.Equal(t, uint16(5), decoder.receivedFECPackets[0].packet.SequenceNumber)
++	assert.Equal(t, uint16(maxFECPackets+4), decoder.receivedFECPackets[maxFECPackets-1].packet.SequenceNumber)
++}
++
++func TestDecoderDiscardsStaleFECState(t *testing.T) {
++	media := makeMediaPackets(t, 95, 5)
++	fec := encodeFEC(t, media, 1)[0]
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	for _, i := range []int{0, 3, 4} {
++		require.Empty(t, decoder.DecodeFEC(&media[i]))
++	}
++	fec.SequenceNumber = 1
++	require.Empty(t, decoder.DecodeFEC(&fec))
++	fec.SequenceNumber = 0x4001
++	require.Empty(t, decoder.DecodeFEC(&fec))
++
++	require.Len(t, decoder.receivedFECPackets, 1)
++	assert.Equal(t, uint16(0x4001), decoder.receivedFECPackets[0].packet.SequenceNumber)
++}
++
++func TestDecoderDiscardsForeignProtectedSSRC(t *testing.T) {
++	media := makeMediaPackets(t, 300, 5)
++	fec := encodeFEC(t, media, 1)
++
++	// decoder bound to a different protected stream
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC+1, logger.GetLogger())
++	recovered := decoder.DecodeFEC(&fec[0])
++	require.Empty(t, recovered)
++
++	stats := decoder.Stats()
++	assert.Equal(t, uint64(1), stats.FECPacketsReceived)
++	assert.Equal(t, uint64(1), stats.FECPacketsDiscarded)
++}
++
++func TestDecoderDiscardsMalformedFEC(t *testing.T) {
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	for _, payload := range [][]byte{
++		nil,
++		{0x00},
++		make([]byte, 10),
++		func() []byte { // R bit set
++			p := make([]byte, pionflexfec.BaseFec03HeaderSize+4)
++			p[0] = 0x80
++			p[8] = 1
++			return p
++		}(),
++		func() []byte { // multiple protected ssrcs
++			p := make([]byte, pionflexfec.BaseFec03HeaderSize+4)
++			p[8] = 2
++			return p
++		}(),
++		func() []byte { // empty mask
++			p := make([]byte, pionflexfec.BaseFec03HeaderSize+4)
++			p[8] = 1
++			binary.BigEndian.PutUint32(p[12:], testMediaSSRC)
++			binary.BigEndian.PutUint16(p[18:], 0x8000)
++			return p
++		}(),
++	} {
++		pkt := &rtp.Packet{
++			Header: rtp.Header{
++				Version:        2,
++				PayloadType:    testFECPT,
++				SequenceNumber: uint16(rand.Intn(65536)),
++				SSRC:           testFECSSRC,
++			},
++			Payload: payload,
++		}
++		require.NotPanics(t, func() {
++			require.Empty(t, decoder.DecodeFEC(pkt))
++		})
++	}
++
++	stats := decoder.Stats()
++	assert.Equal(t, uint64(6), stats.FECPacketsReceived)
++	assert.Equal(t, uint64(6), stats.FECPacketsDiscarded)
++}
++
++func TestParseFlexFEC03HeaderOptionalMasks(t *testing.T) {
++	makeHeader := func(size int) []byte {
++		data := make([]byte, size)
++		data[8] = 1
++		binary.BigEndian.PutUint32(data[12:], testMediaSSRC)
++		binary.BigEndian.PutUint16(data[16:], 500)
++		return data
++	}
++
++	t.Run("first mask", func(t *testing.T) {
++		data := makeHeader(21)
++		binary.BigEndian.PutUint16(data[18:], 0x8001)
++		data[20] = 0xaa
++
++		fec, err := parseFlexFEC03Header(data)
++		require.NoError(t, err)
++		assert.Equal(t, uint16(1), fec.mask0)
++		assert.Zero(t, fec.mask1)
++		assert.Zero(t, fec.mask2)
++		assert.Equal(t, []byte{0xaa}, fec.payload)
++		assert.Equal(t, []uint16{514}, fec.protectedSequences(nil))
++	})
++
++	t.Run("second mask", func(t *testing.T) {
++		data := makeHeader(24)
++		binary.BigEndian.PutUint16(data[18:], 1)
++		binary.BigEndian.PutUint32(data[20:], 0x80000001)
++
++		fec, err := parseFlexFEC03Header(data)
++		require.NoError(t, err)
++		assert.Equal(t, uint16(1), fec.mask0)
++		assert.Equal(t, uint32(1), fec.mask1)
++		assert.Zero(t, fec.mask2)
++		assert.Equal(t, []uint16{514, 545}, fec.protectedSequences(nil))
++	})
++
++	t.Run("third mask", func(t *testing.T) {
++		data := makeHeader(32)
++		binary.BigEndian.PutUint16(data[18:], 1)
++		binary.BigEndian.PutUint32(data[20:], 1)
++		binary.BigEndian.PutUint64(data[24:], 0x8000000000000001)
++
++		fec, err := parseFlexFEC03Header(data)
++		require.NoError(t, err)
++		assert.Equal(t, uint16(1), fec.mask0)
++		assert.Equal(t, uint32(1), fec.mask1)
++		assert.Equal(t, uint64(1), fec.mask2)
++		assert.Equal(t, []uint16{514, 545, 608}, fec.protectedSequences(nil))
++	})
++}
++
++func TestParseFlexFEC03HeaderRejectsInvalidOptionalMasks(t *testing.T) {
++	makeHeader := func(size int) []byte {
++		data := make([]byte, size)
++		data[8] = 1
++		return data
++	}
++
++	tests := []struct {
++		name string
++		data []byte
++		err  error
++	}{
++		{name: "inflexible matrix", data: func() []byte {
++			data := makeHeader(20)
++			data[0] = fecInflexibleBit
++			return data
++		}(), err: errInflexibleGeneratorMatrix},
++		{name: "truncated second mask", data: makeHeader(23), err: errPacketTruncated},
++		{name: "truncated third mask", data: makeHeader(31), err: errPacketTruncated},
++		{name: "unterminated third mask", data: makeHeader(32), err: errLastOptionalMaskKBitSetToFalse},
++	}
++
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			_, err := parseFlexFEC03Header(test.data)
++			require.ErrorIs(t, err, test.err)
++		})
++	}
++}
++
++func TestDecoderDiscardsDuplicateFEC(t *testing.T) {
++	media := makeMediaPackets(t, 400, 5)
++	fec := encodeFEC(t, media, 1)
++
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++	for _, i := range []int{0, 3, 4} {
++		decoder.DecodeFEC(&media[i])
++	}
++	require.Empty(t, decoder.DecodeFEC(&fec[0]))
++	require.Empty(t, decoder.DecodeFEC(&fec[0]))
++
++	stats := decoder.Stats()
++	assert.Equal(t, uint64(2), stats.FECPacketsReceived)
++	assert.Equal(t, uint64(1), stats.FECPacketsDiscarded)
++}
++
++func TestDecoderDoesNotRetainCompleteFECState(t *testing.T) {
++	media := makeMediaPackets(t, 450, 5)
++	fec := encodeFEC(t, media, 1)
++
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++	for i := range media {
++		require.Empty(t, decoder.DecodeFEC(&media[i]))
++	}
++
++	require.Empty(t, decoder.DecodeFEC(&fec[0]))
++	assert.Empty(t, decoder.receivedFECPackets)
++}
++
++func TestDecoderInputMemoryReuse(t *testing.T) {
++	// the decoder must not retain references to caller-owned packet memory
++	media := makeMediaPackets(t, 500, 5)
++	fec := encodeFEC(t, media, 1)
++
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	scratch := &rtp.Packet{}
++	feed := func(src *rtp.Packet) []*rtp.Packet {
++		buf, err := src.Marshal()
++		require.NoError(t, err)
++		require.NoError(t, scratch.Unmarshal(buf))
++		out := decoder.DecodeFEC(scratch)
++		// clobber the scratch memory the decoder saw
++		for i := range scratch.Payload {
++			scratch.Payload[i] = 0xde
++		}
++		return out
++	}
++
++	var recovered []*rtp.Packet
++	for i := range media {
++		if i == 2 {
++			continue
++		}
++		recovered = append(recovered, feed(&media[i])...)
++	}
++	for i := range fec {
++		recovered = append(recovered, feed(&fec[i])...)
++	}
++
++	require.Len(t, recovered, 1)
++	requirePacketEqual(t, &media[2], recovered[0])
++}
++
++func TestDecoderRetainedFECMemoryReuse(t *testing.T) {
++	media := makeMediaPackets(t, 550, 5)
++	fec := encodeFEC(t, media, 1)
++
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++	scratch := &rtp.Packet{}
++	feed := func(src *rtp.Packet) []*rtp.Packet {
++		buf, err := src.Marshal()
++		require.NoError(t, err)
++		require.NoError(t, scratch.Unmarshal(buf))
++		out := decoder.DecodeFEC(scratch)
++		for i := range scratch.Payload {
++			scratch.Payload[i] = 0xde
++		}
++		return out
++	}
++
++	for _, i := range []int{0, 3, 4} {
++		require.Empty(t, feed(&media[i]))
++	}
++	require.Empty(t, feed(&fec[0]))
++	require.Len(t, decoder.receivedFECPackets, 1)
++
++	recovered := feed(&media[1])
++	require.Len(t, recovered, 1)
++	requirePacketEqual(t, &media[2], recovered[0])
++}
++
++func TestDecoderTwoFECPacketsTwoLosses(t *testing.T) {
++	// with 2 FEC packets over 10 media packets, the coverage interleaves, so
++	// two losses landing in different coverage groups are both recoverable
++	media := makeMediaPackets(t, 600, 10)
++	fec := encodeFEC(t, media, 2)
++	require.Len(t, fec, 2)
++
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	var recovered []*rtp.Packet
++	for i := range media {
++		if i == 2 || i == 3 {
++			continue
++		}
++		recovered = append(recovered, decoder.DecodeFEC(&media[i])...)
++	}
++	for i := range fec {
++		recovered = append(recovered, decoder.DecodeFEC(&fec[i])...)
++	}
++
++	recoveredSNs := make(map[uint16]bool)
++	for _, r := range recovered {
++		recoveredSNs[r.SequenceNumber] = true
++	}
++	require.Len(t, recovered, 2)
++	for _, r := range recovered {
++		expectedIdx := int(r.SequenceNumber - 600)
++		requirePacketEqual(t, &media[expectedIdx], r)
++	}
++	require.True(t, recoveredSNs[602])
++	require.True(t, recoveredSNs[603])
++}
++
++func TestDecoderResetsOnBigSequenceGap(t *testing.T) {
++	decoder := newTestDecoder(testFECSSRC, testMediaSSRC, logger.GetLogger())
++
++	media := makeMediaPackets(t, 100, 110)
++	for i := range media {
++		decoder.DecodeFEC(&media[i])
++	}
++
++	// jump far ahead, decoder should reset its windows rather than misuse
++	// stale state
++	farMedia := makeMediaPackets(t, 30000, 5)
++	fec := encodeFEC(t, farMedia, 1)
++	var recovered []*rtp.Packet
++	for i := range farMedia {
++		if i == 1 {
++			continue
++		}
++		recovered = append(recovered, decoder.DecodeFEC(&farMedia[i])...)
++	}
++	for i := range fec {
++		recovered = append(recovered, decoder.DecodeFEC(&fec[i])...)
++	}
++	require.Len(t, recovered, 1)
++	requirePacketEqual(t, &farMedia[1], recovered[0])
++}
+diff --git a/pkg/sfu/rtpstats/rtpstats_base.go b/pkg/sfu/rtpstats/rtpstats_base.go
+index fdd92e89..25697edd 100644
+--- a/pkg/sfu/rtpstats/rtpstats_base.go
++++ b/pkg/sfu/rtpstats/rtpstats_base.go
+@@ -48,6 +48,10 @@ type RTPDeltaInfo struct {
+ 	PacketsPadding       uint32
+ 	BytesPadding         uint64
+ 	HeaderBytesPadding   uint64
++	FecPackets           uint32
++	FecBytes             uint64
++	FecPacketsDiscarded  uint32
++	FecPacketsRecovered  uint32
+ 	PacketsLost          uint32
+ 	PacketsMissing       uint32
+ 	PacketsOutOfOrder    uint32
+@@ -76,6 +80,10 @@ func (r *RTPDeltaInfo) MarshalLogObject(e zapcore.ObjectEncoder) error {
+ 	e.AddUint32("PacketsPadding", r.PacketsPadding)
+ 	e.AddUint64("BytesPadding", r.BytesPadding)
+ 	e.AddUint64("HeaderBytesPadding", r.HeaderBytesPadding)
++	e.AddUint32("FecPackets", r.FecPackets)
++	e.AddUint64("FecBytes", r.FecBytes)
++	e.AddUint32("FecPacketsDiscarded", r.FecPacketsDiscarded)
++	e.AddUint32("FecPacketsRecovered", r.FecPacketsRecovered)
+ 	e.AddUint32("PacketsLost", r.PacketsLost)
+ 	e.AddUint32("PacketsMissing", r.PacketsMissing)
+ 	e.AddUint32("PacketsOutOfOrder", r.PacketsOutOfOrder)
+@@ -104,6 +112,11 @@ type snapshot struct {
+ 	bytesPadding       uint64
+ 	headerBytesPadding uint64
+ 
++	fecPackets          uint64
++	fecBytes            uint64
++	fecPacketsDiscarded uint64
++	fecPacketsRecovered uint64
++
+ 	frames uint32
+ 
+ 	plis uint32
+@@ -126,6 +139,10 @@ func (s *snapshot) MarshalLogObject(e zapcore.ObjectEncoder) error {
+ 	e.AddUint64("packetsPadding", s.packetsPadding)
+ 	e.AddUint64("bytesPadding", s.bytesPadding)
+ 	e.AddUint64("headerBytesPadding", s.headerBytesPadding)
++	e.AddUint64("fecPackets", s.fecPackets)
++	e.AddUint64("fecBytes", s.fecBytes)
++	e.AddUint64("fecPacketsDiscarded", s.fecPacketsDiscarded)
++	e.AddUint64("fecPacketsRecovered", s.fecPacketsRecovered)
+ 	e.AddUint32("frames", s.frames)
+ 	e.AddUint32("plis", s.plis)
+ 	e.AddUint32("firs", s.firs)
+@@ -222,6 +239,11 @@ type rtpStatsBase struct {
+ 	bytesPadding       uint64
+ 	headerBytesPadding uint64
+ 
++	fecPackets          uint64
++	fecBytes            uint64
++	fecPacketsDiscarded uint64
++	fecPacketsRecovered uint64
++
+ 	frames uint32
+ 
+ 	jitter    float64
+@@ -285,6 +307,11 @@ func (r *rtpStatsBase) seed(from *rtpStatsBase) bool {
+ 	r.bytesPadding = from.bytesPadding
+ 	r.headerBytesPadding = from.headerBytesPadding
+ 
++	r.fecPackets = from.fecPackets
++	r.fecBytes = from.fecBytes
++	r.fecPacketsDiscarded = from.fecPacketsDiscarded
++	r.fecPacketsRecovered = from.fecPacketsRecovered
++
+ 	r.frames = from.frames
+ 
+ 	r.jitter = from.jitter
+@@ -324,6 +351,25 @@ func (r *rtpStatsBase) newSnapshotID(extStartSN uint64) uint32 {
+ 	return id
+ }
+ 
++func (r *rtpStatsBase) UpdateFEC(
++	fecPackets uint64,
++	fecBytes uint64,
++	fecPacketsDiscarded uint64,
++	fecPacketsRecovered uint64,
++) {
++	r.lock.Lock()
++	defer r.lock.Unlock()
++
++	if r.endTime != 0 {
++		return
++	}
++
++	r.fecPackets += fecPackets
++	r.fecBytes += fecBytes
++	r.fecPacketsDiscarded += fecPacketsDiscarded
++	r.fecPacketsRecovered += fecPacketsRecovered
++}
++
+ func (r *rtpStatsBase) UpdateFir(firCount uint32) {
+ 	r.lock.Lock()
+ 	defer r.lock.Unlock()
+@@ -503,8 +549,12 @@ func (r *rtpStatsBase) deltaInfo(
+ 	}
+ 	if packetsExpected == 0 {
+ 		deltaInfo = &RTPDeltaInfo{
+-			StartTime: time.Unix(0, startTime),
+-			EndTime:   time.Unix(0, endTime),
++			StartTime:           time.Unix(0, startTime),
++			EndTime:             time.Unix(0, endTime),
++			FecPackets:          uint32(now.fecPackets - then.fecPackets),
++			FecBytes:            now.fecBytes - then.fecBytes,
++			FecPacketsDiscarded: uint32(now.fecPacketsDiscarded - then.fecPacketsDiscarded),
++			FecPacketsRecovered: uint32(now.fecPacketsRecovered - then.fecPacketsRecovered),
+ 		}
+ 		return
+ 	}
+@@ -544,6 +594,10 @@ func (r *rtpStatsBase) deltaInfo(
+ 		PacketsPadding:       uint32(packetsPadding),
+ 		BytesPadding:         now.bytesPadding - then.bytesPadding,
+ 		HeaderBytesPadding:   now.headerBytesPadding - then.headerBytesPadding,
++		FecPackets:           uint32(now.fecPackets - then.fecPackets),
++		FecBytes:             now.fecBytes - then.fecBytes,
++		FecPacketsDiscarded:  uint32(now.fecPacketsDiscarded - then.fecPacketsDiscarded),
++		FecPacketsRecovered:  uint32(now.fecPacketsRecovered - then.fecPacketsRecovered),
+ 		PacketsLost:          packetsLost,
+ 		PacketsOutOfOrder:    uint32(now.packetsOutOfOrder - then.packetsOutOfOrder),
+ 		Frames:               now.frames - then.frames,
+@@ -588,6 +642,11 @@ func (r *rtpStatsBase) marshalLogObject(
+ 	e.AddFloat64("bitratePadding", float64(r.bytesPadding)*8.0/elapsedSeconds)
+ 	e.AddUint64("headerBytesPadding", r.headerBytesPadding)
+ 
++	e.AddUint64("fecPackets", r.fecPackets)
++	e.AddUint64("fecBytes", r.fecBytes)
++	e.AddUint64("fecPacketsDiscarded", r.fecPacketsDiscarded)
++	e.AddUint64("fecPacketsRecovered", r.fecPacketsRecovered)
++
+ 	e.AddUint32("frames", r.frames)
+ 	e.AddFloat64("frameRate", float64(r.frames)/elapsedSeconds)
+ 
+@@ -638,6 +697,11 @@ func (r *rtpStatsBase) toProto(
+ 	p.BitratePadding = float64(r.bytesPadding) * 8.0 / p.Duration
+ 	p.HeaderBytesPadding = r.headerBytesPadding
+ 
++	p.FecPackets = uint32(r.fecPackets)
++	p.FecBytes = r.fecBytes
++	p.FecPacketsDiscarded = uint32(r.fecPacketsDiscarded)
++	p.FecPacketsRecovered = uint32(r.fecPacketsRecovered)
++
+ 	p.Frames = r.frames
+ 	p.FrameRate = float64(r.frames) / p.Duration
+ 
+@@ -813,6 +877,10 @@ func (r *rtpStatsBase) getSnapshot(startTime int64, extStartSN uint64) snapshot
+ 		packetsPadding:       r.packetsPadding,
+ 		bytesPadding:         r.bytesPadding,
+ 		headerBytesPadding:   r.headerBytesPadding,
++		fecPackets:           r.fecPackets,
++		fecBytes:             r.fecBytes,
++		fecPacketsDiscarded:  r.fecPacketsDiscarded,
++		fecPacketsRecovered:  r.fecPacketsRecovered,
+ 		frames:               r.frames,
+ 		plis:                 r.plis,
+ 		firs:                 r.firs,
+@@ -853,6 +921,11 @@ func AggregateRTPDeltaInfo(deltaInfoList []*RTPDeltaInfo) *RTPDeltaInfo {
+ 	bytesPadding := uint64(0)
+ 	headerBytesPadding := uint64(0)
+ 
++	fecPackets := uint32(0)
++	fecBytes := uint64(0)
++	fecPacketsDiscarded := uint32(0)
++	fecPacketsRecovered := uint32(0)
++
+ 	packetsLost := uint32(0)
+ 	packetsMissing := uint32(0)
+ 	packetsOutOfOrder := uint32(0)
+@@ -891,6 +964,11 @@ func AggregateRTPDeltaInfo(deltaInfoList []*RTPDeltaInfo) *RTPDeltaInfo {
+ 		bytesPadding += deltaInfo.BytesPadding
+ 		headerBytesPadding += deltaInfo.HeaderBytesPadding
+ 
++		fecPackets += deltaInfo.FecPackets
++		fecBytes += deltaInfo.FecBytes
++		fecPacketsDiscarded += deltaInfo.FecPacketsDiscarded
++		fecPacketsRecovered += deltaInfo.FecPacketsRecovered
++
+ 		packetsLost += deltaInfo.PacketsLost
+ 		packetsMissing += deltaInfo.PacketsMissing
+ 		packetsOutOfOrder += deltaInfo.PacketsOutOfOrder
+@@ -925,6 +1003,10 @@ func AggregateRTPDeltaInfo(deltaInfoList []*RTPDeltaInfo) *RTPDeltaInfo {
+ 		PacketsPadding:       packetsPadding,
+ 		BytesPadding:         bytesPadding,
+ 		HeaderBytesPadding:   headerBytesPadding,
++		FecPackets:           fecPackets,
++		FecBytes:             fecBytes,
++		FecPacketsDiscarded:  fecPacketsDiscarded,
++		FecPacketsRecovered:  fecPacketsRecovered,
+ 		PacketsLost:          packetsLost,
+ 		PacketsMissing:       packetsMissing,
+ 		PacketsOutOfOrder:    packetsOutOfOrder,
+diff --git a/pkg/sfu/rtpstats/rtpstats_test.go b/pkg/sfu/rtpstats/rtpstats_test.go
+index 9039ad77..752c749a 100644
+--- a/pkg/sfu/rtpstats/rtpstats_test.go
++++ b/pkg/sfu/rtpstats/rtpstats_test.go
+@@ -223,6 +223,52 @@ func Test_RTPStatsReceiver_Update(t *testing.T) {
+ 	r.Stop()
+ }
+ 
++func Test_RTPStatsReceiver_UpdateFEC(t *testing.T) {
++	r := NewRTPStatsReceiver(RTPStatsParams{})
++	r.SetClockRate(90000)
++	snapshotID := r.NewSnapshotId()
++
++	packet := getPacket(100, 3000, 1000)
++	r.Update(
++		time.Now().UnixNano(),
++		packet.SequenceNumber,
++		packet.Timestamp,
++		packet.Marker,
++		packet.Header.MarshalSize(),
++		len(packet.Payload),
++		0,
++	)
++	r.UpdateFEC(3, 900, 1, 2)
++
++	stats := r.ToProto()
++	require.EqualValues(t, 3, stats.FecPackets)
++	require.EqualValues(t, 900, stats.FecBytes)
++	require.EqualValues(t, 1, stats.FecPacketsDiscarded)
++	require.EqualValues(t, 2, stats.FecPacketsRecovered)
++
++	delta := r.DeltaInfo(snapshotID)
++	require.EqualValues(t, 3, delta.FecPackets)
++	require.EqualValues(t, 900, delta.FecBytes)
++	require.EqualValues(t, 1, delta.FecPacketsDiscarded)
++	require.EqualValues(t, 2, delta.FecPacketsRecovered)
++
++	// FEC-only intervals are reported even if no primary packet arrived.
++	r.UpdateFEC(2, 500, 1, 1)
++	delta = r.DeltaInfo(snapshotID)
++	require.EqualValues(t, 2, delta.FecPackets)
++	require.EqualValues(t, 500, delta.FecBytes)
++	require.EqualValues(t, 1, delta.FecPacketsDiscarded)
++	require.EqualValues(t, 1, delta.FecPacketsRecovered)
++
++	r.Stop()
++	r.UpdateFEC(1, 100, 1, 1)
++	stats = r.ToProto()
++	require.EqualValues(t, 5, stats.FecPackets)
++	require.EqualValues(t, 1400, stats.FecBytes)
++	require.EqualValues(t, 2, stats.FecPacketsDiscarded)
++	require.EqualValues(t, 3, stats.FecPacketsRecovered)
++}
++
+ func Test_RTPStatsReceiver_Restart(t *testing.T) {
+ 	clockRate := uint32(90000)
+ 	r := NewRTPStatsReceiver(RTPStatsParams{})
+diff --git a/pkg/sfu/testutils/rtptest/packet.go b/pkg/sfu/testutils/rtptest/packet.go
+new file mode 100644
+index 00000000..9be01825
+--- /dev/null
++++ b/pkg/sfu/testutils/rtptest/packet.go
+@@ -0,0 +1,46 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package rtptest
++
++import (
++	"math/rand"
++
++	"github.com/pion/rtp"
++)
++
++// GenerateVP8Packets returns deterministic RTP packets with valid VP8 payload descriptors.
++func GenerateVP8Packets(baseSN uint16, count int, payloadType uint8, ssrc uint32) []rtp.Packet {
++	rng := rand.New(rand.NewSource(int64(baseSN)))
++	packets := make([]rtp.Packet, 0, count)
++	for i := 0; i < count; i++ {
++		payload := make([]byte, 50+rng.Intn(200))
++		rng.Read(payload)
++		payload[0] = 0x10
++
++		sequenceNumber := baseSN + uint16(i)
++		packets = append(packets, rtp.Packet{
++			Header: rtp.Header{
++				Version:        2,
++				PayloadType:    payloadType,
++				SequenceNumber: sequenceNumber,
++				Timestamp:      90000 + 3000*uint32(sequenceNumber),
++				SSRC:           ssrc,
++				Marker:         i == count-1,
++			},
++			Payload: payload,
++		})
++	}
++	return packets
++}
+diff --git a/pkg/telemetry/prometheus/packets.go b/pkg/telemetry/prometheus/packets.go
+index 8736d4de..ed8646e1 100644
+--- a/pkg/telemetry/prometheus/packets.go
++++ b/pkg/telemetry/prometheus/packets.go
+@@ -55,6 +55,9 @@ var (
+ 	promPacketLabels          = []string{"direction", "transmission", "country"}
+ 	promPacketTotal           *prometheus.CounterVec
+ 	promPacketBytes           *prometheus.CounterVec
++	promFECLabels             = []string{"direction", "type"}
++	promFECPacketTotal        *prometheus.CounterVec
++	promFECPacketBytes        *prometheus.CounterVec
+ 	promRTCPLabels            = []string{"direction", "country"}
+ 	promStreamLabels          = []string{"direction", "source", "type", "country"}
+ 	promNackTotal             *prometheus.CounterVec
+@@ -85,6 +88,18 @@ func initPacketStats(nodeID string, nodeType livekit.NodeType) {
+ 		Name:        "bytes",
+ 		ConstLabels: prometheus.Labels{"node_id": nodeID, "node_type": nodeType.String()},
+ 	}, promPacketLabels)
++	promFECPacketTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
++		Namespace:   livekitNamespace,
++		Subsystem:   "fec",
++		Name:        "total",
++		ConstLabels: prometheus.Labels{"node_id": nodeID, "node_type": nodeType.String()},
++	}, promFECLabels)
++	promFECPacketBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
++		Namespace:   livekitNamespace,
++		Subsystem:   "fec",
++		Name:        "bytes",
++		ConstLabels: prometheus.Labels{"node_id": nodeID, "node_type": nodeType.String()},
++	}, promFECLabels)
+ 	promNackTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+ 		Namespace:   livekitNamespace,
+ 		Subsystem:   "nack",
+@@ -184,6 +199,8 @@ func initPacketStats(nodeID string, nodeType livekit.NodeType) {
+ 
+ 	prometheus.MustRegister(promPacketTotal)
+ 	prometheus.MustRegister(promPacketBytes)
++	prometheus.MustRegister(promFECPacketTotal)
++	prometheus.MustRegister(promFECPacketBytes)
+ 	prometheus.MustRegister(promNackTotal)
+ 	prometheus.MustRegister(promPliTotal)
+ 	prometheus.MustRegister(promFirTotal)
+@@ -199,6 +216,24 @@ func initPacketStats(nodeID string, nodeType livekit.NodeType) {
+ 	prometheus.MustRegister(promForwardLatencyHist)
+ }
+ 
++// RecordFECUpstream tracks FlexFEC activity on the publisher leg: FEC
++// packets received from publishers, media packets recovered with them and
++// FEC packets that could not be used.
++func RecordFECUpstream(received int, recovered int, discarded int, bytesReceived uint64) {
++	if received > 0 {
++		promFECPacketTotal.WithLabelValues(string(Incoming), "received").Add(float64(received))
++	}
++	if recovered > 0 {
++		promFECPacketTotal.WithLabelValues(string(Incoming), "recovered").Add(float64(recovered))
++	}
++	if discarded > 0 {
++		promFECPacketTotal.WithLabelValues(string(Incoming), "discarded").Add(float64(discarded))
++	}
++	if bytesReceived > 0 {
++		promFECPacketBytes.WithLabelValues(string(Incoming), "received").Add(float64(bytesReceived))
++	}
++}
++
+ func IncrementPackets(country string, direction Direction, count uint64, retransmit bool) {
+ 	var transmission TransmissionType
+ 	if retransmit {
+diff --git a/test/client/client.go b/test/client/client.go
+index f58cc0fd..66030dc4 100644
+--- a/test/client/client.go
++++ b/test/client/client.go
+@@ -65,6 +65,7 @@ type RTCClient struct {
+ 	subscriber              *rtc.PCTransport
+ 	enabledCodecs           []*livekit.Codec
+ 	forceRelay              bool
++	enableFlexFEC           bool
+ 	transportReady          chan struct{}
+ 	// sid => track
+ 	localTracks        map[string]webrtc.TrackLocal
+@@ -143,6 +144,7 @@ type Options struct {
+ 	UseJoinRequestQueryParam  bool
+ 	RTCServicePath            string
+ 	ForceRelay                bool
++	EnableFlexFEC             bool
+ }
+ 
+ func NewWebSocketConn(host, token string, opts *Options) (*websocket.Conn, error) {
+@@ -278,6 +280,7 @@ func NewRTCClient(conn *websocket.Conn, useSinglePeerConnection bool, opts *Opti
+ 		c.signalRequestInterceptor = opts.SignalRequestInterceptor
+ 		c.signalResponseInterceptor = opts.SignalResponseInterceptor
+ 		c.forceRelay = opts.ForceRelay
++		c.enableFlexFEC = opts.EnableFlexFEC
+ 	}
+ 
+ 	return c, nil
+@@ -296,6 +299,14 @@ func (c *RTCClient) createTransport(rtcconf webrtc.Configuration) error {
+ 	ff := buffer.NewFactoryOfBufferFactory(500, 200)
+ 	conf.SetBufferFactory(ff.CreateBufferFactory())
+ 
++	if c.enableFlexFEC {
++		fecConfig := rtc.FlexFECDirectionConfig{
++			Enabled: true,
++		}
++		conf.Publisher.FlexFEC = fecConfig
++		conf.Subscriber.FlexFEC = fecConfig
++	}
++
+ 	//
+ 	// The signal targets are from point of view of server.
+ 	// From client side, they are flipped,
+diff --git a/test/flexfec_upstream_test.go b/test/flexfec_upstream_test.go
+new file mode 100644
+index 00000000..32ab2448
+--- /dev/null
++++ b/test/flexfec_upstream_test.go
+@@ -0,0 +1,168 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package test
++
++import (
++	"strings"
++	"testing"
++
++	"github.com/livekit/protocol/livekit"
++	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/livekit-server/pkg/config"
++	"github.com/livekit/livekit-server/pkg/service"
++	"github.com/livekit/livekit-server/pkg/testutils"
++	testclient "github.com/livekit/livekit-server/test/client"
++	"github.com/livekit/protocol/logger"
++)
++
++func setupFlexFECUpstreamTest(name string) (*service.LivekitServer, func()) {
++	logger.Infow("----------------STARTING TEST----------------", "test", name)
++	s := createSingleNodeServer(func(conf *config.Config) {
++		conf.RTC.FlexFEC = config.FlexFECConfig{
++			UpstreamEnabled: true,
++		}
++	})
++	go func() {
++		if err := s.Start(); err != nil {
++			logger.Errorw("server returned error", err)
++		}
++	}()
++
++	waitForServerToStart(s)
++
++	return s, func() {
++		s.Stop(true)
++		logger.Infow("----------------FINISHING TEST----------------", "test", name)
++	}
++}
++
++// TestFlexFECUpstreamNegotiation verifies that the SFU accepts flexfec-03
++// offered by a publisher when upstream recovery is enabled.
++func TestFlexFECUpstreamNegotiation(t *testing.T) {
++	if testing.Short() {
++		t.SkipNow()
++		return
++	}
++
++	_, finish := setupFlexFECUpstreamTest("TestFlexFECUpstreamNegotiation")
++	defer finish()
++
++	opts := &testclient.Options{AutoSubscribe: true, EnableFlexFEC: true}
++	c1 := createRTCClient("fec_pub", defaultServerPort, testRTCServicePathv0, opts)
++	defer stopClients(c1)
++	waitUntilConnected(t, c1)
++
++	writer, err := c1.AddStaticTrack("video/vp8", "video", "fecvideo")
++	require.NoError(t, err)
++	defer writer.Stop()
++
++	testutils.WithTimeout(t, func() string {
++		sd := c1.LastAnswer()
++		if sd == nil {
++			return "no answer received on publisher connection"
++		}
++		if !strings.Contains(sd.SDP, "flexfec-03") {
++			return "SFU answer does not contain flexfec-03"
++		}
++		if !strings.Contains(sd.SDP, "repair-window=10000000") {
++			return "SFU answer does not contain the configured FlexFEC repair window"
++		}
++		return ""
++	})
++}
++
++// TestFlexFECUpstreamWithE2EE verifies that FlexFEC negotiation and media
++// forwarding remain enabled when the published track is marked as GCM E2EE.
++// The SFU must treat the media payload as opaque in this mode.
++func TestFlexFECUpstreamWithE2EE(t *testing.T) {
++	if testing.Short() {
++		t.SkipNow()
++		return
++	}
++
++	_, finish := setupFlexFECUpstreamTest("TestFlexFECUpstreamWithE2EE")
++	defer finish()
++
++	pubOpts := &testclient.Options{
++		AutoSubscribe: true,
++		EnableFlexFEC: true,
++		SignalRequestInterceptor: func(msg *livekit.SignalRequest, next testclient.SignalRequestHandler) error {
++			if req := msg.GetAddTrack(); req != nil {
++				req.Encryption = livekit.Encryption_GCM
++			}
++			return next(msg)
++		},
++	}
++	c1 := createRTCClient("fec_e2ee_pub", defaultServerPort, testRTCServicePathv0, pubOpts)
++	c2 := createRTCClient("fec_e2ee_sub", defaultServerPort, testRTCServicePathv0, nil)
++	defer stopClients(c1, c2)
++	waitUntilConnected(t, c1, c2)
++
++	writer, err := c1.AddStaticTrack("video/vp8", "video", "fec-e2ee-video")
++	require.NoError(t, err)
++	defer writer.Stop()
++
++	testutils.WithTimeout(t, func() string {
++		sd := c1.LastAnswer()
++		if sd == nil || !strings.Contains(sd.SDP, "flexfec-03") {
++			return "publisher did not negotiate flexfec-03"
++		}
++
++		remote := c2.GetRemoteParticipant(c1.ID())
++		if remote == nil || len(remote.Tracks) == 0 {
++			return "subscriber has not received the publisher's track metadata"
++		}
++		if remote.Tracks[0].Encryption != livekit.Encryption_GCM {
++			return "subscriber does not see the track as GCM-encrypted"
++		}
++		if len(c2.SubscribedTracks()[c1.ID()]) == 0 || c2.BytesReceived() == 0 {
++			return "subscriber has not received media for the encrypted track"
++		}
++		return ""
++	})
++}
++
++// TestFlexFECDisabledClient ensures media still flows when the server has
++// FlexFEC enabled but a client does not negotiate it.
++func TestFlexFECDisabledClient(t *testing.T) {
++	if testing.Short() {
++		t.SkipNow()
++		return
++	}
++
++	_, finish := setupFlexFECUpstreamTest("TestFlexFECDisabledClient")
++	defer finish()
++
++	c1 := createRTCClient("nofec_pub", defaultServerPort, testRTCServicePathv0, nil)
++	c2 := createRTCClient("nofec_sub", defaultServerPort, testRTCServicePathv0, nil)
++	defer stopClients(c1, c2)
++	waitUntilConnected(t, c1, c2)
++
++	writer, err := c1.AddStaticTrack("video/vp8", "video", "plainvideo")
++	require.NoError(t, err)
++	defer writer.Stop()
++
++	testutils.WithTimeout(t, func() string {
++		tracks := c2.SubscribedTracks()
++		if len(tracks[c1.ID()]) == 0 {
++			return "c2 was not subscribed to c1's tracks"
++		}
++		if c2.BytesReceived() == 0 {
++			return "c2 did not receive any media"
++		}
++		return ""
++	})
++}

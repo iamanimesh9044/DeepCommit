@@ -1,0 +1,91 @@
+diff --git a/cmd/test-server/handlers.go b/cmd/test-server/handlers.go
+index 62c1b6c8..dcb00e71 100644
+--- a/cmd/test-server/handlers.go
++++ b/cmd/test-server/handlers.go
+@@ -24,7 +24,6 @@ import (
+ 
+ 	"google.golang.org/protobuf/proto"
+ 	"google.golang.org/protobuf/reflect/protoreflect"
+-	"google.golang.org/protobuf/types/known/emptypb"
+ 
+ 	"github.com/livekit/protocol/livekit"
+ 	"github.com/livekit/protocol/utils/protojson"
+@@ -107,7 +106,7 @@ func init() {
+ 	reg[livekit.ListSIPDispatchRuleRequest, livekit.ListSIPDispatchRuleResponse]("livekit.SIP/ListSIPDispatchRule")
+ 	reg[livekit.DeleteSIPDispatchRuleRequest, livekit.SIPDispatchRuleInfo]("livekit.SIP/DeleteSIPDispatchRule")
+ 	reg[livekit.CreateSIPParticipantRequest, livekit.SIPParticipantInfo]("livekit.SIP/CreateSIPParticipant")
+-	reg[livekit.TransferSIPParticipantRequest, emptypb.Empty]("livekit.SIP/TransferSIPParticipant")
++	reg[livekit.TransferSIPParticipantRequest, livekit.TransferSIPParticipantResponse]("livekit.SIP/TransferSIPParticipant")
+ 
+ 	// Connector
+ 	reg[livekit.DialWhatsAppCallRequest, livekit.DialWhatsAppCallResponse]("livekit.Connector/DialWhatsAppCall")
+diff --git a/go.mod b/go.mod
+index 5802a856..b09adb52 100644
+--- a/go.mod
++++ b/go.mod
+@@ -21,7 +21,7 @@ require (
+ 	github.com/jxskiss/base62 v1.1.0
+ 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
+ 	github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0
+-	github.com/livekit/protocol v1.50.5-0.20260818023635-24e126c61d3e
++	github.com/livekit/protocol v1.50.5-0.20260821144838-17c16cf496fd
+ 	github.com/livekit/psrpc v0.7.3
+ 	github.com/mackerelio/go-osstat v0.2.8
+ 	github.com/magefile/mage v1.17.2
+diff --git a/go.sum b/go.sum
+index 7d957ef3..ba9f0fc7 100644
+--- a/go.sum
++++ b/go.sum
+@@ -164,8 +164,8 @@ github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 h1:9x+U2HGLrSw5AT
+ github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731/go.mod h1:Rs3MhFwutWhGwmY1VQsygw28z5bWcnEYmS1OG9OxjOQ=
+ github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0 h1:XHNNzebIKZRkLimla/hFGrAIX5EMWHctrgt3hLw7s+I=
+ github.com/livekit/mediatransportutil v0.0.0-20260608063931-a3417d38cda0/go.mod h1:o8CFmAdrVwzJNOCsQCLUzXRjokkufNshnQHOe4fRaqU=
+-github.com/livekit/protocol v1.50.5-0.20260818023635-24e126c61d3e h1:DHSagaJXDSrnqfOuwNLby2r+VIknFJxvJzAazm9Tdh8=
+-github.com/livekit/protocol v1.50.5-0.20260818023635-24e126c61d3e/go.mod h1:h4wP4IBPkT5aew7SZSGViHSmanKAiKWsHij/5YfL4BE=
++github.com/livekit/protocol v1.50.5-0.20260821144838-17c16cf496fd h1:pGWIR9fw1eC699v2njRX/7Y+baEXB7p6k9CvDg2uVrQ=
++github.com/livekit/protocol v1.50.5-0.20260821144838-17c16cf496fd/go.mod h1:h4wP4IBPkT5aew7SZSGViHSmanKAiKWsHij/5YfL4BE=
+ github.com/livekit/psrpc v0.7.3 h1:bekuZt/ZQzg8+/M8G6G5jq7bvV9fAKdPHSOZeTwrIIc=
+ github.com/livekit/psrpc v0.7.3/go.mod h1:rAI+m2+/cb4x9RXhLRtUx5ZwdfjjXOl4zi46IjEetaw=
+ github.com/livekit/webrtc-pion/v4 v4.2.18-warp.1 h1:fH+v4W+NFp9FfPzON6FaUFNmazGcctaAhb2P+Ksf+1s=
+diff --git a/pkg/service/sip.go b/pkg/service/sip.go
+index a1283f9d..7dc6b60e 100644
+--- a/pkg/service/sip.go
++++ b/pkg/service/sip.go
+@@ -22,7 +22,6 @@ import (
+ 	"github.com/dennwc/iters"
+ 	"github.com/twitchtv/twirp"
+ 	"google.golang.org/protobuf/types/known/durationpb"
+-	"google.golang.org/protobuf/types/known/emptypb"
+ 
+ 	"github.com/livekit/protocol/livekit"
+ 	"github.com/livekit/protocol/logger"
+@@ -681,7 +680,7 @@ func (s *SIPService) CreateSIPParticipantRequest(ctx context.Context, req *livek
+ 	return internalReq, nil
+ }
+ 
+-func (s *SIPService) TransferSIPParticipant(ctx context.Context, req *livekit.TransferSIPParticipantRequest) (*emptypb.Empty, error) {
++func (s *SIPService) TransferSIPParticipant(ctx context.Context, req *livekit.TransferSIPParticipantRequest) (*livekit.TransferSIPParticipantResponse, error) {
+ 	AppendLogFields(ctx,
+ 		"room", req.RoomName,
+ 		"participant", req.ParticipantIdentity,
+@@ -722,13 +721,18 @@ func (s *SIPService) TransferSIPParticipant(ctx context.Context, req *livekit.Tr
+ 	// own default (which could outlive us).
+ 	ireq.RingingTimeout = durationpb.New(timeout)
+ 
+-	_, err = s.psrpcClient.TransferSIPParticipant(ctx, ireq.SipCallId, ireq, psrpc.WithRequestTimeout(timeout))
++	iresp, err := s.psrpcClient.TransferSIPParticipant(ctx, ireq.SipCallId, ireq, psrpc.WithRequestTimeout(timeout))
+ 	if err != nil {
+ 		log.Errorw("cannot transfer sip participant", err)
+ 		return nil, wrapSIPContextError(err)
+ 	}
+ 
+-	return &emptypb.Empty{}, nil
++	return &livekit.TransferSIPParticipantResponse{
++		TransferId: iresp.GetTransferId(),
++		Status:     iresp.GetStatus(),
++		Reason:     iresp.GetReason(),
++		SipStatus:  iresp.GetSipStatus(),
++	}, nil
+ }
+ 
+ func (s *SIPService) transferSIPParticipantRequest(ctx context.Context, req *livekit.TransferSIPParticipantRequest, log logger.UnlikelyLogger) (*rpc.InternalTransferSIPParticipantRequest, error) {

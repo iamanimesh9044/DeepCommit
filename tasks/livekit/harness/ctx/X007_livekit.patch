@@ -1,0 +1,4204 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index aa86675f..f8e14751 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,90 @@
+ 
+ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+ 
++## [1.13.9] - 2026-10-07
++
++### Changed
++
++- bump protocol and psrpc deps (#4958)
++- sfu/buffer: parse the dependency descriptor without allocating (#4953)
++- sfu/buffer: stop allocating per ingested packet (#4951)
++
++### Fixed
++
++- v1 path: check for subscriber_allow_pause presence before using it (#4957)
++- Cap forward-jump loops in SelectorDecisionCache (#4952)
++
++## [1.13.8] - 2026-10-06
++
++### Added
++
++- agent: HTTP endpoints data plane (#4779)
++- use sender report pass through setting to forward abs-capture-time verbatim (#4812)
++- Add sdk lable to session start time and participant join (#4885)
++- Add a local participant method to get recently disconnected (#4911)
++- service: start room composite egress configured in a room preset (#4926)
++
++### Changed
++
++- Update github workflows (#4446)
++- Reduce descriptor marshal allocations on Go 1.26.4/linux-amd64 (#4681)
++- config: reject unknown send_side_bwe_pacer, warn on unwired fallback (#4804)
++- Update github.com/livekit/protocol digest to a879e94 (#4864)
++- Update module github.com/gotesttools/gotestfmt/v2 to v2.5.0 (#4865)
++- Update module github.com/urfave/cli/v3 to v3.11.0 (#4867)
++- Update module golang.org/x/mod to v0.41.0 (#4868)
++- sfu: return VP8 munged header by value to avoid per-packet allocation (#4871)
++- sfu: patch pacer header extensions without per-packet allocation (#4872)
++- Update pion/sdp to get lesser SDP retention (#4873)
++- sfu: skip pacer allocation assertion under the race detector (#4874)
++- sfu: broadcast RTP to down tracks without per-packet allocations (#4875)
++- Track action versions and stop quarantining our own actions (#4877)
++- test: fix two data races in the test suites (#4878)
++- Bump go.opentelemetry.io/otel/sdk (#4879)
++- deps: update psrpc to v0.8.0 (#4882)
++- Update module github.com/moby/moby/client to v0.6.0 (#4883)
++- Update module golang.org/x/sync to v0.23.0 (#4884)
++- Propagate SIP_TRUNK_FAILURE (#4890)
++- ccutils: use millisecond resolution for probe interval backoff (#4891)
++- Increase receiver loadbalance threshold when batch io enabled (#4899)
++- rtc: parse each remote offer once per negotiation (#4904)
++- Bump protocol (#4909)
++- rtc: split EndSession out of MoveToRoom (#4917)
++- telemetry: drop the stats worker re-key path (#4918)
++- sfu: report forwarding latency as p90 instead of the mean (#4920)
++- rtc: accept ICE Completed in ICE-restart connect assertions (#4921)
++- rtc: measure data blob keys by their content, not their text form (#4923)
++- Remove deprecatred way of setting prometheus from the config file (#4928)
++- test: give mock participants a connection quality, close test rooms (#4933)
++- update warp dep (#4943)
++
++### Fixed
++
++- Do not add down tracks after receiver close (#4857)
++- Do not request media sections for transceivers that cannot send (#4892)
++- Deregister agent job when the server terminates it (#4893)
++- sfu: don't hold bindLock across the blank-frame flush in CloseWithFlush (#4895)
++- dynacast: re-send subscribed qualities after every publisher answer (#4907)
++- agent: release JobTerminate handler when job ends before registration (#4908)
++- Report disconnected for older disconnected participants. (#4910)
++- rtc: record a room's departure when the participant leaves it (#4913)
++- update deps to fix warp issue (#4916)
++- sfu: fix data stats active window bitrate and duration units (#4922)
++- fix: reject instead of drop for no dispatch rule (#4927)
++- fix: skip RTX/FEC when picking a fallback video codec (#4930)
++- fix: do not read invalid delta (#4935)
++- fix: use the fast debounce for the first negotiation (#4936)
++- fix: skip DTLS HelloVerifyRequest (#4937)
++- config: parse generated duration flags as durations (#4939)
++- fix: use the most common recent packet rate in connection quality (#4940)
++- fix: copy RED history packets instead of keeping pointers (#4941)
++- fix: keep one subscription when first subscribes race (#4944)
++- bump protocol to get unlock on no key fix (#4945)
++- fix: count leftover upstream loss after RTX repairs (#4946)
++- fix: switch VP8 temporal layer up only at a layer sync frame (#4947)
++- fix: reconcile everything when the reconcile queue overflows (#4948)
++- fix: enable H.264 publish for desktop Linux Firefox (#4949)
++
+ ## [1.13.7] - 2026-09-14
+ 
+ ### Added
+diff --git a/Dockerfile b/Dockerfile
+index 1629557e..af4b18a7 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -17,7 +17,7 @@
+ # This image is also the single source of truth for the Go toolchain: CI reads the
+ # version out of this line (see .github/scripts/go-version.sh) so tests and images
+ # always run the same runtime.
+-FROM golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS builder
++FROM golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
+ 
+ ARG TARGETPLATFORM
+ ARG TARGETARCH
+diff --git a/cmd/server/main.go b/cmd/server/main.go
+index dde5b0ad..b8650306 100644
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -189,6 +189,7 @@ func main() {
+ 
+ 	if err := cmd.Run(context.Background(), os.Args); err != nil {
+ 		fmt.Println(err)
++		os.Exit(1)
+ 	}
+ }
+ 
+diff --git a/cmd/server/main_test.go b/cmd/server/main_test.go
+index dc82bf08..b1c3669d 100644
+--- a/cmd/server/main_test.go
++++ b/cmd/server/main_test.go
+@@ -16,11 +16,80 @@ package main
+ 
+ import (
+ 	"os"
++	"os/exec"
++	"path/filepath"
+ 	"testing"
+ 
+ 	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/livekit-server/version"
+ )
+ 
++func TestMain(m *testing.M) {
++	if os.Getenv("LIVEKIT_TEST_RUN_MAIN") == "1" {
++		main()
++		os.Exit(0)
++	}
++	os.Exit(m.Run())
++}
++
++func TestMainExitCode(t *testing.T) {
++	testBinary, err := os.Executable()
++	require.NoError(t, err)
++	missingConfig := filepath.Join(t.TempDir(), "missing.yaml")
++
++	for _, tt := range []struct {
++		name     string
++		args     []string
++		exitCode int
++		output   string
++	}{
++		{
++			name:     "missing config",
++			args:     []string{"--config", missingConfig, "ports"},
++			exitCode: 1,
++			output:   missingConfig,
++		},
++		{
++			name:     "unknown flag",
++			args:     []string{"--unknown-flag"},
++			exitCode: 1,
++			output:   "flag provided but not defined",
++		},
++		{
++			name:     "invalid flag value",
++			args:     []string{"--dev=invalid"},
++			exitCode: 1,
++			output:   "invalid value",
++		},
++		{
++			name:   "help",
++			args:   []string{"--help"},
++			output: "High performance WebRTC server",
++		},
++		{
++			name:   "version",
++			args:   []string{"--version"},
++			output: version.Version,
++		},
++	} {
++		t.Run(tt.name, func(t *testing.T) {
++			cmd := exec.CommandContext(t.Context(), testBinary, tt.args...)
++			// Run the real entry point without inheriting server configuration.
++			cmd.Env = []string{"LIVEKIT_TEST_RUN_MAIN=1"}
++			output, err := cmd.CombinedOutput()
++			if tt.exitCode == 0 {
++				require.NoError(t, err, string(output))
++			} else {
++				var exitErr *exec.ExitError
++				require.ErrorAs(t, err, &exitErr, string(output))
++				require.Equal(t, tt.exitCode, exitErr.ExitCode(), string(output))
++			}
++			require.Contains(t, string(output), tt.output)
++		})
++	}
++}
++
+ type testStruct struct {
+ 	configFileName string
+ 	configBody     string
+diff --git a/cmd/test-server/Dockerfile b/cmd/test-server/Dockerfile
+index f0ff258c..ab159245 100644
+--- a/cmd/test-server/Dockerfile
++++ b/cmd/test-server/Dockerfile
+@@ -17,7 +17,7 @@
+ #
+ # Pinned by digest so the build is reproducible even if the tag is republished.
+ # The tag is kept alongside it for readability; Renovate updates both together.
+-FROM golang:1.26.7-alpine3.24@sha256:28d89ee9cc0ff9fec75c82ca201e6bf7fdf9a679d4b7b24dfa04f2bb766bb468 AS builder
++FROM golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc AS builder
+ 
+ ARG TARGETARCH
+ 
+diff --git a/go.mod b/go.mod
+index ae6f5482..d6ddedc3 100644
+--- a/go.mod
++++ b/go.mod
+@@ -21,23 +21,23 @@ require (
+ 	github.com/jxskiss/base62 v1.1.0
+ 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
+ 	github.com/livekit/mediatransportutil v0.0.0-20260821083140-f234b534b095
+-	github.com/livekit/protocol v1.52.2-0.20261006034619-196ffef79fa3
+-	github.com/livekit/psrpc v0.8.0
++	github.com/livekit/protocol v1.52.2-0.20261007103317-a935cd67c29a
++	github.com/livekit/psrpc v0.8.2
+ 	github.com/mackerelio/go-osstat v0.2.8
+ 	github.com/magefile/mage v1.17.2
+ 	github.com/mitchellh/go-homedir v1.1.0
+ 	github.com/moby/moby/client v0.6.0
+ 	github.com/olekukonko/tablewriter v1.1.4
+ 	github.com/ory/dockertest/v4 v4.0.0
+-	github.com/pion/datachannel v1.6.2
+-	github.com/pion/dtls/v3 v3.1.5
++	github.com/pion/datachannel v1.6.3
++	github.com/pion/dtls/v3 v3.1.9
+ 	github.com/pion/ice/v4 v4.4.0
+-	github.com/pion/interceptor v0.1.47
+-	github.com/pion/rtcp v1.2.17
++	github.com/pion/interceptor v0.1.49
++	github.com/pion/rtcp v1.2.19
+ 	github.com/pion/rtp v1.10.5
+-	github.com/pion/sctp v1.11.1
++	github.com/pion/sctp v1.12.0
+ 	github.com/pion/sdp/v3 v3.0.20
+-	github.com/pion/transport/v4 v4.1.0
++	github.com/pion/transport/v4 v4.1.1
+ 	github.com/pion/turn/v5 v5.0.13
+ 	github.com/pion/webrtc/v4 v4.2.18
+ 	github.com/pires/go-proxyproto v0.15.0
+@@ -53,7 +53,7 @@ require (
+ 	github.com/twitchtv/twirp v8.1.3+incompatible
+ 	github.com/ua-parser/uap-go v0.0.0-20260529044130-17c35e68e58c
+ 	github.com/urfave/negroni/v3 v3.1.1
+-	go.uber.org/atomic v1.11.0
++	go.uber.org/atomic v1.12.0
+ 	go.uber.org/multierr v1.11.0
+ 	go.uber.org/zap v1.28.0
+ 	golang.org/x/mod v0.41.0
+@@ -81,32 +81,34 @@ require (
+ 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
+ 	github.com/mattn/go-colorable v0.1.15 // indirect
+ 	github.com/mattn/go-isatty v0.0.22 // indirect
+-	github.com/maxbrunsfeld/counterfeiter/v6 v6.12.2 // indirect
++	github.com/maxbrunsfeld/counterfeiter/v6 v6.13.0 // indirect
+ 	github.com/moby/moby/api v1.56.0 // indirect
+ 	github.com/nyaruka/phonenumbers v1.8.1 // indirect
+ 	github.com/olekukonko/cat v0.0.0-20250911104152-50322a0618f6 // indirect
+ 	github.com/olekukonko/errors v1.3.0 // indirect
+ 	github.com/olekukonko/ll v0.1.8 // indirect
+-	github.com/petermattis/goid v0.0.0-20260820044319-269ab09b5261 // indirect
++	github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b // indirect
++	github.com/pion/transport/v5 v5.1.1 // indirect
+ 	github.com/puzpuzpuz/xsync/v4 v4.5.0 // indirect
+ 	github.com/quic-go/qpack v0.6.0 // indirect
+ 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
+ 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 // indirect
+-	go.opentelemetry.io/otel v1.46.0 // indirect
++	go.opentelemetry.io/otel v1.47.0 // indirect
+ 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0 // indirect
+ 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0 // indirect
+-	go.opentelemetry.io/otel/metric v1.46.0 // indirect
++	go.opentelemetry.io/otel/log v1.47.0 // indirect
++	go.opentelemetry.io/otel/metric v1.47.0 // indirect
+ 	go.opentelemetry.io/otel/sdk v1.46.0 // indirect
+-	go.opentelemetry.io/otel/trace v1.46.0 // indirect
++	go.opentelemetry.io/otel/trace v1.47.0 // indirect
+ 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
+ 	go.yaml.in/yaml/v3 v3.0.5 // indirect
+-	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa // indirect
+-	golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 // indirect
+-	golang.org/x/time v0.15.0 // indirect
++	golang.org/x/exp v0.0.0-20261005173118-76772065c9b0 // indirect
++	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect
++	golang.org/x/time v0.16.0 // indirect
+ )
+ 
+ require (
+-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1 // indirect
++	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2 // indirect
+ 	buf.build/go/protovalidate v1.4.0 // indirect
+ 	buf.build/go/protoyaml v0.7.0 // indirect
+ 	cel.dev/expr v0.25.3 // indirect
+@@ -125,7 +127,7 @@ require (
+ 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
+ 	github.com/hashicorp/golang-lru v1.0.2 // indirect
+ 	github.com/josharian/native v1.1.0 // indirect
+-	github.com/klauspost/compress v1.20.0 // indirect
++	github.com/klauspost/compress v1.20.1 // indirect
+ 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+ 	github.com/lithammer/shortuuid/v4 v4.3.0 // indirect
+ 	github.com/mattn/go-runewidth v0.0.24 // indirect
+@@ -136,26 +138,26 @@ require (
+ 	github.com/opencontainers/go-digest v1.0.0 // indirect
+ 	github.com/opencontainers/image-spec v1.1.1 // indirect
+ 	github.com/pion/logging v0.2.4
+-	github.com/pion/mdns/v2 v2.2.0 // indirect
++	github.com/pion/mdns/v2 v2.2.2 // indirect
+ 	github.com/pion/randutil v0.1.0 // indirect
+ 	github.com/pion/srtp/v3 v3.0.13 // indirect
+ 	github.com/pion/stun/v3 v3.1.7
+ 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+ 	github.com/prometheus/client_model v0.6.3 // indirect
+-	github.com/prometheus/common v0.71.0 // indirect
++	github.com/prometheus/common v0.72.0 // indirect
+ 	github.com/prometheus/procfs v0.22.0 // indirect
+ 	github.com/urfave/cli/v3 v3.11.0
+ 	github.com/wlynxg/anet v0.0.5 // indirect
+ 	github.com/zeebo/xxh3 v1.1.0 // indirect
+ 	go.uber.org/zap/exp v0.3.0 // indirect
+-	golang.org/x/crypto v0.56.0 // indirect
+-	golang.org/x/net v0.58.0
+-	golang.org/x/sys v0.47.0 // indirect
+-	golang.org/x/text v0.41.0 // indirect
+-	golang.org/x/tools v0.49.0 // indirect
+-	google.golang.org/genproto/googleapis/api v0.0.0-20260831171406-18b4a7587f8a // indirect
+-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a // indirect
+-	google.golang.org/grpc v1.83.2 // indirect
++	golang.org/x/crypto v0.57.0 // indirect
++	golang.org/x/net v0.59.0
++	golang.org/x/sys v0.48.0 // indirect
++	golang.org/x/text v0.42.0 // indirect
++	golang.org/x/tools v0.51.0 // indirect
++	google.golang.org/genproto/googleapis/api v0.0.0-20261005182115-fad411399dd8 // indirect
++	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
++	google.golang.org/grpc v1.84.0 // indirect
+ )
+ 
+ tool (
+@@ -165,7 +167,7 @@ tool (
+ 	golang.org/x/tools/cmd/goimports
+ )
+ 
+-replace github.com/pion/webrtc/v4 => github.com/livekit/webrtc-pion/v4 v4.2.18-warp.5
++replace github.com/pion/webrtc/v4 => github.com/livekit/webrtc-pion/v4 v4.2.18-warp.6
+ 
+ replace github.com/pion/dtls/v3 => github.com/livekit/dtls/v3 v3.1.5-warp.3
+ 
+diff --git a/go.sum b/go.sum
+index 686118d0..895a278b 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,5 +1,5 @@
+-buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1 h1:Slv0uGxx219srASyiaI5C9cDlyG8kNDcXpTSYcuAeE4=
+-buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.1/go.mod h1:TCt1lluMFnctISJXvkIQ4x3ABrPuUKCWKyjKdkJNBpw=
++buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2 h1:NbnlmV26O7oZ1iM5tsCI+GEx+3ZSdrhvnKQ/eWSrLiY=
++buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2/go.mod h1:TCt1lluMFnctISJXvkIQ4x3ABrPuUKCWKyjKdkJNBpw=
+ buf.build/go/protovalidate v1.4.0 h1:UjLrYbt5VX7+TMOs2+pG5FhZhIG1mSfK4EIopbb4LcM=
+ buf.build/go/protovalidate v1.4.0/go.mod h1:8vJfzNT6NIG2qm3uFsJDXMlRmG+bQJzbcIn1Aa0vPGs=
+ buf.build/go/protoyaml v0.7.0 h1:z4oVoFicbpPefhT7WAykxUdfp0yEQlhMQ2mCZOY5V38=
+@@ -141,8 +141,8 @@ github.com/jsimonetti/rtnetlink v0.0.0-20211022192332-93da33804786 h1:N527AHMa79
+ github.com/jsimonetti/rtnetlink v0.0.0-20211022192332-93da33804786/go.mod h1:v4hqbTdfQngbVSZJVWUhGE/lbTFf9jb+ygmNUDQMuOs=
+ github.com/jxskiss/base62 v1.1.0 h1:A5zbF8v8WXx2xixnAKD2w+abC+sIzYJX+nxmhA6HWFw=
+ github.com/jxskiss/base62 v1.1.0/go.mod h1:HhWAlUXvxKThfOlZbcuFzsqwtF5TcqS9ru3y5GfjWAc=
+-github.com/klauspost/compress v1.20.0 h1:a3C1ke2ohxFymNlb2HWAHjDeKCI90scRskErZkR0ezA=
+-github.com/klauspost/compress v1.20.0/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
++github.com/klauspost/compress v1.20.1 h1:T7kKElXUMXrUJ2E9QhQhxFtcK5rPyLdsGZvdbLMPdiQ=
++github.com/klauspost/compress v1.20.1/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
+ github.com/klauspost/cpuid/v2 v2.4.0 h1:S6Hrbc7+ywsr0r+RLapfGBHfyefhCTwEh3A0tV913Dw=
+ github.com/klauspost/cpuid/v2 v2.4.0/go.mod h1:19jmZ9mjzoF//ddRSUsv0zfBTJWh3QJh9FNxZTMrGxU=
+ github.com/kr/pretty v0.1.0/go.mod h1:dAy3ld7l9f0ibDNOQOHHMYYIIbhfbHSm3C4ZsoJORNo=
+@@ -166,12 +166,12 @@ github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 h1:9x+U2HGLrSw5AT
+ github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731/go.mod h1:Rs3MhFwutWhGwmY1VQsygw28z5bWcnEYmS1OG9OxjOQ=
+ github.com/livekit/mediatransportutil v0.0.0-20260821083140-f234b534b095 h1:BcliKAXoMhl/nWmzQweQ5kmh4Qqagxl4s3Z5pvM/7AY=
+ github.com/livekit/mediatransportutil v0.0.0-20260821083140-f234b534b095/go.mod h1:o8CFmAdrVwzJNOCsQCLUzXRjokkufNshnQHOe4fRaqU=
+-github.com/livekit/protocol v1.52.2-0.20261006034619-196ffef79fa3 h1:prnZIg7PRRO4QyHVKODibufoUZHjmMLphQaGSLPtmBo=
+-github.com/livekit/protocol v1.52.2-0.20261006034619-196ffef79fa3/go.mod h1:t5CV/LCsWbI9zsSTHTJKDyLtByqvvVkioSP7jgqpIGA=
+-github.com/livekit/psrpc v0.8.0 h1:uo3x+DL8pK2OIaCxg/s9sLUO2cIocS5HwdPhhI+m+fQ=
+-github.com/livekit/psrpc v0.8.0/go.mod h1:6KnU8vULoizX0Er9NNfeKJDV8ug87j3fuo19M0bhj6Q=
+-github.com/livekit/webrtc-pion/v4 v4.2.18-warp.5 h1:3na5DnAUJtXsrBHWdcUY0tGh9JYu5ppeVPOV4ll/AWA=
+-github.com/livekit/webrtc-pion/v4 v4.2.18-warp.5/go.mod h1:Kxgo6xwFzVK38XVlQTBT1zj2JU5G7R0R0pa5w5d9d/Q=
++github.com/livekit/protocol v1.52.2-0.20261007103317-a935cd67c29a h1:Sa9+0Kr+MVIabmJaBFtX8Yl3NYewkv02/mMDvLEKYiQ=
++github.com/livekit/protocol v1.52.2-0.20261007103317-a935cd67c29a/go.mod h1:k7v95/DNhMkslMeBxdQ+lQ6gKc8hMNGYB7t0+6sEGU4=
++github.com/livekit/psrpc v0.8.2 h1:7tbkhBJoYlK5Csfkdv1XYbZjyAQeaEZgupvIXNCv7Dc=
++github.com/livekit/psrpc v0.8.2/go.mod h1:6KnU8vULoizX0Er9NNfeKJDV8ug87j3fuo19M0bhj6Q=
++github.com/livekit/webrtc-pion/v4 v4.2.18-warp.6 h1:UaGYlQ/Ma73LN12xPDlH3OBYNfOEDTVOtHdRZbHg2dY=
++github.com/livekit/webrtc-pion/v4 v4.2.18-warp.6/go.mod h1:Kxgo6xwFzVK38XVlQTBT1zj2JU5G7R0R0pa5w5d9d/Q=
+ github.com/mackerelio/go-osstat v0.2.8 h1:I2duicTaCGWoM53XwAwA9OIe1inu0xnVs8/pqOWWVr4=
+ github.com/mackerelio/go-osstat v0.2.8/go.mod h1:SyS3XxKdoSKJnTGTkN5Yrh6VUQVuAURACfE6y+2DN4k=
+ github.com/magefile/mage v1.17.2 h1:fyXVu1eadI8Ap1HCCNgEhJ5McIWiYhLR8uol64ZZc40=
+@@ -182,8 +182,8 @@ github.com/mattn/go-isatty v0.0.22 h1:j8l17JJ9i6VGPUFUYoTUKPSgKe/83EYU2zBC7YNKMw
+ github.com/mattn/go-isatty v0.0.22/go.mod h1:ZXfXG4SQHsB/w3ZeOYbR0PrPwLy+n6xiMrJlRFqopa4=
+ github.com/mattn/go-runewidth v0.0.24 h1:cpokDiIn0MGnhdHwuWnJBITySJ20QyNGnY2kR/ay2DU=
+ github.com/mattn/go-runewidth v0.0.24/go.mod h1:XBkDxAl56ILZc9knddidhrOlY5R/pDhgLpndooCuJAs=
+-github.com/maxbrunsfeld/counterfeiter/v6 v6.12.2 h1:V23nK2R2B63g2GhygF9zVGpnigmhvoZoH8d0hrZwMGY=
+-github.com/maxbrunsfeld/counterfeiter/v6 v6.12.2/go.mod h1:Mr897yU9FmyKaQDPtRlVKibrjz40XXyOHUfyZBPSyZU=
++github.com/maxbrunsfeld/counterfeiter/v6 v6.13.0 h1:ybB78iZ/Hkh76F6t+MbN+DP9WFNkLX+tB5JWOctzPyY=
++github.com/maxbrunsfeld/counterfeiter/v6 v6.13.0/go.mod h1:pLuSACD770jzP/sacZMoGDxz34d5uiUpo+xdj/pYF/Y=
+ github.com/mdlayher/ethtool v0.0.0-20210210192532-2b88debcdd43/go.mod h1:+t7E0lkKfbBsebllff1xdTmyJt8lH37niI6kwFk9OTo=
+ github.com/mdlayher/genetlink v1.0.0/go.mod h1:0rJ0h4itni50A86M2kHcgS85ttZazNt7a8H2a2cw0Gc=
+ github.com/mdlayher/netlink v0.0.0-20190409211403-11939a169225/go.mod h1:eQB3mZE4aiYnlUsyGGCOpPETfdQq4Jhsgf1fk3cwQaA=
+@@ -229,42 +229,42 @@ github.com/olekukonko/ll v0.1.8 h1:ysHCJRGHYKzmBSdz9w5AySztx7lG8SQY+naTGYUbsz8=
+ github.com/olekukonko/ll v0.1.8/go.mod h1:RPRC6UcscfFZgjo1nulkfMH5IM0QAYim0LfnMvUuozw=
+ github.com/olekukonko/tablewriter v1.1.4 h1:ORUMI3dXbMnRlRggJX3+q7OzQFDdvgbN9nVWj1drm6I=
+ github.com/olekukonko/tablewriter v1.1.4/go.mod h1:+kedxuyTtgoZLwif3P1Em4hARJs+mVnzKxmsCL/C5RY=
+-github.com/onsi/gomega v1.39.1 h1:1IJLAad4zjPn2PsnhH70V4DKRFlrCzGBNrNaru+Vf28=
+-github.com/onsi/gomega v1.39.1/go.mod h1:hL6yVALoTOxeWudERyfppUcZXjMwIMLnuSfruD2lcfg=
++github.com/onsi/gomega v1.43.0 h1:VlG/1FxqNxhSO+lq/OHBNaaqwiBK/mO8JbVkX9Y+FeU=
++github.com/onsi/gomega v1.43.0/go.mod h1:REff/hsDsodHoKlWsP2mAPhu1+5/6hVYNf9rIEBpeSg=
+ github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8Oi/yOhh5U=
+ github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
+ github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJwooC2xJA040=
+ github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
+ github.com/ory/dockertest/v4 v4.0.0 h1:i19aFsO/VXE0VrMk4ifnKW4G/KIJ93PCjLOslxXoPME=
+ github.com/ory/dockertest/v4 v4.0.0/go.mod h1:b5Ofu8VIxWNhXFvQcLu17pRNQdoUBKtXBW74G4Ygzx8=
+-github.com/petermattis/goid v0.0.0-20260820044319-269ab09b5261 h1:lcWAnrqr2nNfDiArwFNHCE4787Mw2tCdVSOXCru0/0E=
+-github.com/petermattis/goid v0.0.0-20260820044319-269ab09b5261/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
+-github.com/pion/datachannel v1.6.2 h1:7EXQ8TH3vTouBUdRWYbcX2edSx9Yj6k5zl5P+qyxEPc=
+-github.com/pion/datachannel v1.6.2/go.mod h1:pzbdAZvyGtXbcHM1hBbsFaOTf40lZizU/dNlvVOak6E=
+-github.com/pion/interceptor v0.1.47 h1:yw8t5pJ2f8t78NgU+8EmxhaqYLXS7uFCC/tAGOaSDBo=
+-github.com/pion/interceptor v0.1.47/go.mod h1:7yoRBzaIDETPC6cIN8Zj9EyGqHv1ImOpcTFPha6MuOM=
++github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b h1:OzNsuVdSWGwXvWKTtChx9ve89k4cFJ6NxYM4Aw4/f+E=
++github.com/petermattis/goid v0.0.0-20260918085751-abfca077860b/go.mod h1:pxMtw7cyUw6B2bRH0ZBANSPg+AoSud1I1iyJHI69jH4=
++github.com/pion/datachannel v1.6.3 h1:HZAYLpunVI0xi057ZiANl558d0uSpomcWw4UEPz3qXs=
++github.com/pion/datachannel v1.6.3/go.mod h1:oRmkXVVXxkUbqa8MatgdNHW29kvtQY3HUdjJQsfv2GE=
++github.com/pion/interceptor v0.1.49 h1:iyBsNHRoLNNXZiJA/DdGvJgdyfS8YWDCzxIAlVjt5nY=
++github.com/pion/interceptor v0.1.49/go.mod h1:MZ6PJkja/TCo350HAnBrs/rUIyad9mWjpcvytrf3ViQ=
+ github.com/pion/logging v0.2.4 h1:tTew+7cmQ+Mc1pTBLKH2puKsOvhm32dROumOZ655zB8=
+ github.com/pion/logging v0.2.4/go.mod h1:DffhXTKYdNZU+KtJ5pyQDjvOAh/GsNSyv1lbkFbe3so=
+-github.com/pion/mdns/v2 v2.2.0 h1:AlAZ9MTUKtWgO+4itk35JdNak4sk5k7G/X4xnIBWHyA=
+-github.com/pion/mdns/v2 v2.2.0/go.mod h1:IJddx58QMlojqhQYjHcOUmvuBQ5MnLNetkb80VMvk2Y=
++github.com/pion/mdns/v2 v2.2.2 h1:qq9Kj3PnjF0mfSwd8Icu0CXy5aoYdQKnNUIsGPeUpgk=
++github.com/pion/mdns/v2 v2.2.2/go.mod h1:ZX5f0AAH1D6TOjdjvcBORZZHaZuG0t9+br78lHEwiJ4=
+ github.com/pion/randutil v0.1.0 h1:CFG1UdESneORglEsnimhUjf33Rwjubwj6xfiOXBa3mA=
+ github.com/pion/randutil v0.1.0/go.mod h1:XcJrSMMbbMRhASFVOlj/5hQial/Y8oH/HVo7TBZq+j8=
+-github.com/pion/rtcp v1.2.17 h1:PxiT6L79yPZKtXIsXdG1eakBl6dtBj4x+4oVEL0DlSw=
+-github.com/pion/rtcp v1.2.17/go.mod h1:7kBpuBJaWwax4hzc/pgexY8vkOpvh8atgYDbaKZq0iU=
++github.com/pion/rtcp v1.2.19 h1:T79lR2Tfd/7zj+41nsUrftrUEee+Z03NQr9GSPSQ/WU=
++github.com/pion/rtcp v1.2.19/go.mod h1:vX7Es6skWYm4oVvOSC5+4WHLYUTZHcbGNmk5wjzMGH4=
+ github.com/pion/rtp v1.10.5 h1:ip0HhO/wYZqQ4bKS+R99KnZh/GRCmIT0jDXikub7vlE=
+ github.com/pion/rtp v1.10.5/go.mod h1:Au8fc6cEByy8RLTwKTQTEeQqDB/SJDxwL4mZuxYA5Pk=
+-github.com/pion/sctp v1.11.1 h1:O4dIFyURw1KTST7w+gtD4gLeYXkhPa0xXLHMMoe/OSA=
+-github.com/pion/sctp v1.11.1/go.mod h1:7KFmTwLcoYgJs/Z+99nJvsWL0qDpuyloSI0RbAqlrz0=
++github.com/pion/sctp v1.12.0 h1:AzUdVkVBNyGY1W4crWO1/aOWzMaW3zsVHGrNuAfFQiI=
++github.com/pion/sctp v1.12.0/go.mod h1:6k1zrpkrxSwbisitn/AlzDQaa15DR49MFsrMochG/yc=
+ github.com/pion/sdp/v3 v3.0.20 h1:TS6DViqcmp+49f0+mjw9anbr9xY3vJtsZewxAvlMCRQ=
+ github.com/pion/sdp/v3 v3.0.20/go.mod h1:slIMXDK5OKj0nhISwjfeN18AzTBCt2LYZq9uPw0cU5Q=
+ github.com/pion/srtp/v3 v3.0.13 h1:FmQaqgNbN1vUtMhEsmj8trldc3lNZr1xmN7nl8CyX+Q=
+ github.com/pion/srtp/v3 v3.0.13/go.mod h1:7qR3L69t8RX0EPVQwGNwCa1Gy9keKKNDpWwQzZbeXDY=
+ github.com/pion/stun/v3 v3.1.7 h1:uRXMTlGLf89WgItGNyZ6aR5jMTX0NBbybXADpQCzn+E=
+ github.com/pion/stun/v3 v3.1.7/go.mod h1:Nq77RW4aRrSNrltf2ksUJLjxWeipj4lnlgdsYIxC8g8=
+-github.com/pion/transport/v3 v3.1.1 h1:Tr684+fnnKlhPceU+ICdrw6KKkTms+5qHMgw6bIkYOM=
+-github.com/pion/transport/v3 v3.1.1/go.mod h1:+c2eewC5WJQHiAA46fkMMzoYZSuGzA/7E2FPrOYHctQ=
+-github.com/pion/transport/v4 v4.1.0 h1:8S+nF2reM2cJuqC6g78OVy2BBgmbdns+acx3jA97BvQ=
+-github.com/pion/transport/v4 v4.1.0/go.mod h1:06hFI+jCFcok2X2MekVufNZ/uzNZXivGBPfviSVcjgM=
++github.com/pion/transport/v4 v4.1.1 h1:kEBtbp1sRad0tnkREDNJ3fmop/CR8p/YxXnpFbn9tqo=
++github.com/pion/transport/v4 v4.1.1/go.mod h1:Oxo5oODQvjFF7NkHBBz3f4fZXLB7x03uLVuzfYeA5pE=
++github.com/pion/transport/v5 v5.1.1 h1:Sauq8YJqRopgRfIgnpfKpdpKG14g0N4jWlRgpWsEfN8=
++github.com/pion/transport/v5 v5.1.1/go.mod h1:Qxw6fCEjFWQkRDZOhS4Vf+neJBcihauvA3uyEa1J1F0=
+ github.com/pion/turn/v5 v5.0.13 h1:erHOsJyxuV6QK54+PjWJhe8u1O7BM3a/US0zYJJsnx4=
+ github.com/pion/turn/v5 v5.0.13/go.mod h1:btdOovUYdYc8iBnvt87JHN4Pa1XV5UiLaCYe4ay3o9A=
+ github.com/pires/go-proxyproto v0.15.0 h1:dTshmNbFm/D+0+sbrxUuddPOZ5Y0B7c5NhtsBkm6LqI=
+@@ -278,8 +278,8 @@ github.com/prometheus/client_golang v1.24.1 h1:JnJkREXzWxUdCuPFpIWZiPispT9xVV59u
+ github.com/prometheus/client_golang v1.24.1/go.mod h1:F+oSRECHg4sse5ucfYpYDeIv/hu68Zo0uoHKetWnzcE=
+ github.com/prometheus/client_model v0.6.3 h1:O0jaTVAYNxTHYInEPFJt5I3+sN8zqBtVMPTB1qyxiEo=
+ github.com/prometheus/client_model v0.6.3/go.mod h1:gpN5P9S7Rr6Yr92PiQ+Ixvhf6JZEkF1dnxsYL2aPBEM=
+-github.com/prometheus/common v0.71.0 h1:9KDAKb7Mj3HEVKyFCK6Dc/HIwlBzZIN2l7/lrHl3KK8=
+-github.com/prometheus/common v0.71.0/go.mod h1:CLJ5H8TEsGX8bl31BdMkfhIZ+QmZ9tBPPotUxUbfcmk=
++github.com/prometheus/common v0.72.0 h1:tAYsE+sPJxIncDAobm4H5aQjmox9ZxEIIqPbiffa8G4=
++github.com/prometheus/common v0.72.0/go.mod h1:77NWqAQ2tXT7BIK40qjJdw5Acrsrg1TlHAnsQi3i6mk=
+ github.com/prometheus/procfs v0.22.0 h1:6q9+/JL9IKAPbCmBrv9n5O5Ty3NKnciV5X7YGw0oics=
+ github.com/prometheus/procfs v0.22.0/go.mod h1:CvmFr/GVhIjIvWJZW3tgkODBQMRIf0EyWMQLHCHab58=
+ github.com/puzpuzpuz/xsync/v4 v4.5.0 h1:vOSWu6b57/emh+L/Cw0BeQfvxa/cogFywXHeGUxQxAg=
+@@ -331,24 +331,26 @@ go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ
+ go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
+ go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 h1:LMuyCAyfalSjDyjdC65nK6N0zoTT63+E/u95X0JovZI=
+ go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0/go.mod h1:085m8qbm4hgc8rZWGDEa4vmyyo2c3nPxUslYUKUIU04=
+-go.opentelemetry.io/otel v1.46.0 h1:FHt5/CDyVxi/8IM1CH7VE/rRgq3kLHa2mSTVMO8AWyc=
+-go.opentelemetry.io/otel v1.46.0/go.mod h1:Gj3SEScelsNC45tp4nSxRYlS+f5iez7W8XPMCt905kE=
++go.opentelemetry.io/otel v1.47.0 h1:j7ALJ/zgkS7Z6aeJW09p8VC9804bC+PpeTfCD4XPnOM=
++go.opentelemetry.io/otel v1.47.0/go.mod h1:8wS9O2qfXrYrzp6hIF/HOYJJf/wIhFPhR2xLuP+iXQU=
+ go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0 h1:OFnwLJr+pF3iHrlGSzbxyuo6/6HyBlnlN1CWEJmBVcw=
+ go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.46.0/go.mod h1:716wFneO0ov19A2beH5hjfh9AK5z/VWNAtDijp1Y0/g=
+ go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0 h1:KrC1YrQeSt46ITMWAbgQx1M1eV1/1TKzttrBzymPmss=
+ go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.46.0/go.mod h1:zDSEzoEqsOrgBeGvH66KRgxh90VonFyJqBHA0Pk3+rM=
+-go.opentelemetry.io/otel/metric v1.46.0 h1:yBnkXvgV7AXFILZc5K6IZe/CBFF3OS7BJ8ov6/lj0K8=
+-go.opentelemetry.io/otel/metric v1.46.0/go.mod h1:iPmdWqifKUdzziPkvvzIJXITl56fQx2mGM/DHLB3/2o=
++go.opentelemetry.io/otel/log v1.47.0 h1:cOTS1CcLbSQeZKanGJ+0JpF/+t4PELi3O3bbl2lqCcI=
++go.opentelemetry.io/otel/log v1.47.0/go.mod h1:9byitSQ5pLC6PpqwGXjqdMKya6ZTswHRZh2vvXT33nw=
++go.opentelemetry.io/otel/metric v1.47.0 h1:4PptaldXx3Eat1XjMZ68pPJEs5wrhlemctZE9a3UdWY=
++go.opentelemetry.io/otel/metric v1.47.0/go.mod h1:ADGSXxRrXM6bjbvLo535EstVFlPpPYZm4LBKixjDHwU=
+ go.opentelemetry.io/otel/sdk v1.46.0 h1:h5CNQQjEbuQXY/JfZtgt3i7HVFV3aHPO2OAwO2eTYPI=
+ go.opentelemetry.io/otel/sdk v1.46.0/go.mod h1:GAERFXFt5SYCEB+YiKUbMBeza6UaDH7GmGOZEfh2gSM=
+ go.opentelemetry.io/otel/sdk/metric v1.46.0 h1:0piZ26EG4RBfebb2jhDH6ERCYHoVWduc3kLgPCwSnSE=
+ go.opentelemetry.io/otel/sdk/metric v1.46.0/go.mod h1:I1PbKrdVc8Qu8HYVDNtqVIwLwjNrhsV/uFuxfwg8mO4=
+-go.opentelemetry.io/otel/trace v1.46.0 h1:OULy7ccdJnZtJ0UDYFOIGaCmiWzJ8Vi2G/Rsu60qs1c=
+-go.opentelemetry.io/otel/trace v1.46.0/go.mod h1:J7GAXweO77XSFkB/rmAqk9D6ihszhFjLU+d9WuUxDLI=
++go.opentelemetry.io/otel/trace v1.47.0 h1:JOjX/Oci8K94QHddo+bbfya/Ai/nf6/dt9ZfrFNWSrM=
++go.opentelemetry.io/otel/trace v1.47.0/go.mod h1:jNaSLa2PZEYFG6fRjJABAu+bw4FS08uDmPg28lTghu0=
+ go.opentelemetry.io/proto/otlp v1.11.0 h1:5rrYs0Ykyj50sdU/JU0x8etU+LubXWb+gED6TbEdMIk=
+ go.opentelemetry.io/proto/otlp v1.11.0/go.mod h1:SmVizdCOAm3XBtG1g1NnOdhW6jtddT72hLMhv8VwA8E=
+-go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=
+-go.uber.org/atomic v1.11.0/go.mod h1:LUxbIzbOniOlMKjJjyPfpl4v+PKK2cNJn91OQbhoJI0=
++go.uber.org/atomic v1.12.0 h1:BvcXdFKuviU4fTL/f+SxdQ5qJX/Jix8pAkgdUcb3XOE=
++go.uber.org/atomic v1.12.0/go.mod h1:I6c4cg+6HCxRjfjSsYtApoFILnpc0CGUdGkXVqbYVNk=
+ go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
+ go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
+ go.uber.org/mock v0.5.2 h1:LbtPTcP8A5k9WPXj54PPPbjcI4Y6lhyOZXn+VS7wNko=
+@@ -365,10 +367,10 @@ go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
+ go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
+ golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+ golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9/go.mod h1:LzIPMQfyMNhhGPhUkYOs5KpL4U8rLKemX1yGLhDgUto=
+-golang.org/x/crypto v0.56.0 h1:GUh5Ii4J5jtcseSMiRqr1jXCNHoxjeV9Fmekc2oLy6Y=
+-golang.org/x/crypto v0.56.0/go.mod h1:OMW5y6CY9l38uPLmxU6l6pwcXp1obtLo3e6gT7gQR2I=
+-golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa h1:QSyA8ishJCyT21kER9KwNt0b7BM3iRK4x9QXhjN5Fdk=
+-golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa/go.mod h1:zeBbvyFKDaLwa7CH/zI8KXt7gTl14SF7sO08Pl5jBCM=
++golang.org/x/crypto v0.57.0 h1:3ZVCjf8Ggz7zneR/EHRVx68Ctf+2pmIMP2UFhh9cC6M=
++golang.org/x/crypto v0.57.0/go.mod h1:Fdz0i5U6CoizGwLda9DttjSk6qlZo25zYNtR+ycvuZA=
++golang.org/x/exp v0.0.0-20261005173118-76772065c9b0 h1:qUp3i6M39kccSm3OMMIE3tvs7YQWO9rFeCKdk1sSaFk=
++golang.org/x/exp v0.0.0-20261005173118-76772065c9b0/go.mod h1:SRjTzy5WcYqRRqquLUvHeeovSwLO0CZ3xcltZNO4Fck=
+ golang.org/x/mod v0.41.0 h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=
+ golang.org/x/mod v0.41.0/go.mod h1:Ek9pY8RKWXwsWvd3rQiHYtMqkjSUV+s1Rj7j4H5Ur6o=
+ golang.org/x/net v0.0.0-20190311183353-d8887717615a/go.mod h1:t9HGtf8HONx5eT2rtn7q6eTqICYqUVnKs3thJo3Qplg=
+@@ -385,8 +387,8 @@ golang.org/x/net v0.0.0-20210119194325-5f4716e94777/go.mod h1:m0MpNAwzfU5UDzcl9v
+ golang.org/x/net v0.0.0-20210226172049-e18ecbb05110/go.mod h1:m0MpNAwzfU5UDzcl9v0D8zg8gWTRqZa9RBIspLL5mdg=
+ golang.org/x/net v0.0.0-20210525063256-abc453219eb5/go.mod h1:9nx3DQGgdP8bBQD5qxJ1jj9UTztislL4KSBs9R2vV5Y=
+ golang.org/x/net v0.0.0-20220923203811-8be639271d50/go.mod h1:YDH+HFinaLZZlnHAfSS6ZXJJ9M9t4Dl22yv3iI2vPwk=
+-golang.org/x/net v0.58.0 h1:ynWG7rqYi4ccpTEuPZ2QGWHktVEM9DMCj9yzDE0Q7To=
+-golang.org/x/net v0.58.0/go.mod h1:YwCddHnFlT7eLQqVprV19OnhLGtc5xOKgE0RyqgfWAU=
++golang.org/x/net v0.59.0 h1:5zfYln+w5XCxwrnMMJPufRgNoXEaGxl0wo5GqPXyues=
++golang.org/x/net v0.59.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=
+ golang.org/x/sync v0.0.0-20210220032951-036812b2e83c/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.0.0-20220923202941-7f9b1623fab7/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+ golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
+@@ -414,33 +416,33 @@ golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1/go.mod h1:oPkhp1MJrh7nUepCBc
+ golang.org/x/sys v0.0.0-20210906170528-6f6e22806c34/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.0.0-20220319134239-a9b59b0215f8/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+ golang.org/x/sys v0.0.0-20220728004956-3c1f35247d10/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+-golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
+-golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=
+-golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5 h1:ZUSxONxc981v7AW7QUg+I9WwZzSTTJ019ENBYr5pV/Q=
+-golang.org/x/telemetry v0.0.0-20260811182544-a038080d80e5/go.mod h1:LVehoXe41cL5SCVQilsV7Gg6BNG+Js6P9PhSbYTIUkQ=
++golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
++golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
++golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 h1:DftxASHKl6JolFPqoN+2WrFO53JvkHwRXvFqf8gsivA=
++golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157/go.mod h1:i+ivNqjDnTF3WTElsdk5g9V5DTSBYgdNo7xTU9SDwYA=
+ golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+ golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
+ golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+ golang.org/x/text v0.3.3/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+ golang.org/x/text v0.3.6/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+ golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=
+-golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
+-golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
+-golang.org/x/time v0.15.0 h1:bbrp8t3bGUeFOx08pvsMYRTCVSMk89u4tKbNOZbp88U=
+-golang.org/x/time v0.15.0/go.mod h1:Y4YMaQmXwGQZoFaVFk4YpCt4FLQMYKZe9oeV/f4MSno=
++golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=
++golang.org/x/text v0.42.0/go.mod h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E=
++golang.org/x/time v0.16.0 h1:vMb6ptszcQMkcwiRTAuNNU50gom6++Q/6gY2hDM6VDE=
++golang.org/x/time v0.16.0/go.mod h1:rVKOqvZeKvrDKTQiAHJ7wmwP0RzleSphoEA9RcdLA0s=
+ golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+-golang.org/x/tools v0.49.0 h1:3NI7VXzL9+1WZD52Dx2ttoPwD5DWrFGpl9mFZDlmisI=
+-golang.org/x/tools v0.49.0/go.mod h1:SJNXV9DBKT0UbdttsQjbfJlAE/q+y36++zo3uL3N0Oo=
++golang.org/x/tools v0.51.0 h1:k4Xc/1Om9jwkBJBo4NVLMSARBoWtK10mx+W5BnXCeAI=
++golang.org/x/tools v0.51.0/go.mod h1:9eEncMayCV6zRMGhR5eZEC2iBx98qWcF1HZ9Z7wJOoA=
+ golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+ golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+ gonum.org/v1/gonum v0.17.0 h1:VbpOemQlsSMrYmn7T2OUvQ4dqxQXU+ouZFQsZOx50z4=
+ gonum.org/v1/gonum v0.17.0/go.mod h1:El3tOrEuMpv2UdMrbNlKEh9vd86bmQ6vqIcDwxEOc1E=
+-google.golang.org/genproto/googleapis/api v0.0.0-20260831171406-18b4a7587f8a h1:i3TAXhpKc7TUP1VAPiBBrv45kamjoizCC3rOC0cAbOs=
+-google.golang.org/genproto/googleapis/api v0.0.0-20260831171406-18b4a7587f8a/go.mod h1:CvYJHpbzPlT0fb/PsgtAamdwru/GVxUsomFdXTpOTI8=
+-google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a h1:3Dnd1cDaZlB68lziofO+bJXpjOy8UfRv8Unt+yH8tQ4=
+-google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a/go.mod h1:DjtHYE8FKJLivXcBEjGwndXfIC23G0VpXiXKqG179uA=
+-google.golang.org/grpc v1.83.2 h1:EManeRomTObA0BU7I8vXgg/78uE5MJ9M8B39EX2WscU=
+-google.golang.org/grpc v1.83.2/go.mod h1:YPI1hK3kDked6iHvgX3tR0y+nX/qpMFKhPgFsokw1S8=
++google.golang.org/genproto/googleapis/api v0.0.0-20261005182115-fad411399dd8 h1:cFbkNigDInw+wVTXc+CyhUsoHGJCw0BR6mlNoRVfre0=
++google.golang.org/genproto/googleapis/api v0.0.0-20261005182115-fad411399dd8/go.mod h1:QK6p7IgD7IZEZJBhhSUCib5X2vMOzlrGCGUw2XyVDh0=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 h1:0SXBqli5dnuCKMjI/X3FM226zEaEa0GUcSCJtN1vL2o=
++google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8/go.mod h1:OaIUM3+LpYcK2GXM4FTmhWoIq371Owdr+Cc7/BsYHHc=
++google.golang.org/grpc v1.84.0 h1:soMyaPJ8pAak5PIQ0DGBUir0XRo2fRoMqhNWMLlLxO0=
++google.golang.org/grpc v1.84.0/go.mod h1:ljCht0DrxQrXBDRTZp52Qxh3Ffk8CdYm2sj4O2QN2C0=
+ google.golang.org/protobuf v1.36.12 h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=
+ google.golang.org/protobuf v1.36.12/go.mod h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco=
+ gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+diff --git a/pkg/clientconfiguration/conf.go b/pkg/clientconfiguration/conf.go
+index 7fb5ae8d..9614a060 100644
+--- a/pkg/clientconfiguration/conf.go
++++ b/pkg/clientconfiguration/conf.go
+@@ -49,9 +49,25 @@ var StaticConfigurations = []ConfigurationItem{
+ 		},
+ 		Merge: true,
+ 	},
++	// Firefox 155 enabled AV1 for WebRTC by default, but 155/156 decode only the base spatial
++	// layer of an AV1 SVC stream. SVC is not visible in SDP, so such a subscriber negotiating AV1
++	// would be forwarded the SVC stream in place of the publisher's backup codec and render
++	// higher layers black. Firefox 157 decodes the higher layers, so it keeps AV1.
++	// Firefox does not publish AV1 either (no SVC encoding), so disable it in both directions.
++	{
++		Match: must.Get(NewScriptMatch(`(c.browser == "firefox" || c.browser == "firefox mobile") && c.browser_version < "157"`)),
++		Configuration: &livekit.ClientConfiguration{
++			DisabledCodecs: &livekit.DisabledCodecs{
++				Codecs: []*livekit.Codec{
++					{Mime: mime.MimeTypeAV1.String()},
++				},
++			},
++		},
++		Merge: true,
++	},
+ 	{
+ 		Match: must.Get(NewScriptMatch(`(c.device_model == "xiaomi 2201117ti" && c.os == "android") ||
+-		  ((c.browser == "firefox" || c.browser == "firefox mobile") && (c.os == "linux" || c.os == "android"))`)),
++		  ((c.browser == "firefox" || c.browser == "firefox mobile") && c.os == "android")`)),
+ 		Configuration: &livekit.ClientConfiguration{
+ 			DisabledCodecs: &livekit.DisabledCodecs{
+ 				Publish: []*livekit.Codec{
+@@ -59,6 +75,7 @@ var StaticConfigurations = []ConfigurationItem{
+ 				},
+ 			},
+ 		},
+-		Merge: false,
++		// merged so Firefox for Android keeps the AV1 rule above
++		Merge: true,
+ 	},
+ }
+diff --git a/pkg/clientconfiguration/conf_test.go b/pkg/clientconfiguration/conf_test.go
+index 453d57cb..415abbbf 100644
+--- a/pkg/clientconfiguration/conf_test.go
++++ b/pkg/clientconfiguration/conf_test.go
+@@ -19,10 +19,67 @@ import (
+ 
+ 	"github.com/stretchr/testify/require"
+ 
++	"github.com/livekit/protocol/codecs/mime"
+ 	"github.com/livekit/protocol/livekit"
+ 	"github.com/livekit/protocol/utils/must"
+ )
+ 
++func TestStaticConfigurationH264(t *testing.T) {
++	cm := NewStaticClientConfigurationManager(StaticConfigurations)
++
++	h264Disabled := func(info *livekit.ClientInfo) bool {
++		conf := cm.GetConfiguration(info)
++		if conf == nil || conf.DisabledCodecs == nil {
++			return false
++		}
++		for _, c := range conf.DisabledCodecs.Publish {
++			if mime.IsMimeTypeStringH264(c.Mime) {
++				return true
++			}
++		}
++		return false
++	}
++
++	// desktop Linux Firefox publishes H.264 through OpenH264, so it must not be disabled
++	require.False(t, h264Disabled(&livekit.ClientInfo{Browser: "firefox", Os: "linux"}))
++	// Firefox for Android is still worked around
++	require.True(t, h264Disabled(&livekit.ClientInfo{Browser: "firefox mobile", Os: "android"}))
++}
++
++func TestStaticConfigurationAV1(t *testing.T) {
++	cm := NewStaticClientConfigurationManager(StaticConfigurations)
++
++	av1Disabled := func(info *livekit.ClientInfo) bool {
++		conf := cm.GetConfiguration(info)
++		if conf == nil || conf.DisabledCodecs == nil {
++			return false
++		}
++		for _, c := range conf.DisabledCodecs.Codecs {
++			if mime.IsMimeTypeStringEqual(c.Mime, mime.MimeTypeAV1.String()) {
++				return true
++			}
++		}
++		return false
++	}
++
++	// Firefox 155/156 decode only the base spatial layer of AV1 SVC
++	require.True(t, av1Disabled(&livekit.ClientInfo{Browser: "Firefox", BrowserVersion: "155.0", Os: "macOS"}))
++	require.True(t, av1Disabled(&livekit.ClientInfo{Browser: "firefox", BrowserVersion: "156.0.1", Os: "windows"}))
++	// an unknown version is treated as affected
++	require.True(t, av1Disabled(&livekit.ClientInfo{Browser: "firefox", Os: "linux"}))
++	// Firefox 157 decodes every layer, so it keeps AV1
++	require.False(t, av1Disabled(&livekit.ClientInfo{Browser: "firefox", BrowserVersion: "157.0", Os: "windows"}))
++	require.False(t, av1Disabled(&livekit.ClientInfo{Browser: "firefox", BrowserVersion: "158.0.2", Os: "windows"}))
++	require.False(t, av1Disabled(&livekit.ClientInfo{Browser: "chrome", Os: "linux"}))
++
++	// Firefox for Android keeps the AV1 rule alongside its H.264 publish rule
++	android := &livekit.ClientInfo{Browser: "firefox mobile", BrowserVersion: "156.0", Os: "android"}
++	require.True(t, av1Disabled(android))
++	conf := cm.GetConfiguration(android)
++	require.Len(t, conf.DisabledCodecs.Publish, 1)
++	require.True(t, mime.IsMimeTypeStringH264(conf.DisabledCodecs.Publish[0].Mime))
++}
++
+ func TestScriptMatchConfiguration(t *testing.T) {
+ 	t.Run("no merge", func(t *testing.T) {
+ 		confs := []ConfigurationItem{
+diff --git a/pkg/rtc/participant_internal_test.go b/pkg/rtc/participant_internal_test.go
+index 5827d3f9..f3271eea 100644
+--- a/pkg/rtc/participant_internal_test.go
++++ b/pkg/rtc/participant_internal_test.go
+@@ -305,6 +305,42 @@ func TestOutOfOrderUpdates(t *testing.T) {
+ 	require.Equal(t, "second update", sent.GetUpdate().Participants[0].Metadata)
+ }
+ 
++func TestRecentlyDisconnectedKeepsUpdateOrder(t *testing.T) {
++	p := newParticipantForTest("test")
++
++	// fill the update cache (128 entries), the last update is a disconnect
++	const cacheSize = 128
++	for i := range cacheSize {
++		state := livekit.ParticipantInfo_ACTIVE
++		if i == cacheSize-1 {
++			state = livekit.ParticipantInfo_DISCONNECTED
++		}
++		require.NoError(t, p.SendParticipantUpdate([]*livekit.ParticipantInfo{{
++			Sid:      fmt.Sprintf("PA_%d", i),
++			Identity: fmt.Sprintf("p%d", i),
++			Version:  1,
++			State:    state,
++		}}))
++	}
++
++	disconnected := p.GetRecentlyDisconnectedParticipants()
++	require.Len(t, disconnected, 1)
++	require.Equal(t, "PA_127", disconnected[0].Sid)
++
++	// an update for a new participant evicts the least recently updated entry,
++	// not the disconnect that was just reported
++	require.NoError(t, p.SendParticipantUpdate([]*livekit.ParticipantInfo{{
++		Sid:      "PA_new",
++		Identity: "new",
++		Version:  1,
++		State:    livekit.ParticipantInfo_ACTIVE,
++	}}))
++
++	disconnected = p.GetRecentlyDisconnectedParticipants()
++	require.Len(t, disconnected, 1)
++	require.Equal(t, "PA_127", disconnected[0].Sid)
++}
++
+ // after disconnection, things should continue to function and not panic
+ func TestDisconnectTiming(t *testing.T) {
+ 	t.Run("Negotiate doesn't panic after channel closed", func(t *testing.T) {
+diff --git a/pkg/rtc/participant_signal.go b/pkg/rtc/participant_signal.go
+index 9202ebb9..315fbfe9 100644
+--- a/pkg/rtc/participant_signal.go
++++ b/pkg/rtc/participant_signal.go
+@@ -268,7 +268,8 @@ func (p *ParticipantImpl) GetRecentlyDisconnectedParticipants() []*livekit.Parti
+ 	p.updateLock.Lock()
+ 	keys := p.updateCache.Keys()
+ 	for i := len(keys) - 1; i >= 0; i-- {
+-		if info, ok := p.updateCache.Get(keys[i]); ok {
++		// Peek, as Get would move each entry to the front and reverse the eviction order
++		if info, ok := p.updateCache.Peek(keys[i]); ok {
+ 			if info.updatedAt.Before(lastSignalAt) {
+ 				continue
+ 			}
+diff --git a/pkg/rtc/subscriptionmanager.go b/pkg/rtc/subscriptionmanager.go
+index b5edddca..52f52a1d 100644
+--- a/pkg/rtc/subscriptionmanager.go
++++ b/pkg/rtc/subscriptionmanager.go
+@@ -80,6 +80,10 @@ type SubscriptionManager struct {
+ 	closeCh              chan struct{}
+ 	doneCh               chan struct{}
+ 
++	// set when a queued reconcile is dropped, the worker then reconciles everything
++	reconcileOverflow          atomic.Bool
++	reconcileDataTrackOverflow atomic.Bool
++
+ 	onSubscribeStatusChanged func(publisherID livekit.ParticipantID, subscribed bool)
+ 
+ 	dataTrackSubscriptions map[livekit.TrackID]*dataTrackSubscription
+@@ -706,7 +710,8 @@ func (m *SubscriptionManager) queueReconcile(trackID livekit.TrackID) {
+ 	select {
+ 	case m.reconcileCh <- trackID:
+ 	default:
+-		// queue is full, will reconcile based on timer
++		// queue is full, the worker reconciles everything after its next queued item
++		m.reconcileOverflow.Store(true)
+ 	}
+ }
+ 
+@@ -714,7 +719,7 @@ func (m *SubscriptionManager) queueReconcileDataTrack(trackID livekit.TrackID) {
+ 	select {
+ 	case m.reconcileDataTrackCh <- trackID:
+ 	default:
+-		// queue is full, will reconcile based on timer
++		m.reconcileDataTrackOverflow.Store(true)
+ 	}
+ }
+ 
+@@ -742,6 +747,9 @@ func (m *SubscriptionManager) reconcileWorker() {
+ 			} else {
+ 				m.reconcileSubscriptions()
+ 			}
++			if m.reconcileOverflow.Swap(false) {
++				m.reconcileSubscriptions()
++			}
+ 
+ 		case trackID := <-m.reconcileDataTrackCh:
+ 			m.lock.Lock()
+@@ -752,6 +760,9 @@ func (m *SubscriptionManager) reconcileWorker() {
+ 			} else {
+ 				m.reconcileDataTrackSubscriptions()
+ 			}
++			if m.reconcileDataTrackOverflow.Swap(false) {
++				m.reconcileDataTrackSubscriptions()
++			}
+ 		}
+ 	}
+ }
+diff --git a/pkg/rtc/subscriptionmanager_test.go b/pkg/rtc/subscriptionmanager_test.go
+index b5305e32..e184b7fa 100644
+--- a/pkg/rtc/subscriptionmanager_test.go
++++ b/pkg/rtc/subscriptionmanager_test.go
+@@ -17,6 +17,7 @@
+ package rtc
+ 
+ import (
++	"fmt"
+ 	"sync"
+ 	"testing"
+ 	"time"
+@@ -488,6 +489,91 @@ func TestSettingsKeptForSubscribe(t *testing.T) {
+ 	})
+ }
+ 
++func TestSubscribeBurstOverflowsQueue(t *testing.T) {
++	// a dropped reconcile must not wait for the ticker
++	saved := reconcileInterval
++	reconcileInterval = time.Hour
++	defer func() { reconcileInterval = saved }()
++
++	t.Run("media", func(t *testing.T) {
++		sm := newTestSubscriptionManager()
++		defer sm.Close(false)
++
++		// the first subscribe holds the worker until all are queued, so the queue overflows
++		release := make(chan struct{})
++		var holdOnce sync.Once
++		sm.params.TrackResolver = func(_ types.LocalParticipant, trackID livekit.TrackID) types.MediaResolverResult {
++			mt := &typesfakes.FakeMediaTrack{}
++			mt.IDReturns(trackID)
++			mt.AddSubscriberCalls(func(types.LocalParticipant) (types.SubscribedTrack, error) {
++				holdOnce.Do(func() { <-release })
++				st := &typesfakes.FakeSubscribedTrack{}
++				st.IDReturns(trackID)
++				st.MediaTrackReturns(mt)
++				return st, nil
++			})
++			return types.MediaResolverResult{
++				Track:                mt,
++				HasPermission:        true,
++				PublisherID:          "pubID",
++				PublisherIdentity:    "pub",
++				TrackChangedNotifier: utils.NewChangeNotifier(),
++				TrackRemovedNotifier: utils.NewChangeNotifier(),
++			}
++		}
++
++		numTracks := cap(sm.reconcileCh) + 10
++		for i := range numTracks {
++			sm.SubscribeToTrack(livekit.TrackID(fmt.Sprintf("TR_%d", i)), false)
++		}
++		close(release)
++
++		require.Eventually(t, func() bool {
++			sm.lock.RLock()
++			defer sm.lock.RUnlock()
++			for _, s := range sm.subscriptions {
++				if s.needsSubscribe() {
++					return false
++				}
++			}
++			return len(sm.subscriptions) == numTracks
++		}, subSettleTimeout, subCheckInterval, "every track should be subscribed")
++	})
++
++	t.Run("data", func(t *testing.T) {
++		sm := newTestSubscriptionManager()
++		defer sm.Close(false)
++		resolver := newTestDataTrackResolver(true, true, "pub", "pubID")
++		sm.params.DataTrackResolver = resolver.Resolve
++
++		release := make(chan struct{})
++		var holdOnce sync.Once
++		resolver.dataTrack.AddSubscriberCalls(func(types.LocalParticipant) (types.DataDownTrack, error) {
++			holdOnce.Do(func() { <-release })
++			ddt := &typesfakes.FakeDataDownTrack{}
++			ddt.PublishDataTrackReturns(resolver.dataTrack)
++			return ddt, nil
++		})
++
++		numTracks := cap(sm.reconcileDataTrackCh) + 10
++		for i := range numTracks {
++			sm.SubscribeToDataTrack(livekit.TrackID(fmt.Sprintf("DTR_%d", i)))
++		}
++		close(release)
++
++		require.Eventually(t, func() bool {
++			sm.lock.RLock()
++			defer sm.lock.RUnlock()
++			for _, s := range sm.dataTrackSubscriptions {
++				if s.needsSubscribe() {
++					return false
++				}
++			}
++			return len(sm.dataTrackSubscriptions) == numTracks
++		}, subSettleTimeout, subCheckInterval, "every data track should be subscribed")
++	})
++}
++
+ func TestSubscriptionLimits(t *testing.T) {
+ 	sm := newTestSubscriptionManagerWithParams(testSubscriptionParams{
+ 		SubscriptionLimitAudio: 1,
+diff --git a/pkg/service/rtcservice.go b/pkg/service/rtcservice.go
+index b111e410..bff1151d 100644
+--- a/pkg/service/rtcservice.go
++++ b/pkg/service/rtcservice.go
+@@ -280,8 +280,10 @@ func (s *RTCService) validateInternal(
+ 		pi.AdaptiveStream = joinRequest.GetConnectionSettings().GetAdaptiveStream()
+ 		pi.DisableICELite = joinRequest.GetConnectionSettings().GetDisableIceLite()
+ 
+-		subscriberAllowPause := joinRequest.GetConnectionSettings().GetSubscriberAllowPause()
+-		pi.SubscriberAllowPause = &subscriberAllowPause
++		if cs := joinRequest.GetConnectionSettings(); cs != nil && cs.SubscriberAllowPause != nil {
++			v := cs.GetSubscriberAllowPause()
++			pi.SubscriberAllowPause = &v
++		}
+ 
+ 		pi.AddTrackRequests = joinRequest.AddTrackRequests
+ 		pi.PublisherOffer = joinRequest.PublisherOffer
+diff --git a/pkg/service/wire_gen.go b/pkg/service/wire_gen.go
+index 2831d1a6..ca10d3e3 100644
+--- a/pkg/service/wire_gen.go
++++ b/pkg/service/wire_gen.go
+@@ -8,13 +8,6 @@ package service
+ 
+ import (
+ 	"fmt"
+-	"os"
+-
+-	"github.com/pion/turn/v5"
+-	"github.com/pkg/errors"
+-	"github.com/redis/go-redis/v9"
+-	"gopkg.in/yaml.v3"
+-
+ 	"github.com/livekit/livekit-server/pkg/agent"
+ 	"github.com/livekit/livekit-server/pkg/agent/endpoint"
+ 	"github.com/livekit/livekit-server/pkg/config"
+@@ -31,6 +24,11 @@ import (
+ 	"github.com/livekit/psrpc"
+ 	"github.com/livekit/psrpc/pkg/bus/redisbus"
+ 	"github.com/livekit/psrpc/pkg/middleware/otelpsrpc"
++	"github.com/pion/turn/v5"
++	"github.com/pkg/errors"
++	"github.com/redis/go-redis/v9"
++	"gopkg.in/yaml.v3"
++	"os"
+ )
+ 
+ // Injectors from wire.go:
+diff --git a/pkg/sfu/buffer/buffer.go b/pkg/sfu/buffer/buffer.go
+index 5468b3b9..551a60b5 100644
+--- a/pkg/sfu/buffer/buffer.go
++++ b/pkg/sfu/buffer/buffer.go
+@@ -157,7 +157,8 @@ func (b *Buffer) Bind(params webrtc.RTPParameters, codec webrtc.RTPCodecCapabili
+ 
+ // Write adds an RTP Packet, ordering is not guaranteed, newer packets may arrive later
+ func (b *Buffer) Write(pkt []byte) (n int, err error) {
+-	var rtpPacket rtp.Packet
++	rtpPacket := rtpPacketFactory.Get().(*rtp.Packet)
++	defer rtpPacketFactory.Put(rtpPacket)
+ 	err = rtpPacket.Unmarshal(pkt)
+ 	if err != nil {
+ 		return
+@@ -185,7 +186,7 @@ func (b *Buffer) Write(pkt []byte) (n int, err error) {
+ 	}
+ 
+ 	if b.streamInfoProbe != nil {
+-		b.probeStreamInfoLocked(&rtpPacket)
++		b.probeStreamInfoLocked(rtpPacket)
+ 	}
+ 
+ 	// handle RTX packet
+@@ -197,7 +198,7 @@ func (b *Buffer) Write(pkt []byte) (n int, err error) {
+ 			return
+ 		}
+ 
+-		pb.writeRTX(&rtpPacket, now)
++		pb.writeRTX(rtpPacket, now)
+ 		return
+ 	}
+ 
+@@ -235,7 +236,7 @@ func (b *Buffer) Write(pkt []byte) (n int, err error) {
+ 		return
+ 	}
+ 
+-	rtcpPackets := b.calc(pkt, &rtpPacket, now, false, false)
++	rtcpPackets := b.calc(pkt, rtpPacket, now, false, false)
+ 	b.Unlock()
+ 
+ 	if len(rtcpPackets) != 0 {
+diff --git a/pkg/sfu/buffer/buffer_base.go b/pkg/sfu/buffer/buffer_base.go
+index bf373a8e..ec7ff6ac 100644
+--- a/pkg/sfu/buffer/buffer_base.go
++++ b/pkg/sfu/buffer/buffer_base.go
+@@ -18,6 +18,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"io"
++	"slices"
+ 	"strings"
+ 	"sync"
+ 	"time"
+@@ -50,6 +51,13 @@ var (
+ 			return &ExtPacket{}
+ 		},
+ 	}
++
++	// unmarshal scratch, a reused packet keeps its Extensions capacity
++	rtpPacketFactory = &sync.Pool{
++		New: func() any {
++			return &rtp.Packet{}
++		},
++	}
+ )
+ 
+ func ReleaseExtPacket(extPkt *ExtPacket) {
+@@ -71,13 +79,23 @@ type ExtPacket struct {
+ 	ExtSequenceNumber    uint64
+ 	ExtTimestamp         uint64
+ 	Packet               *rtp.Packet
+-	Payload              any
++	VP8                  *codec.VP8        // nil when not parsed
++	VP9                  *codecs.VP9Packet // nil when not parsed
+ 	IsKeyFrame           bool
+ 	RawPacket            []byte
+ 	DependencyDescriptor *ExtDependencyDescriptor
+ 	AbsCaptureTimeExt    *act.AbsCaptureTime
+ 	IsOutOfOrder         bool
+ 	IsBuffered           bool
++
++	// backing storage for Packet when the buffer creates the ext packet,
++	// extension and CSRC slices point into the write input until ReadExtended re-points them into RawPacket
++	pkt        rtp.Packet
++	extensions [8]rtp.Extension
++
++	// backing storage for VP8 and VP9, so parsing does not allocate
++	vp8 codec.VP8
++	vp9 codecs.VP9Packet
+ }
+ 
+ type BufferProvider interface {
+@@ -733,7 +751,8 @@ func (b *BufferBase) HandleIncomingPacketLocked(
+ 	oobSequenceNumber uint16,
+ ) (uint64, error) {
+ 	if rtpPacket == nil {
+-		rtpPacket = &rtp.Packet{}
++		rtpPacket = rtpPacketFactory.Get().(*rtp.Packet)
++		defer rtpPacketFactory.Put(rtpPacket)
+ 		if err := rtpPacket.Unmarshal(rawPkt); err != nil {
+ 			b.logger.Errorw("could not unmarshal RTP packet", err)
+ 			return 0, err
+@@ -877,10 +896,12 @@ func (b *BufferBase) HandleIncomingPacketLocked(
+ 			if errors.Is(err, bucket.ErrPacketTooOld) {
+ 				packetTooOldCount := b.packetTooOldCount.Inc()
+ 				if (packetTooOldCount-1)%100 == 0 {
++					// log a copy so flowState stays on the stack
++					fs := flowState
+ 					b.logger.Warnw(
+ 						"could not add packet to bucket", err,
+ 						"count", packetTooOldCount,
+-						"flowState", &flowState,
++						"flowState", &fs,
+ 						"snAdjustment", snAdjustment,
+ 						"incomingSequenceNumber", flowState.ExtSequenceNumber+snAdjustment,
+ 						"rtpStats", b.rtpStats,
+@@ -890,9 +911,10 @@ func (b *BufferBase) HandleIncomingPacketLocked(
+ 					)
+ 				}
+ 			} else if err != bucket.ErrRTXPacket {
++				fs := flowState
+ 				b.logger.Warnw(
+ 					"could not add packet to bucket", err,
+-					"flowState", &flowState,
++					"flowState", &fs,
+ 					"snAdjustment", snAdjustment,
+ 					"incomingSequenceNumber", flowState.ExtSequenceNumber+snAdjustment,
+ 					"rtpStats", b.rtpStats,
+@@ -1025,7 +1047,7 @@ func (b *BufferBase) getExtPacket(
+ 		Arrival:           arrivalTime,
+ 		ExtSequenceNumber: flowState.ExtSequenceNumber,
+ 		ExtTimestamp:      flowState.ExtTimestamp,
+-		Packet:            rtpPacket,
++		pkt:               *rtpPacket,
+ 		VideoLayer: VideoLayer{
+ 			Spatial:  InvalidLayerSpatial,
+ 			Temporal: InvalidLayerTemporal,
+@@ -1033,6 +1055,10 @@ func (b *BufferBase) getExtPacket(
+ 		IsOutOfOrder: flowState.IsOutOfOrder,
+ 		IsBuffered:   isBuffered,
+ 	}
++	// rtpPacket may be reused scratch, copy what it backs
++	ep.pkt.Extensions = append(ep.extensions[:0], rtpPacket.Extensions...)
++	ep.pkt.CSRC = slices.Clone(rtpPacket.CSRC)
++	ep.Packet = &ep.pkt
+ 
+ 	if len(ep.Packet.Payload) == 0 {
+ 		// padding only packet, nothing else to do
+@@ -1045,11 +1071,11 @@ func (b *BufferBase) getExtPacket(
+ 	}
+ 
+ 	if b.absCaptureTimeExtID != 0 {
+-		extData := rtpPacket.GetExtension(b.absCaptureTimeExtID)
+-
+-		var actExt act.AbsCaptureTime
+-		if err := actExt.Unmarshal(extData); err == nil {
+-			ep.AbsCaptureTimeExt = &actExt
++		if extData := rtpPacket.GetExtension(b.absCaptureTimeExtID); len(extData) != 0 {
++			actExt := &act.AbsCaptureTime{}
++			if err := actExt.Unmarshal(extData); err == nil {
++				ep.AbsCaptureTimeExt = actExt
++			}
+ 		}
+ 	}
+ 
+@@ -1085,7 +1111,7 @@ func (b *BufferBase) processVideoPacket(ep *ExtPacket) error {
+ 
+ 	switch b.mime {
+ 	case mime.MimeTypeVP8:
+-		vp8Packet := codec.VP8{}
++		vp8Packet := &ep.vp8
+ 		if err := vp8Packet.Unmarshal(ep.Packet.Payload); err != nil {
+ 			b.logger.Warnw("could not unmarshal VP8 packet", err)
+ 			return err
+@@ -1095,7 +1121,7 @@ func (b *BufferBase) processVideoPacket(ep *ExtPacket) error {
+ 			ep.Temporal = int32(vp8Packet.TID)
+ 
+ 			if ep.IsKeyFrame {
+-				if sz := codec.ExtractVP8VideoSize(&vp8Packet, ep.Packet.Payload); sz.Width > 0 && sz.Height > 0 {
++				if sz := codec.ExtractVP8VideoSize(vp8Packet, ep.Packet.Payload); sz.Width > 0 && sz.Height > 0 {
+ 					videoSize = append(videoSize, sz)
+ 				}
+ 			}
+@@ -1103,12 +1129,12 @@ func (b *BufferBase) processVideoPacket(ep *ExtPacket) error {
+ 			// vp8 with DependencyDescriptor enabled, use the TID from the descriptor
+ 			vp8Packet.TID = uint8(ep.Temporal)
+ 		}
+-		ep.Payload = vp8Packet
++		ep.VP8 = vp8Packet
+ 		ep.Spatial = InvalidLayerSpatial // vp8 don't have spatial scalability, reset to invalid
+ 
+ 	case mime.MimeTypeVP9:
+ 		if ep.DependencyDescriptor == nil {
+-			var vp9Packet codecs.VP9Packet
++			vp9Packet := &ep.vp9
+ 			_, err := vp9Packet.Unmarshal(ep.Packet.Payload)
+ 			if err != nil {
+ 				b.logger.Warnw("could not unmarshal VP9 packet", err)
+@@ -1118,8 +1144,8 @@ func (b *BufferBase) processVideoPacket(ep *ExtPacket) error {
+ 				Spatial:  int32(vp9Packet.SID),
+ 				Temporal: int32(vp9Packet.TID),
+ 			}
+-			ep.Payload = vp9Packet
+-			ep.IsKeyFrame = codec.IsVP9KeyFrame(&vp9Packet, ep.Packet.Payload)
++			ep.VP9 = vp9Packet
++			ep.IsKeyFrame = codec.IsVP9KeyFrame(vp9Packet, ep.Packet.Payload)
+ 
+ 			if ep.IsKeyFrame {
+ 				for i := 0; i < len(vp9Packet.Width); i++ {
+@@ -1201,16 +1227,19 @@ func (b *BufferBase) patchExtPacket(ep *ExtPacket, buf []byte) *ExtPacket {
+ 	}
+ 	ep.RawPacket = buf[:n]
+ 
+-	// patch RTP packet to point payload to new buffer
+-	pkt := *ep.Packet
+-	payloadStart := ep.Packet.Header.MarshalSize()
++	// parse the header again from the new buffer so extension and CSRC slices point into it,
++	// then point the payload there too, ep owns its rtp.Packet
++	payloadStart, err := ep.Packet.Header.Unmarshal(buf[:n])
++	if err != nil {
++		b.logger.Warnw("could not unmarshal header", err, "sn", ep.Packet.SequenceNumber)
++		return nil
++	}
+ 	payloadEnd := payloadStart + len(ep.Packet.Payload)
+ 	if payloadEnd > n {
+ 		b.logger.Warnw("unexpected marshal size", nil, "max", n, "need", payloadEnd)
+ 		return nil
+ 	}
+-	pkt.Payload = buf[payloadStart:payloadEnd]
+-	ep.Packet = &pkt
++	ep.Packet.Payload = buf[payloadStart:payloadEnd]
+ 
+ 	return ep
+ }
+diff --git a/pkg/sfu/buffer/buffer_test.go b/pkg/sfu/buffer/buffer_test.go
+index f0f30769..39267dad 100644
+--- a/pkg/sfu/buffer/buffer_test.go
++++ b/pkg/sfu/buffer/buffer_test.go
+@@ -15,6 +15,7 @@
+ package buffer
+ 
+ import (
++	"encoding/binary"
+ 	"fmt"
+ 	"math"
+ 	"sync"
+@@ -23,10 +24,14 @@ import (
+ 
+ 	"github.com/pion/rtcp"
+ 	"github.com/pion/rtp"
++	"github.com/pion/sdp/v3"
+ 	"github.com/pion/webrtc/v4"
+ 	"github.com/stretchr/testify/require"
+ 
+ 	"github.com/livekit/mediatransportutil/pkg/nack"
++
++	act "github.com/livekit/livekit-server/pkg/sfu/rtpextension/abscapturetime"
++	"github.com/livekit/livekit-server/pkg/sfu/utils"
+ )
+ 
+ var h265Codec = webrtc.RTPCodecParameters{
+@@ -460,6 +465,138 @@ func TestCodecChange(t *testing.T) {
+ 	}
+ }
+ 
++// Write unmarshals into reused scratch and callers reuse the input buffer, so each ExtPacket
++// must keep its own header and extensions, and Write plus ReadExtended must not allocate per packet
++func TestIngestNoAlloc(t *testing.T) {
++	testCases := []struct {
++		name      string
++		codec     webrtc.RTPCodecParameters
++		payload   []byte
++		maxAllocs float64
++	}{
++		{"opus", opusCodec, make([]byte, 100), 0},
++		// VP8 boxes the parsed descriptor into ExtPacket.Payload
++		{"vp8", vp8Codec, []byte{0x90, 0xe0, 0x80, 0x01, 0x05, 0x00, 0x01}, 1},
++	}
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			buff := NewBuffer(123, 100, 100)
++			require.NoError(t, buff.Bind(webrtc.RTPParameters{
++				HeaderExtensions: []webrtc.RTPHeaderExtensionParameter{
++					{URI: sdp.AudioLevelURI, ID: 1},
++					{URI: act.AbsCaptureTimeURI, ID: 2},
++				},
++				Codecs: []webrtc.RTPCodecParameters{tc.codec},
++			}, tc.codec.RTPCodecCapability, 0))
++			defer buff.Close()
++
++			marshal := func(sn uint16, level byte) []byte {
++				p := rtp.Packet{
++					Header: rtp.Header{
++						Version:        2,
++						PayloadType:    uint8(tc.codec.PayloadType),
++						SequenceNumber: sn,
++						Timestamp:      uint32(sn) * 960,
++						SSRC:           123,
++					},
++					Payload: tc.payload,
++				}
++				require.NoError(t, p.SetExtension(1, []byte{level}))
++				require.NoError(t, p.SetExtension(3, []byte{0, 0}))
++				raw, err := p.Marshal()
++				require.NoError(t, err)
++				return raw
++			}
++
++			// one input buffer for all writes, like the transport read loop
++			input := make([]byte, 1500)
++			write := func(sn uint16, level byte) {
++				n := copy(input, marshal(sn, level))
++				_, err := buff.Write(input[:n])
++				require.NoError(t, err)
++			}
++
++			readBuf := make([]byte, 1500)
++			write(1, 10)
++			write(2, 20)
++			for _, want := range []struct {
++				sn    uint16
++				level byte
++			}{{1, 10}, {2, 20}} {
++				ep, err := buff.ReadExtended(readBuf)
++				require.NoError(t, err)
++				require.Equal(t, want.sn, ep.Packet.SequenceNumber)
++				require.Equal(t, []byte{want.level}, ep.Packet.GetExtension(1))
++				require.Equal(t, tc.payload, ep.Packet.Payload)
++				require.Nil(t, ep.AbsCaptureTimeExt)
++				ReleaseExtPacket(ep)
++			}
++
++			raw := marshal(3, 30)
++			sn := uint16(3)
++			ingest := func() {
++				binary.BigEndian.PutUint16(raw[2:], sn)
++				binary.BigEndian.PutUint32(raw[4:], uint32(sn)*960)
++				sn++
++				_, err := buff.Write(raw)
++				require.NoError(t, err)
++				ep, err := buff.ReadExtended(readBuf)
++				require.NoError(t, err)
++				ReleaseExtPacket(ep)
++			}
++			allocs := testing.AllocsPerRun(1000, ingest)
++			if !utils.RaceEnabled {
++				require.LessOrEqual(t, allocs, tc.maxAllocs, "allocations per Write plus ReadExtended")
++			}
++		})
++	}
++}
++
++// a dropped padding only packet shifts later sequence numbers, ReadExtended must keep the shifted number
++// in the header and in RawPacket
++func TestIngestDroppedPaddingKeepsAdjustedSequenceNumber(t *testing.T) {
++	buff := NewBuffer(123, 100, 100)
++	require.NoError(t, buff.Bind(webrtc.RTPParameters{
++		Codecs: []webrtc.RTPCodecParameters{opusCodec},
++	}, opusCodec.RTPCodecCapability, 0))
++	defer buff.Close()
++
++	write := func(sn uint16, paddingOnly bool) {
++		p := rtp.Packet{
++			Header: rtp.Header{
++				Version:        2,
++				PayloadType:    uint8(opusCodec.PayloadType),
++				SequenceNumber: sn,
++				Timestamp:      uint32(sn) * 960,
++				SSRC:           123,
++			},
++		}
++		if paddingOnly {
++			p.Header.Padding = true
++			p.Header.PaddingSize = 20
++		} else {
++			p.Payload = make([]byte, 100)
++		}
++		raw, err := p.Marshal()
++		require.NoError(t, err)
++		_, err = buff.Write(raw)
++		require.NoError(t, err)
++	}
++
++	write(40, false)
++	write(41, true)
++	write(42, false)
++
++	readBuf := make([]byte, 1500)
++	for _, wantSN := range []uint16{40, 41} {
++		ep, err := buff.ReadExtended(readBuf)
++		require.NoError(t, err)
++		require.Equal(t, wantSN, ep.Packet.SequenceNumber)
++		require.Equal(t, wantSN, binary.BigEndian.Uint16(ep.RawPacket[2:]))
++		ReleaseExtPacket(ep)
++	}
++}
++
+ func BenchmarkMemcpu(b *testing.B) {
+ 	buf := make([]byte, 1500*1500*10)
+ 	buf2 := make([]byte, 1500*1500*20)
+diff --git a/pkg/sfu/buffer/dependencydescriptorparser.go b/pkg/sfu/buffer/dependencydescriptorparser.go
+index 09a0d3b5..332c38a2 100644
+--- a/pkg/sfu/buffer/dependencydescriptorparser.go
++++ b/pkg/sfu/buffer/dependencydescriptorparser.go
+@@ -69,6 +69,7 @@ type DependencyDescriptorParser struct {
+ 	// repeating the same structure (e. g. screen content), valid late/retransmitted
+ 	// frames would be dropped as "earlier than current structure".
+ 	structureChangeExtFrameNum uint64
++	hasActiveDecodeTargets     bool // the first mask is taken whatever its sequence number
+ 	activeDecodeTargetsExtSeq  uint64
+ 	activeDecodeTargetsMask    uint32
+ 	frameChecker               *FrameIntegrityChecker
+@@ -99,14 +100,26 @@ type ExtDependencyDescriptor struct {
+ 	DecodeTargets              []DependencyDescriptorDecodeTarget
+ 	StructureUpdated           bool
+ 	ActiveDecodeTargetsUpdated bool
+-	Integrity                  bool
+-	ExtFrameNum                uint64
++	// the stream's current active decode targets, on every packet, also when the mask
++	// changed on a packet the subscriber does not get
++	ActiveDecodeTargetsMask uint32
++	Integrity               bool
++	ExtFrameNum             uint64
+ 	// the frame number of the keyframe which the current frame depends on
+ 	ExtKeyFrameNum uint64
+ 
+ 	// increase when the stream restarts, clear and reinitialize all dd state includes
+ 	// attached structure, frame chain, decode target.
+ 	RestartGeneration int
++
++	// storage for Descriptor, zeroed with the rest of the struct on release,
++	// a frame with more than 8 frame diffs spills to the heap
++	descriptor        dd.DependencyDescriptor
++	frameDependencies dd.FrameDependencyTemplate
++	resolution        dd.RenderResolution
++	dtis              [dd.MaxDecodeTargets]dd.DecodeTargetIndication
++	chainDiffs        [dd.MaxDecodeTargets]int
++	frameDiffs        [8]int
+ }
+ 
+ func (r *DependencyDescriptorParser) Parse(pkt *rtp.Packet) (*ExtDependencyDescriptor, VideoLayer, error) {
+@@ -120,9 +133,19 @@ func (r *DependencyDescriptorParser) Parse(pkt *rtp.Packet) (*ExtDependencyDescr
+ 		return nil, videoLayer, ErrDDExtentionNotFound
+ 	}
+ 
+-	var ddVal dd.DependencyDescriptor
++	extDD := ExtDependencyDescriptorFactory.Get().(*ExtDependencyDescriptor)
++	extDD.frameDependencies = dd.FrameDependencyTemplate{
++		DecodeTargetIndications: extDD.dtis[:0],
++		FrameDiffs:              extDD.frameDiffs[:0],
++		ChainDiffs:              extDD.chainDiffs[:0],
++	}
++	ddVal := &extDD.descriptor
++	*ddVal = dd.DependencyDescriptor{
++		FrameDependencies: &extDD.frameDependencies,
++		Resolution:        &extDD.resolution,
++	}
+ 	ext := &dd.DependencyDescriptorExtension{
+-		Descriptor: &ddVal,
++		Descriptor: ddVal,
+ 		Structure:  r.structure,
+ 	}
+ 	_, err := ext.Unmarshal(ddBuf)
+@@ -130,6 +153,7 @@ func (r *DependencyDescriptorParser) Parse(pkt *rtp.Packet) (*ExtDependencyDescr
+ 		if err != dd.ErrDDReaderNoStructure && err != dd.ErrDDReaderInvalidTemplateIndex {
+ 			r.logger.Infow("failed to parse generic dependency descriptor", err, "payload", pkt.PayloadType, "ddbufLen", len(ddBuf))
+ 		}
++		ReleaseExtDependencyDescriptor(extDD)
+ 		return nil, videoLayer, err
+ 	}
+ 
+@@ -168,18 +192,16 @@ func (r *DependencyDescriptorParser) Parse(pkt *rtp.Packet) (*ExtDependencyDescr
+ 			"unwrappedFN", unwrapped,
+ 			"frameWrapAround", r.frameWrapAround,
+ 		)
++		ReleaseExtDependencyDescriptor(extDD)
+ 		return nil, videoLayer, ErrFrameEarlierThanKeyFrame
+ 	}
+ 
+-	r.frameChecker.AddPacket(extSeq, extFN, &ddVal)
++	r.frameChecker.AddPacket(extSeq, extFN, ddVal)
+ 
+-	extDD := ExtDependencyDescriptorFactory.Get().(*ExtDependencyDescriptor)
+-	*extDD = ExtDependencyDescriptor{
+-		Descriptor:        &ddVal,
+-		ExtFrameNum:       extFN,
+-		Integrity:         r.frameChecker.FrameIntegrity(extFN),
+-		RestartGeneration: r.restartGeneration,
+-	}
++	extDD.Descriptor = ddVal
++	extDD.ExtFrameNum = extFN
++	extDD.Integrity = r.frameChecker.FrameIntegrity(extFN)
++	extDD.RestartGeneration = r.restartGeneration
+ 
+ 	if ddVal.AttachedStructure != nil {
+ 		if !ddVal.FirstPacketInFrame {
+@@ -244,7 +266,8 @@ func (r *DependencyDescriptorParser) Parse(pkt *rtp.Packet) (*ExtDependencyDescr
+ 		// so don't need to notify max layer change here.
+ 	}
+ 
+-	if mask := ddVal.ActiveDecodeTargetsBitmask; mask != nil && extSeq > r.activeDecodeTargetsExtSeq {
++	if mask := ddVal.ActiveDecodeTargetsBitmask; mask != nil && (!r.hasActiveDecodeTargets || extSeq > r.activeDecodeTargetsExtSeq) {
++		r.hasActiveDecodeTargets = true
+ 		r.activeDecodeTargetsExtSeq = extSeq
+ 		if *mask != r.activeDecodeTargetsMask {
+ 			r.activeDecodeTargetsMask = *mask
+@@ -267,6 +290,7 @@ func (r *DependencyDescriptorParser) Parse(pkt *rtp.Packet) (*ExtDependencyDescr
+ 
+ 	extDD.DecodeTargets = r.decodeTargets
+ 	extDD.ExtKeyFrameNum = r.structureExtFrameNum
++	extDD.ActiveDecodeTargetsMask = r.activeDecodeTargetsMask
+ 
+ 	return extDD, videoLayer, nil
+ }
+@@ -276,6 +300,7 @@ func (r *DependencyDescriptorParser) restart() {
+ 	r.structure = nil
+ 	r.structureExtFrameNum = 0
+ 	r.structureChangeExtFrameNum = 0
++	r.hasActiveDecodeTargets = false
+ 	r.activeDecodeTargetsExtSeq = 0
+ 	r.activeDecodeTargetsMask = 0
+ 	r.decodeTargets = r.decodeTargets[:0]
+diff --git a/pkg/sfu/buffer/dependencydescriptorparser_test.go b/pkg/sfu/buffer/dependencydescriptorparser_test.go
+index 652b0b63..370c5302 100644
+--- a/pkg/sfu/buffer/dependencydescriptorparser_test.go
++++ b/pkg/sfu/buffer/dependencydescriptorparser_test.go
+@@ -75,19 +75,34 @@ func (f *ddTestFeeder) deltaFrame(frameNumber uint16) (*ExtDependencyDescriptor,
+ 	return f.feed(frameNumber, f.structure.Templates[1], nil)
+ }
+ 
++// deltaFrameWithMask sends a delta frame that changes the active decode targets
++func (f *ddTestFeeder) deltaFrameWithMask(frameNumber uint16, activeDecodeTargets uint32) (*ExtDependencyDescriptor, error) {
++	return f.feedWithMask(frameNumber, f.structure.Templates[1], nil, &activeDecodeTargets)
++}
++
+ func (f *ddTestFeeder) feed(
+ 	frameNumber uint16,
+ 	template *dd.FrameDependencyTemplate,
+ 	attachedStructure *dd.FrameDependencyStructure,
++) (*ExtDependencyDescriptor, error) {
++	return f.feedWithMask(frameNumber, template, attachedStructure, nil)
++}
++
++func (f *ddTestFeeder) feedWithMask(
++	frameNumber uint16,
++	template *dd.FrameDependencyTemplate,
++	attachedStructure *dd.FrameDependencyStructure,
++	activeDecodeTargets *uint32,
+ ) (*ExtDependencyDescriptor, error) {
+ 	f.t.Helper()
+ 
+ 	ddVal := &dd.DependencyDescriptor{
+-		FirstPacketInFrame: true,
+-		LastPacketInFrame:  true,
+-		FrameNumber:        frameNumber,
+-		FrameDependencies:  template,
+-		AttachedStructure:  attachedStructure,
++		FirstPacketInFrame:         true,
++		LastPacketInFrame:          true,
++		FrameNumber:                frameNumber,
++		FrameDependencies:          template,
++		AttachedStructure:          attachedStructure,
++		ActiveDecodeTargetsBitmask: activeDecodeTargets,
+ 	}
+ 	buf, err := (&dd.DependencyDescriptorExtension{Descriptor: ddVal, Structure: f.structure}).Marshal()
+ 	require.NoError(f.t, err)
+@@ -186,3 +201,90 @@ func TestDependencyDescriptorParserExtKeyFrameNum(t *testing.T) {
+ 	require.NoError(t, err)
+ 	require.EqualValues(t, 4, extDD.ExtKeyFrameNum)
+ }
++
++// every packet carries the stream's current active decode targets, also after the mask
++// changed on a packet the forwarder dropped
++func TestDependencyDescriptorParserActiveDecodeTargetsMask(t *testing.T) {
++	f := newDDTestFeeder(t)
++	structure := newL1T1Structure(0)
++
++	extDD, err := f.keyFrame(0, structure)
++	require.NoError(t, err)
++	require.EqualValues(t, 1, extDD.ActiveDecodeTargetsMask)
++
++	extDD, err = f.deltaFrameWithMask(1, 0)
++	require.NoError(t, err)
++	require.EqualValues(t, 0, extDD.ActiveDecodeTargetsMask)
++
++	extDD, err = f.deltaFrame(2)
++	require.NoError(t, err)
++	require.EqualValues(t, 0, extDD.ActiveDecodeTargetsMask)
++
++	extDD, err = f.keyFrame(3, structure)
++	require.NoError(t, err)
++	require.EqualValues(t, 1, extDD.ActiveDecodeTargetsMask)
++}
++
++// a first key frame at RTP sequence number 0 still makes its structure's decode targets
++// active
++func TestDependencyDescriptorParserActiveDecodeTargetsMaskAtSequenceZero(t *testing.T) {
++	f := newDDTestFeeder(t)
++	f.seq = 0xffff // the first packet goes out with sequence number 0
++	structure := newL1T1Structure(0)
++
++	extDD, err := f.keyFrame(0, structure)
++	require.NoError(t, err)
++	require.EqualValues(t, 1, extDD.ActiveDecodeTargetsMask)
++
++	extDD, err = f.deltaFrame(1)
++	require.NoError(t, err)
++	require.EqualValues(t, 1, extDD.ActiveDecodeTargetsMask)
++}
++
++// a pooled ExtDependencyDescriptor carries the storage for its descriptor, so parsing a delta
++// frame must not allocate and a reused descriptor must not show the previous packet's values
++func TestDependencyDescriptorParserNoAlloc(t *testing.T) {
++	f := newDDTestFeeder(t)
++	structure := newL1T1Structure(0)
++	structure.Resolutions = []dd.RenderResolution{{Width: 640, Height: 360}}
++	extDD, err := f.keyFrame(0, structure)
++	require.NoError(t, err)
++	require.Equal(t, 0, len(extDD.Descriptor.FrameDependencies.FrameDiffs))
++	require.Equal(t, dd.RenderResolution{Width: 640, Height: 360}, *extDD.Descriptor.Resolution)
++	ReleaseExtDependencyDescriptor(extDD)
++
++	extDD, err = f.deltaFrame(1)
++	require.NoError(t, err)
++	require.Equal(t, []int{1}, extDD.Descriptor.FrameDependencies.FrameDiffs)
++	require.Equal(t, []int{1}, extDD.Descriptor.FrameDependencies.ChainDiffs)
++	require.Nil(t, extDD.Descriptor.AttachedStructure)
++	ReleaseExtDependencyDescriptor(extDD)
++
++	// the parsed template is a copy, the structure's template is untouched
++	require.Equal(t, []int{1}, structure.Templates[1].FrameDiffs)
++
++	// marshal the packets first, only Parse runs under the allocation count
++	bufs := make([][]byte, 128)
++	for i := range bufs {
++		ddVal := &dd.DependencyDescriptor{
++			FirstPacketInFrame: true,
++			LastPacketInFrame:  true,
++			FrameNumber:        uint16(i + 2),
++			FrameDependencies:  structure.Templates[1],
++		}
++		bufs[i], err = (&dd.DependencyDescriptorExtension{Descriptor: ddVal, Structure: structure}).Marshal()
++		require.NoError(t, err)
++	}
++	pkt := &rtp.Packet{Header: rtp.Header{SequenceNumber: f.seq}}
++	require.NoError(t, pkt.SetExtension(ddTestExtID, bufs[0]))
++	i := 0
++	allocs := testing.AllocsPerRun(100, func() {
++		pkt.SequenceNumber++
++		require.NoError(t, pkt.SetExtension(ddTestExtID, bufs[i]))
++		i++
++		extDD, _, err := f.parser.Parse(pkt)
++		require.NoError(t, err)
++		ReleaseExtDependencyDescriptor(extDD)
++	})
++	require.Zero(t, allocs)
++}
+diff --git a/pkg/sfu/buffer/fps.go b/pkg/sfu/buffer/fps.go
+index 9ac69cd8..fa25dc58 100644
+--- a/pkg/sfu/buffer/fps.go
++++ b/pkg/sfu/buffer/fps.go
+@@ -17,22 +17,18 @@ package buffer
+ import (
+ 	"container/list"
+ 
+-	"github.com/pion/rtp/codecs"
+-
+-	"github.com/livekit/mediatransportutil/pkg/codec"
+ 	"github.com/livekit/protocol/logger"
+ )
+ 
+ var minFramesForCalculation = [...]int{8, 15, 40, 60}
+ 
+ type frameInfo struct {
+-	startSeq  uint16
+-	endSeq    uint16
+-	ts        uint32
+-	fn        uint16
+-	spatial   int32
+-	temporal  int32
+-	frameDiff []int
++	startSeq uint16
++	endSeq   uint16
++	ts       uint32
++	fn       uint16
++	spatial  int32
++	temporal int32
+ }
+ 
+ type FrameRateCalculator interface {
+@@ -210,8 +206,8 @@ func (f *FrameRateCalculatorVP8) RecvPacket(ep *ExtPacket) bool {
+ 		return true
+ 	}
+ 
+-	vp8, ok := ep.Payload.(codec.VP8)
+-	if !ok {
++	vp8 := ep.VP8
++	if vp8 == nil {
+ 		f.logger.Debugw("no vp8 payload", "sn", ep.Packet.SequenceNumber)
+ 		return false
+ 	}
+@@ -261,8 +257,8 @@ func (f *FrameRateCalculatorVP9) RecvPacket(ep *ExtPacket) bool {
+ 		return true
+ 	}
+ 
+-	vp9, ok := ep.Payload.(codecs.VP9Packet)
+-	if !ok {
++	vp9 := ep.VP9
++	if vp9 == nil {
+ 		f.logger.Debugw("no vp9 payload", "sn", ep.Packet.SequenceNumber)
+ 		return false
+ 	}
+@@ -425,11 +421,10 @@ func (f *FrameRateCalculatorDD) RecvPacket(ep *ExtPacket) bool {
+ 	}
+ 
+ 	fi := &frameInfo{
+-		ts:        ep.Packet.Timestamp,
+-		fn:        fn,
+-		temporal:  temporal,
+-		spatial:   spatial,
+-		frameDiff: ep.DependencyDescriptor.Descriptor.FrameDependencies.FrameDiffs,
++		ts:       ep.Packet.Timestamp,
++		fn:       fn,
++		temporal: temporal,
++		spatial:  spatial,
+ 	}
+ 	f.fnReceived[baseDiff] = fi
+ 
+diff --git a/pkg/sfu/buffer/fps_test.go b/pkg/sfu/buffer/fps_test.go
+index 8bdacb13..6e7979ab 100644
+--- a/pkg/sfu/buffer/fps_test.go
++++ b/pkg/sfu/buffer/fps_test.go
+@@ -36,7 +36,7 @@ type testFrameInfo struct {
+ func (f *testFrameInfo) toVP8() *ExtPacket {
+ 	return &ExtPacket{
+ 		Packet: &rtp.Packet{Header: f.header},
+-		Payload: codec.VP8{
++		VP8: &codec.VP8{
+ 			I:         true,
+ 			PictureID: f.framenumber,
+ 		},
+diff --git a/pkg/sfu/buffer/frameintegrity.go b/pkg/sfu/buffer/frameintegrity.go
+index e2cbe8a4..9e7814a8 100644
+--- a/pkg/sfu/buffer/frameintegrity.go
++++ b/pkg/sfu/buffer/frameintegrity.go
+@@ -19,9 +19,9 @@ import (
+ )
+ 
+ type FrameEntity struct {
+-	startSeq  *uint64
+-	endSeq    *uint64
+-	integrity bool
++	startSeq, endSeq       uint64
++	hasStartSeq, hasEndSeq bool
++	integrity              bool
+ 
+ 	pktHistory *PacketHistory
+ }
+@@ -32,15 +32,15 @@ func (fe *FrameEntity) AddPacket(extSeq uint64, ddVal *dd.DependencyDescriptor)
+ 		return
+ 	}
+ 
+-	if fe.startSeq == nil && ddVal.FirstPacketInFrame {
+-		fe.startSeq = &extSeq
++	if !fe.hasStartSeq && ddVal.FirstPacketInFrame {
++		fe.startSeq, fe.hasStartSeq = extSeq, true
+ 	}
+-	if fe.endSeq == nil && ddVal.LastPacketInFrame {
+-		fe.endSeq = &extSeq
++	if !fe.hasEndSeq && ddVal.LastPacketInFrame {
++		fe.endSeq, fe.hasEndSeq = extSeq, true
+ 	}
+ 
+-	if fe.startSeq != nil && fe.endSeq != nil {
+-		if fe.pktHistory.PacketsConsecutive(*fe.startSeq, *fe.endSeq) {
++	if fe.hasStartSeq && fe.hasEndSeq {
++		if fe.pktHistory.PacketsConsecutive(fe.startSeq, fe.endSeq) {
+ 			fe.integrity = true
+ 		}
+ 	}
+@@ -48,7 +48,7 @@ func (fe *FrameEntity) AddPacket(extSeq uint64, ddVal *dd.DependencyDescriptor)
+ 
+ func (fe *FrameEntity) Reset() {
+ 	fe.integrity = false
+-	fe.startSeq, fe.endSeq = nil, nil
++	fe.hasStartSeq, fe.hasEndSeq = false, false
+ }
+ 
+ func (fe *FrameEntity) Integrity() bool {
+diff --git a/pkg/sfu/codecmunger/codecmunger.go b/pkg/sfu/codecmunger/codecmunger.go
+index 47566a96..efab8d6b 100644
+--- a/pkg/sfu/codecmunger/codecmunger.go
++++ b/pkg/sfu/codecmunger/codecmunger.go
+@@ -24,6 +24,7 @@ var (
+ 	ErrNotVP8                          = errors.New("not VP8")
+ 	ErrOutOfOrderVP8PictureIdCacheMiss = errors.New("out-of-order VP8 picture id not found in cache")
+ 	ErrFilteredVP8TemporalLayer        = errors.New("filtered VP8 temporal layer")
++	ErrFilteredVP8OutOfOrder           = errors.New("filtered out-of-order VP8 packet")
+ )
+ 
+ // MaxHeaderSize is the largest codec header the mungers produce (VP8: 6 bytes).
+diff --git a/pkg/sfu/codecmunger/vp8.go b/pkg/sfu/codecmunger/vp8.go
+index 4ffc7e65..748acfce 100644
+--- a/pkg/sfu/codecmunger/vp8.go
++++ b/pkg/sfu/codecmunger/vp8.go
+@@ -104,8 +104,8 @@ func (v *VP8) SeedState(seed any) {
+ }
+ 
+ func (v *VP8) SetLast(extPkt *buffer.ExtPacket) {
+-	vp8, ok := extPkt.Payload.(codec.VP8)
+-	if !ok {
++	vp8 := extPkt.VP8
++	if vp8 == nil {
+ 		return
+ 	}
+ 
+@@ -129,8 +129,8 @@ func (v *VP8) SetLast(extPkt *buffer.ExtPacket) {
+ }
+ 
+ func (v *VP8) UpdateOffsets(extPkt *buffer.ExtPacket) {
+-	vp8, ok := extPkt.Payload.(codec.VP8)
+-	if !ok {
++	vp8 := extPkt.VP8
++	if vp8 == nil {
+ 		return
+ 	}
+ 
+@@ -155,8 +155,8 @@ func (v *VP8) UpdateOffsets(extPkt *buffer.ExtPacket) {
+ 
+ func (v *VP8) UpdateAndGet(extPkt *buffer.ExtPacket, snOutOfOrder bool, snHasGap bool, maxTemporalLayer int32) (int, [MaxHeaderSize]byte, int, error) {
+ 	var hdr [MaxHeaderSize]byte
+-	vp8, ok := extPkt.Payload.(codec.VP8)
+-	if !ok {
++	vp8 := extPkt.VP8
++	if vp8 == nil {
+ 		return 0, hdr, 0, ErrNotVP8
+ 	}
+ 
+diff --git a/pkg/sfu/codecmunger/vp8dd.go b/pkg/sfu/codecmunger/vp8dd.go
+new file mode 100644
+index 00000000..97bea6df
+--- /dev/null
++++ b/pkg/sfu/codecmunger/vp8dd.go
+@@ -0,0 +1,131 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package codecmunger
++
++import (
++	"github.com/livekit/livekit-server/pkg/sfu/buffer"
++	"github.com/livekit/mediatransportutil/pkg/codec"
++	"github.com/livekit/protocol/logger"
++)
++
++// frames with a remembered decision, behind the highest frame number
++const vp8DDFrameWindow = 64
++
++// VP8DD filters VP8 temporal layers with the dependency descriptor. libwebrtc sends a
++// one byte VP8 payload descriptor with the dependency descriptor, so there is no picture
++// ID, TL0PICIDX or key index to munge, and the header goes out unchanged. Every packet
++// names its frame and temporal layer, so the munger decides once per frame and applies
++// that decision to all packets of the frame, a late one included. It needs the one byte
++// descriptor: the forwarder uses the VP8 munger for a stream that keeps picture IDs.
++type VP8DD struct {
++	logger logger.Logger
++
++	initialized   bool
++	highestFrame  uint64
++	decidedMask   uint64 // bit i: frame highestFrame - i has a decision
++	forwardedMask uint64 // bit i: frame highestFrame - i is forwarded
++}
++
++func NewVP8DD(logger logger.Logger) *VP8DD {
++	return &VP8DD{
++		logger: logger,
++	}
++}
++
++func (v *VP8DD) GetState() any {
++	return nil
++}
++
++func (v *VP8DD) SeedState(_state any) {
++}
++
++func (v *VP8DD) SetLast(_extPkt *buffer.ExtPacket) {
++	v.initialized = false
++}
++
++func (v *VP8DD) UpdateOffsets(_extPkt *buffer.ExtPacket) {
++	// a layer switch starts a stream with its own frame numbers
++	v.initialized = false
++}
++
++func (v *VP8DD) UpdateAndGet(extPkt *buffer.ExtPacket, snOutOfOrder bool, _snHasGap bool, maxTemporalLayer int32) (int, [MaxHeaderSize]byte, int, error) {
++	var hdr [MaxHeaderSize]byte
++	ddwdt := extPkt.DependencyDescriptor
++	if ddwdt == nil {
++		return 0, hdr, 0, nil
++	}
++
++	frame := ddwdt.ExtFrameNum
++	isForwarded, ok := v.decision(frame)
++	if !ok {
++		isForwarded = extPkt.Temporal <= maxTemporalLayer
++		if !v.record(frame, isForwarded) {
++			// a late packet of a frame that is too old to have a decision
++			isForwarded = false
++		}
++	}
++
++	switch {
++	case isForwarded:
++		return 0, hdr, 0, nil
++	case snOutOfOrder:
++		return 0, hdr, 0, ErrFilteredVP8OutOfOrder
++	default:
++		return 0, hdr, 0, ErrFilteredVP8TemporalLayer
++	}
++}
++
++func (v *VP8DD) UpdateAndGetPadding(_newPicture bool) ([]byte, error) {
++	// the one byte payload descriptor of a key frame that starts a partition
++	vp8Packet := &codec.VP8{
++		FirstByte:  0x10,
++		IsKeyFrame: true,
++		HeaderSize: 1,
++	}
++	return vp8Packet.Marshal()
++}
++
++func (v *VP8DD) decision(frame uint64) (isForwarded bool, ok bool) {
++	if !v.initialized || frame > v.highestFrame || v.highestFrame-frame >= vp8DDFrameWindow {
++		return false, false
++	}
++	bit := uint64(1) << (v.highestFrame - frame)
++	return v.forwardedMask&bit != 0, v.decidedMask&bit != 0
++}
++
++func (v *VP8DD) record(frame uint64, isForwarded bool) bool {
++	switch {
++	case !v.initialized || frame >= v.highestFrame+vp8DDFrameWindow:
++		v.initialized = true
++		v.highestFrame = frame
++		v.decidedMask = 0
++		v.forwardedMask = 0
++
++	case frame > v.highestFrame:
++		v.decidedMask <<= frame - v.highestFrame
++		v.forwardedMask <<= frame - v.highestFrame
++		v.highestFrame = frame
++
++	case v.highestFrame-frame >= vp8DDFrameWindow:
++		return false
++	}
++
++	bit := uint64(1) << (v.highestFrame - frame)
++	v.decidedMask |= bit
++	if isForwarded {
++		v.forwardedMask |= bit
++	}
++	return true
++}
+diff --git a/pkg/sfu/codecmunger/vp8dd_test.go b/pkg/sfu/codecmunger/vp8dd_test.go
+new file mode 100644
+index 00000000..c8453dbf
+--- /dev/null
++++ b/pkg/sfu/codecmunger/vp8dd_test.go
+@@ -0,0 +1,100 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package codecmunger
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/livekit-server/pkg/sfu/buffer"
++	"github.com/livekit/livekit-server/pkg/sfu/testutils"
++	"github.com/livekit/protocol/logger"
++)
++
++func vp8DDPacket(t *testing.T, frameNum uint64, tid int) *buffer.ExtPacket {
++	extPkt, err := testutils.GetTestExtPacketVP8DD(
++		&testutils.TestExtPacketParams{SequenceNumber: uint16(frameNum), PayloadSize: 20},
++		&testutils.TestDDParams{
++			FirstPacketInFrame: true,
++			ExtFrameNum:        frameNum,
++			TemporalID:         tid,
++			DecodeTargets:      testutils.TestVP8DecodeTargets,
++		},
++	)
++	require.NoError(t, err)
++	return extPkt
++}
++
++func TestVP8DDUpdateAndGet(t *testing.T) {
++	t.Run("filters by temporal layer, header unchanged", func(t *testing.T) {
++		v := NewVP8DD(logger.GetLogger())
++		inputSize, _, n, err := v.UpdateAndGet(vp8DDPacket(t, 0, 0), false, false, 0)
++		require.NoError(t, err)
++		require.Zero(t, inputSize)
++		require.Zero(t, n)
++
++		_, _, _, err = v.UpdateAndGet(vp8DDPacket(t, 1, 2), false, false, 0)
++		require.ErrorIs(t, err, ErrFilteredVP8TemporalLayer)
++	})
++
++	t.Run("a gap does not exempt a filtered layer", func(t *testing.T) {
++		v := NewVP8DD(logger.GetLogger())
++		_, _, _, err := v.UpdateAndGet(vp8DDPacket(t, 0, 0), false, false, 0)
++		require.NoError(t, err)
++		for frameNum := uint64(2); frameNum < 6; frameNum++ {
++			_, _, _, err = v.UpdateAndGet(vp8DDPacket(t, frameNum, 1), false, true, 0)
++			require.ErrorIs(t, err, ErrFilteredVP8TemporalLayer)
++		}
++	})
++
++	t.Run("every packet of a frame gets the decision of its first packet", func(t *testing.T) {
++		v := NewVP8DD(logger.GetLogger())
++		_, _, _, err := v.UpdateAndGet(vp8DDPacket(t, 1, 2), false, false, 0)
++		require.ErrorIs(t, err, ErrFilteredVP8TemporalLayer)
++		_, _, _, err = v.UpdateAndGet(vp8DDPacket(t, 2, 1), false, false, 1)
++		require.NoError(t, err)
++
++		// the layer changed in between, late packets keep the decision of their frame
++		_, _, _, err = v.UpdateAndGet(vp8DDPacket(t, 1, 2), true, false, 2)
++		require.ErrorIs(t, err, ErrFilteredVP8OutOfOrder)
++		_, _, _, err = v.UpdateAndGet(vp8DDPacket(t, 2, 1), true, false, 0)
++		require.NoError(t, err)
++	})
++
++	t.Run("late packet of a frame older than the window", func(t *testing.T) {
++		v := NewVP8DD(logger.GetLogger())
++		_, _, _, err := v.UpdateAndGet(vp8DDPacket(t, 100, 0), false, false, 2)
++		require.NoError(t, err)
++		_, _, _, err = v.UpdateAndGet(vp8DDPacket(t, 100-vp8DDFrameWindow, 0), true, false, 2)
++		require.ErrorIs(t, err, ErrFilteredVP8OutOfOrder)
++	})
++
++	t.Run("layer switch forgets decisions", func(t *testing.T) {
++		v := NewVP8DD(logger.GetLogger())
++		_, _, _, err := v.UpdateAndGet(vp8DDPacket(t, 1, 2), false, false, 0)
++		require.ErrorIs(t, err, ErrFilteredVP8TemporalLayer)
++		v.UpdateOffsets(vp8DDPacket(t, 1, 0))
++		_, _, _, err = v.UpdateAndGet(vp8DDPacket(t, 1, 2), false, false, 2)
++		require.NoError(t, err)
++	})
++
++	t.Run("padding", func(t *testing.T) {
++		v := NewVP8DD(logger.GetLogger())
++		hdr, err := v.UpdateAndGetPadding(true)
++		require.NoError(t, err)
++		require.Equal(t, []byte{0x10}, hdr)
++	})
++}
+diff --git a/pkg/sfu/connectionquality/connectionstats.go b/pkg/sfu/connectionquality/connectionstats.go
+index f0c71bdb..9006d764 100644
+--- a/pkg/sfu/connectionquality/connectionstats.go
++++ b/pkg/sfu/connectionquality/connectionstats.go
+@@ -299,6 +299,9 @@ func (cs *ConnectionStats) updateScoreAt(at time.Time) (float32, map[uint32]*buf
+ 		mos, _ := cs.scorer.GetMOSAndQuality()
+ 		return mos, streams, false
+ 	}
++	// upstream PacketsLost is already net of late arrivals (including RTX repairs),
++	// so the scorer must not discount out-of-order packets again
++	agg.PacketsOutOfOrder = 0
+ 	return cs.updateScoreWithAggregate(agg, cs.params.ReceiverProvider.GetLastSenderReportTime(), at), streams, false
+ }
+ 
+diff --git a/pkg/sfu/connectionquality/connectionstats_test.go b/pkg/sfu/connectionquality/connectionstats_test.go
+index 5adb322c..bcb8be6e 100644
+--- a/pkg/sfu/connectionquality/connectionstats_test.go
++++ b/pkg/sfu/connectionquality/connectionstats_test.go
+@@ -964,3 +964,46 @@ func TestPacketRateMode(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestUpstreamLossAfterRTXRepair(t *testing.T) {
++	// 1000 video packets, 100 lost, RTX repairs 70 in the same window, 30 (3%) never arrive
++	r := rtpstats.NewRTPStatsReceiver(rtpstats.RTPStatsParams{})
++	r.SetClockRate(90000)
++	snapshotID := r.NewSnapshotId()
++
++	packetTime := time.Now().UnixNano()
++	send := func(sn uint16) {
++		packetTime += int64(5 * time.Millisecond)
++		r.Update(packetTime, sn, uint32(sn)*450, false, 12, 1000, 0)
++	}
++	for sn := uint16(0); sn < 1000; sn++ {
++		if sn == 300 {
++			for repaired := uint16(100); repaired < 170; repaired++ {
++				send(repaired)
++			}
++		}
++		if sn < 100 || sn >= 200 {
++			send(sn)
++		}
++	}
++
++	delta := r.DeltaInfo(snapshotID)
++	require.Equal(t, uint32(1000), delta.Packets)
++	require.Equal(t, uint32(30), delta.PacketsLost)
++	require.Equal(t, uint32(70), delta.PacketsOutOfOrder)
++
++	trp := newTestReceiverProvider()
++	trp.setStreams(map[uint32]*buffer.StreamStatsWithLayers{1: {RTPStats: delta}})
++	cs := NewConnectionStats(ConnectionStatsParams{
++		ReceiverProvider: trp,
++		Logger:           logger.GetLogger(),
++	})
++	now := time.Now()
++	cs.StartAt(mime.MimeTypeVP8, false, now)
++	cs.updateScoreAt(now.Add(5 * time.Second))
++
++	// packet score 100 - 3% * 10 = 70, smoothed 0.8 * 70 + 0.2 * 100 = 76
++	score, quality := cs.scorer.GetScoreAndQuality()
++	require.InDelta(t, 76.0, score, 0.01)
++	require.Equal(t, livekit.ConnectionQuality_GOOD, quality)
++}
+diff --git a/pkg/sfu/downtrack.go b/pkg/sfu/downtrack.go
+index e01c9674..34658014 100644
+--- a/pkg/sfu/downtrack.go
++++ b/pkg/sfu/downtrack.go
+@@ -85,6 +85,9 @@ var (
+ 	errPayloadOverflow                   = errors.New("payload overflow")
+ )
+ 
++// padding of a dropped packet's slot, one byte: the count byte itself
++var droppedSlotPadding = []byte{1}
++
+ var (
+ 	VP8KeyFrame8x8 = []byte{
+ 		0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a, 0x08, 0x00,
+@@ -338,6 +341,7 @@ type DownTrack struct {
+ 	keyFrameRequesterChMu     sync.RWMutex
+ 	keyFrameRequesterCh       chan struct{}
+ 	keyFrameRequesterChClosed bool
++	keyFrameRequesterWakeups  atomic.Uint32
+ 
+ 	retransmitChMu     sync.RWMutex
+ 	retransmitCh       chan struct{}
+@@ -953,18 +957,20 @@ func (d *DownTrack) keyFrameRequester() {
+ 	defer timer.Stop()
+ 
+ 	for !d.IsClosed() {
+-		timer.Reset(getInterval())
+-
+ 		select {
+ 		case _, more := <-d.keyFrameRequesterCh:
+ 			if !more {
+ 				return
+ 			}
+ 			if !timer.Stop() {
+-				<-timer.C
++				select {
++				case <-timer.C:
++				default:
++				}
+ 			}
+ 		case <-timer.C:
+ 		}
++		d.keyFrameRequesterWakeups.Inc()
+ 
+ 		locked, layer := d.forwarder.CheckSync()
+ 		if !locked && layer != buffer.InvalidLayerSpatial && d.writable.Load() {
+@@ -981,6 +987,13 @@ func (d *DownTrack) keyFrameRequester() {
+ 				sal.OnAvailableLayersChanged(d)
+ 			}
+ 		}
++
++		// Re-arm only while there is something to wait for: a requested layer that is not locked yet,
++		// or a lock state that can change without an event. Once locked, sleep until the
++		// next event so a locked track does not wake up every interval.
++		if (!locked && layer != buffer.InvalidLayerSpatial) || d.forwarder.NeedsPeriodicSyncCheck() {
++			timer.Reset(getInterval())
++		}
+ 	}
+ }
+ 
+@@ -1032,6 +1045,9 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
+ 		if err != nil {
+ 			d.params.Logger.Errorw("could not get translation params", err)
+ 		}
++		if tp.padDroppedSlot {
++			d.writeDroppedSlotPadding(tp.rtp.extSequenceNumber, tp.rtp.extTimestamp, tp.rtp.snOrdering == SequenceNumberOrderingOutOfOrder)
++		}
+ 		return 0
+ 	}
+ 
+@@ -1191,6 +1207,8 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
+ 
+ 	if tp.isSwitching {
+ 		d.postMaxLayerNotifierEvent("switching")
++		// the current layer moved on the packet path, so the layer lock may have changed
++		d.postKeyFrameRequestEvent()
+ 	}
+ 
+ 	if tp.isResuming {
+@@ -1226,6 +1244,50 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) int32 {
+ 	return 1
+ }
+ 
++// writeDroppedSlotPadding sends a padding only packet in the outgoing slot of a dropped
++// packet that is out of order or follows a gap. The receiver takes it as padding for that sequence number and
++// does not NACK it. The sequencer has no entry for the slot, so a NACK that still comes
++// finds nothing to retransmit.
++func (d *DownTrack) writeDroppedSlotPadding(extSequenceNumber uint64, extTimestamp uint64, isOutOfOrder bool) {
++	hdr := RTPHeaderFactory.Get().(*rtp.Header)
++	initPooledRTPHeader(hdr, rtp.Header{
++		Version:        2,
++		Padding:        true,
++		PaddingSize:    byte(len(droppedSlotPadding)),
++		Marker:         false,
++		PayloadType:    uint8(d.payloadType.Load()),
++		SequenceNumber: uint16(extSequenceNumber),
++		Timestamp:      uint32(extTimestamp),
++		SSRC:           d.ssrc,
++	})
++	d.addDummyExtensions(hdr)
++
++	hdrSize := hdr.MarshalSize()
++	d.rtpStats.Update(
++		mono.UnixNano(),
++		extSequenceNumber,
++		extTimestamp,
++		hdr.Marker,
++		hdrSize,
++		0,
++		len(droppedSlotPadding),
++		isOutOfOrder,
++	)
++
++	pacerPacket := pacer.PacketFactory.Get().(*pacer.Packet)
++	*pacerPacket = pacer.Packet{
++		Header:             hdr,
++		HeaderPool:         RTPHeaderFactory,
++		HeaderSize:         hdrSize,
++		Payload:            droppedSlotPadding,
++		ProbeClusterId:     ccutils.ProbeClusterIdInvalid, // not probe traffic
++		AbsSendTimeExtID:   uint8(d.absSendTimeExtID),
++		TransportWideExtID: uint8(d.transportWideExtID),
++		WriteStream:        d.writeStream,
++	}
++	d.pacer.Enqueue(pacerPacket)
++}
++
+ // WritePaddingRTP tries to write as many padding only RTP packets as necessary
+ // to satisfy given size to the DownTrack
+ func (d *DownTrack) WritePaddingRTP(bytesToSend int, paddingOnMute bool, forceMarker bool) int {
+@@ -1393,6 +1455,8 @@ func (d *DownTrack) handleMute(muted bool, changed bool) {
+ 	// and that could turn on/off layers on publisher side.
+ 	//
+ 	d.postMaxLayerNotifierEvent("mute")
++	// mute resyncs the forwarder, so the layer lock has to be re-acquired on unmute
++	d.postKeyFrameRequestEvent()
+ 
+ 	if sal := d.getStreamAllocatorListener(); sal != nil {
+ 		sal.OnSubscriptionChanged(d)
+@@ -1609,6 +1673,8 @@ func (d *DownTrack) UpTrackBitrateAvailabilityChange() {
+ 
+ func (d *DownTrack) UpTrackMaxPublishedLayerChange(maxPublishedLayer int32) {
+ 	if d.forwarder.SetMaxPublishedLayer(maxPublishedLayer) {
++		// may arm the acquisition grace, which the key frame requester has to expire
++		d.postKeyFrameRequestEvent()
+ 		if sal := d.getStreamAllocatorListener(); sal != nil {
+ 			sal.OnMaxPublishedSpatialChanged(d)
+ 		}
+@@ -1754,6 +1820,7 @@ func (d *DownTrack) Pause() VideoAllocation {
+ func (d *DownTrack) Resync() {
+ 	d.forwarder.Resync()
+ 	d.flushSequencer()
++	d.postKeyFrameRequestEvent()
+ }
+ 
+ // flushSequencer discards recorded packet metadata on a stream restart so that NACK
+diff --git a/pkg/sfu/downtrack_downstream_integration_test.go b/pkg/sfu/downtrack_downstream_integration_test.go
+index 1f946a53..41282e46 100644
+--- a/pkg/sfu/downtrack_downstream_integration_test.go
++++ b/pkg/sfu/downtrack_downstream_integration_test.go
+@@ -919,3 +919,67 @@ func TestDownTrackSendsProbePackets(t *testing.T) {
+ 		})
+ 	}
+ }
++
++// -----------------------------------------------------------------------------
++// keyFrameRequester: PLI only while a layer lock is pending
++// -----------------------------------------------------------------------------
++
++// TestDownTrackKeyFrameRequesterArmsOnlyWhilePending verifies that the key frame
++// requester keeps sending PLIs while the target layer is not locked, and goes quiet
++// once a key frame on the target layer locks it (no periodic wake-ups while locked).
++func TestDownTrackKeyFrameRequesterArmsOnlyWhilePending(t *testing.T) {
++	h := vnettest.NewHosts(t)
++	factory := buffer.NewFactoryOfBufferFactory(500, 500).CreateBufferFactory()
++	p := pacer.NewPassThrough(logger.GetLogger(), newNullBWE())
++	t.Cleanup(p.Stop)
++
++	dh := newBoundDownTrack(t, h, factory, vp8CodecParams, p, vnettest.MediaEngineConfig{Video: true})
++
++	// allocate a target layer (spatial 0) without any media, so the lock is pending
++	var brs Bitrates
++	brs[0][0] = 100_000
++	dh.receiver.GetLayeredBitrateReturns([]int32{0}, brs)
++	dh.dt.UpTrackMaxPublishedLayerChange(0)
++	dh.dt.SetMaxSpatialLayer(0)
++	alloc := dh.dt.AllocateOptimal(false, false)
++	require.Equal(t, int32(0), alloc.TargetLayer.Spatial, "expected target layer to be allocated")
++
++	// unlocked: PLIs must keep coming at the key frame interval
++	require.Eventually(t, func() bool {
++		return dh.receiver.SendPLICallCount() >= 3
++	}, 5*time.Second, 20*time.Millisecond, "expected repeated PLIs while layer lock is pending")
++
++	// a key frame on the target layer locks it
++	vp8 := &codec.VP8{
++		FirstByte:  0x10,
++		S:          true,
++		PictureID:  1,
++		IsKeyFrame: true,
++	}
++	ep, err := testutils.GetTestExtPacketVP8(&testutils.TestExtPacketParams{
++		SequenceNumber: 5000,
++		Timestamp:      180000,
++		SSRC:           0x33333333,
++		PayloadType:    96,
++		PayloadSize:    50,
++		IsKeyFrame:     true,
++		Marker:         true,
++	}, vp8)
++	require.NoError(t, err)
++	ep.Packet.Payload = distinctivePayload(0x40, 50)
++	require.Equal(t, int32(1), dh.dt.WriteRTP(ep, 0), "keyframe should forward")
++
++	// let an already armed interval fire, then the requester must stay asleep
++	time.Sleep(2 * KeyFrameIntervalMaxForTest)
++	before := dh.receiver.SendPLICallCount()
++	wakeups := dh.dt.KeyFrameRequesterWakeupsForTest()
++	time.Sleep(2 * KeyFrameIntervalMaxForTest)
++	require.Equal(t, wakeups, dh.dt.KeyFrameRequesterWakeupsForTest(), "key frame requester must not wake up once the layer is locked")
++	require.Equal(t, before, dh.receiver.SendPLICallCount(), "no PLI expected once the layer is locked")
++
++	// a resync drops the lock and must wake the requester again
++	dh.dt.Resync()
++	require.Eventually(t, func() bool {
++		return dh.receiver.SendPLICallCount() > before
++	}, 5*time.Second, 20*time.Millisecond, "expected PLI after resync")
++}
+diff --git a/pkg/sfu/export_test.go b/pkg/sfu/export_test.go
+index 449289e2..b6536362 100644
+--- a/pkg/sfu/export_test.go
++++ b/pkg/sfu/export_test.go
+@@ -14,7 +14,11 @@
+ 
+ package sfu
+ 
+-import "github.com/livekit/livekit-server/pkg/sfu/buffer"
++import (
++	"time"
++
++	"github.com/livekit/livekit-server/pkg/sfu/buffer"
++)
+ 
+ // Test-only seams that expose DownTrack internals to the external sfu_test package.
+ // This file is only compiled into the test binary (its name ends in _test.go), so it
+@@ -71,3 +75,9 @@ func (d *DownTrack) RetransmitForTest(
+ 	}
+ 	return d.retransmitPacket(&epm, sourcePkt, false)
+ }
++
++const KeyFrameIntervalMaxForTest = keyFrameIntervalMax * time.Millisecond
++
++func (d *DownTrack) KeyFrameRequesterWakeupsForTest() uint32 {
++	return d.keyFrameRequesterWakeups.Load()
++}
+diff --git a/pkg/sfu/forwarder.go b/pkg/sfu/forwarder.go
+index fbdc2809..ef5b0548 100644
+--- a/pkg/sfu/forwarder.go
++++ b/pkg/sfu/forwarder.go
+@@ -23,7 +23,6 @@ import (
+ 	"time"
+ 
+ 	"github.com/pion/rtp"
+-	"github.com/pion/rtp/codecs"
+ 	"github.com/pion/webrtc/v4"
+ 	"go.uber.org/zap/zapcore"
+ 	"google.golang.org/protobuf/proto"
+@@ -208,6 +207,11 @@ type TranslationParams struct {
+ 	marker             bool
+ 	// end of the svc spatial layer frame
+ 	isEndOfLayerFrame bool
++	// The packet is dropped, but the RTP munger gave its outgoing sequence number
++	// away when it saw the gap, so the downtrack sends padding in that slot. Without
++	// it the subscriber NACKs a sequence number nothing can answer, and a VP8
++	// receiver without picture IDs stalls on the hole until a key frame.
++	padDroppedSlot bool
+ }
+ 
+ // codecHeader returns the munged codec header to prepend to the payload.
+@@ -277,6 +281,11 @@ type Forwarder struct {
+ 	rtpMunger *RTPMunger
+ 
+ 	vls videolayerselector.VideoLayerSelector
++	// set for VP8 with the dependency descriptor, forwards the descriptor to the subscriber
++	ddForwarder *videolayerselector.DDForwarder
++	// temporal layer of the packet being translated, the selector's current layer is
++	// already the next one on the last packet before a down switch
++	packetTemporal int32
+ 
+ 	codecMunger codecmunger.CodecMunger
+ }
+@@ -354,6 +363,21 @@ func (f *Forwarder) MaybeExpireAcquireGrace() bool {
+ 	return !f.vls.GetCurrent().IsValid()
+ }
+ 
++// NeedsPeriodicSyncCheck reports whether the layer lock state can change without an event, so the
++// key frame requester has to keep polling it: an initial-acquisition grace deadline is armed
++// (MaybeExpireAcquireGrace may still fire), or layers are selected with the dependency descriptor,
++// which can lose the lock on the packet path (key frame mismatch, broken frame chain).
++func (f *Forwarder) NeedsPeriodicSyncCheck() bool {
++	f.lock.RLock()
++	defer f.lock.RUnlock()
++
++	if f.acquireDeadline != 0 {
++		return true
++	}
++	_, isDD := f.vls.(*videolayerselector.DependencyDescriptor)
++	return isDD
++}
++
+ func (f *Forwarder) SetMaxTemporalLayerSeen(maxTemporalLayerSeen int32) bool {
+ 	f.lock.Lock()
+ 	defer f.lock.Unlock()
+@@ -394,9 +418,18 @@ func (f *Forwarder) DetermineCodec(codec webrtc.RTPCodecCapability, extensions [
+ 		return false
+ 	}
+ 
++	prevDDForwarder := f.ddForwarder
++	f.ddForwarder = nil
+ 	switch f.mime {
+ 	case mime.MimeTypeVP8:
+-		f.codecMunger = codecmunger.NewVP8FromOther(f.codecMunger, f.logger)
++		f.isDDAvailable = ddAvailable(extensions)
++		if f.isDDAvailable {
++			f.codecMunger = codecmunger.NewVP8DD(f.logger)
++			// the downtrack keeps its SSRC, so the frame numbers continue
++			f.ddForwarder = videolayerselector.NewDDForwarderFromOther(prevDDForwarder, f.logger)
++		} else {
++			f.codecMunger = codecmunger.NewVP8FromOther(f.codecMunger, f.logger)
++		}
+ 		if f.vls != nil {
+ 			if vls := videolayerselector.NewSimulcastFromOther(f.vls); vls != nil {
+ 				f.vls = vls
+@@ -406,7 +439,11 @@ func (f *Forwarder) DetermineCodec(codec webrtc.RTPCodecCapability, extensions [
+ 		} else {
+ 			f.vls = videolayerselector.NewSimulcast(f.logger)
+ 		}
+-		f.vls.SetTemporalLayerSelector(temporallayerselector.NewVP8(f.logger))
++		if f.isDDAvailable {
++			f.vls.SetTemporalLayerSelector(temporallayerselector.NewDependencyDescriptor(f.logger))
++		} else {
++			f.vls.SetTemporalLayerSelector(temporallayerselector.NewVP8(f.logger))
++		}
+ 
+ 	case mime.MimeTypeH264, mime.MimeTypeH265:
+ 		f.codecMunger = codecmunger.NewNull(f.logger)
+@@ -2150,8 +2187,7 @@ func (f *Forwarder) isEndOfLayerFrame(extPkt *buffer.ExtPacket) bool {
+ 	}
+ 
+ 	if f.mime == mime.MimeTypeVP9 {
+-		vp9, ok := extPkt.Payload.(codecs.VP9Packet)
+-		return ok && vp9.E
++		return extPkt.VP9 != nil && extPkt.VP9.E
+ 	}
+ 
+ 	return false
+@@ -2160,6 +2196,33 @@ func (f *Forwarder) isEndOfLayerFrame(extPkt *buffer.ExtPacket) bool {
+ // should be called with lock held
+ func (f *Forwarder) getTranslationParamsVideo(extPkt *buffer.ExtPacket, layer int32) (TranslationParams, error) {
+ 	tp := TranslationParams{}
++	if f.isDDAvailable && f.mime == mime.MimeTypeVP8 && extPkt.DependencyDescriptor == nil && len(extPkt.Packet.Payload) != 0 {
++		// The buffer stopped parsing the dependency descriptor because the publisher does
++		// not send it, so switch temporal layers with the VP8 payload descriptor. Padding
++		// never carries the descriptor, so it does not count.
++		f.logger.Infow("turning off dependency descriptor for VP8 temporal layers", "layer", layer)
++		f.isDDAvailable = false
++		f.ddForwarder = nil
++		f.codecMunger = codecmunger.NewVP8FromOther(f.codecMunger, f.logger)
++		if f.started {
++			// the munger takes its picture ID and TL0PICIDX from the first packet it sees
++			f.codecMunger.SetLast(extPkt)
++		}
++		f.vls.SetTemporalLayerSelector(temporallayerselector.NewVP8(f.logger))
++	}
++	if _, ok := f.codecMunger.(*codecmunger.VP8DD); ok && extPkt.DependencyDescriptor != nil {
++		if extPkt.VP8 != nil && extPkt.VP8.I {
++			// The publisher sends picture IDs with the dependency descriptor, so they need
++			// rewriting. The VP8 munger does that, the temporal layers still switch with the
++			// dependency descriptor.
++			f.logger.Infow("VP8 picture ID with dependency descriptor, munging picture IDs", "layer", layer)
++			f.codecMunger = codecmunger.NewVP8FromOther(f.codecMunger, f.logger)
++			if f.started {
++				f.codecMunger.SetLast(extPkt)
++			}
++		}
++	}
++
+ 	if !f.vls.GetTarget().IsValid() {
+ 		// stream is paused by streamallocator
+ 		tp.shouldDrop = true
+@@ -2168,7 +2231,7 @@ func (f *Forwarder) getTranslationParamsVideo(extPkt *buffer.ExtPacket, layer in
+ 
+ 	result := f.vls.Select(extPkt, layer)
+ 	if !result.IsSelected {
+-		if f.isDDAvailable && extPkt.DependencyDescriptor == nil {
++		if f.isDDAvailable && f.mime != mime.MimeTypeVP8 && extPkt.DependencyDescriptor == nil {
+ 			f.logger.Infow(
+ 				"turning off dependency descriptor",
+ 				"layer", layer,
+@@ -2190,8 +2253,14 @@ func (f *Forwarder) getTranslationParamsVideo(extPkt *buffer.ExtPacket, layer in
+ 		if f.started && result.IsRelevant {
+ 			// call to update highest incoming sequence number and other internal structures
+ 			if tpRTP, err := f.rtpMunger.UpdateAndGetSnTs(extPkt, result.RTPMarker); err == nil {
+-				if tpRTP.snOrdering == SequenceNumberOrderingContiguous {
++				switch tpRTP.snOrdering {
++				case SequenceNumberOrderingContiguous:
+ 					f.rtpMunger.PacketDropped(extPkt)
++				case SequenceNumberOrderingGap, SequenceNumberOrderingOutOfOrder:
++					// a rollback after a gap moves the last outgoing number below the missing
++					// packets' slots and their late copies are rejected, so pad the slot instead
++					tp.rtp = tpRTP
++					tp.padDroppedSlot = true
+ 				}
+ 			}
+ 		}
+@@ -2202,6 +2271,7 @@ func (f *Forwarder) getTranslationParamsVideo(extPkt *buffer.ExtPacket, layer in
+ 	tp.ddBytes, tp.ddBytesLen, tp.ddBytesSpill = result.DDBytes, result.DDBytesLen, result.DDBytesSpill
+ 	tp.marker = result.RTPMarker
+ 	tp.isEndOfLayerFrame = f.isEndOfLayerFrame(extPkt)
++	f.packetTemporal = f.vls.GetCurrent().Temporal
+ 
+ 	starting, err := f.getTranslationParamsCommon(extPkt, layer, &tp)
+ 	tp.isStarting = starting
+@@ -2232,12 +2302,21 @@ func (f *Forwarder) getTranslationParamsVideo(extPkt *buffer.ExtPacket, layer in
+ 		return tp, nil
+ 	}
+ 
++	if f.ddForwarder != nil {
++		// after translateCodecHeader, which picks the packet's temporal layer
++		var ddResult videolayerselector.VideoLayerSelectorResult
++		if f.ddForwarder.Forward(extPkt, f.packetTemporal, &ddResult) {
++			tp.ddBytes, tp.ddBytesLen, tp.ddBytesSpill = ddResult.DDBytes, ddResult.DDBytesLen, ddResult.DDBytesSpill
++		}
++	}
++
+ 	return tp, nil
+ }
+ 
+ func (f *Forwarder) translateCodecHeader(extPkt *buffer.ExtPacket, tp *TranslationParams) error {
+ 	// codec specific forwarding check and any needed packet munging
+ 	tl := f.vls.SelectTemporal(extPkt)
++	f.packetTemporal = tl
+ 	inputSize, codecBytes, codecBytesLen, err := f.codecMunger.UpdateAndGet(
+ 		extPkt,
+ 		tp.rtp.snOrdering == SequenceNumberOrderingOutOfOrder,
+@@ -2246,10 +2325,16 @@ func (f *Forwarder) translateCodecHeader(extPkt *buffer.ExtPacket, tp *Translati
+ 	)
+ 	if err != nil {
+ 		tp.shouldDrop = true
+-		if err == codecmunger.ErrFilteredVP8TemporalLayer || err == codecmunger.ErrOutOfOrderVP8PictureIdCacheMiss {
+-			if err == codecmunger.ErrFilteredVP8TemporalLayer {
+-				// filtered temporal layer, update sequence number offset to prevent holes
+-				f.rtpMunger.PacketDropped(extPkt)
++		if err == codecmunger.ErrFilteredVP8TemporalLayer || err == codecmunger.ErrOutOfOrderVP8PictureIdCacheMiss || err == codecmunger.ErrFilteredVP8OutOfOrder {
++			switch tp.rtp.snOrdering {
++			case SequenceNumberOrderingContiguous:
++				if err == codecmunger.ErrFilteredVP8TemporalLayer {
++					// filtered temporal layer, update sequence number offset to prevent holes
++					f.rtpMunger.PacketDropped(extPkt)
++				}
++			case SequenceNumberOrderingGap, SequenceNumberOrderingOutOfOrder:
++				// no rollback after a gap, see getTranslationParamsVideo
++				tp.padDroppedSlot = true
+ 			}
+ 			return nil
+ 		}
+diff --git a/pkg/sfu/forwarder_test.go b/pkg/sfu/forwarder_test.go
+index 931c79e7..36f2e92b 100644
+--- a/pkg/sfu/forwarder_test.go
++++ b/pkg/sfu/forwarder_test.go
+@@ -15,6 +15,7 @@
+ package sfu
+ 
+ import (
++	"encoding/hex"
+ 	"testing"
+ 
+ 	"github.com/pion/rtp/codecs"
+@@ -31,6 +32,7 @@ import (
+ 	"github.com/livekit/livekit-server/pkg/sfu/pacer"
+ 	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
+ 	"github.com/livekit/livekit-server/pkg/sfu/testutils"
++	"github.com/livekit/livekit-server/pkg/sfu/videolayerselector"
+ )
+ 
+ func disable(f *Forwarder) {
+@@ -1933,6 +1935,382 @@ func TestForwarderGetTranslationParamsVideo(t *testing.T) {
+ 	require.Equal(t, f.lastSSRC, params.SSRC)
+ }
+ 
++func TestForwarderVP8TemporalUpSwitchAtLayerSync(t *testing.T) {
++	f := newForwarder(testutils.TestVP8Codec, webrtc.RTPCodecTypeVideo)
++	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 2})
++
++	// a frame without Y may reference a dropped frame of its layer
++	steps := []struct {
++		name            string
++		tid             uint8
++		y               bool
++		expectedThis    int32
++		expectedCurrent int32
++	}{
++		{name: "TL2 without Y", tid: 2, expectedThis: 0, expectedCurrent: 0},
++		{name: "TL1 without Y", tid: 1, expectedThis: 0, expectedCurrent: 0},
++		{name: "TL0", tid: 0, expectedThis: 0, expectedCurrent: 0},
++		{name: "TL2 with Y before TL1 sync", tid: 2, y: true, expectedThis: 0, expectedCurrent: 0},
++		{name: "TL1 with Y", tid: 1, y: true, expectedThis: 1, expectedCurrent: 1},
++		{name: "TL2 without Y after TL1 switch", tid: 2, expectedThis: 1, expectedCurrent: 1},
++		{name: "TL2 with Y", tid: 2, y: true, expectedThis: 2, expectedCurrent: 2},
++	}
++	for i, step := range steps {
++		extPkt, err := testutils.GetTestExtPacketVP8(
++			&testutils.TestExtPacketParams{SequenceNumber: uint16(i), PayloadSize: 20},
++			&codec.VP8{S: true, I: true, PictureID: uint16(i), T: true, TID: step.tid, Y: step.y},
++		)
++		require.NoError(t, err)
++		require.Equal(t, step.expectedThis, f.vls.SelectTemporal(extPkt), step.name)
++		require.Equal(t, step.expectedCurrent, f.vls.GetCurrent().Temporal, step.name)
++	}
++
++	// key frame refreshes all buffers, up-switch at it even without Y
++	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	extPkt, err := testutils.GetTestExtPacketVP8(
++		&testutils.TestExtPacketParams{SequenceNumber: 10, PayloadSize: 20},
++		&codec.VP8{S: true, I: true, PictureID: 10, T: true, TID: 0, IsKeyFrame: true},
++	)
++	require.NoError(t, err)
++	require.Equal(t, int32(2), f.vls.SelectTemporal(extPkt))
++	require.Equal(t, int32(2), f.vls.GetCurrent().Temporal)
++}
++
++func TestForwarderVP8TemporalUpSwitchWithDependencyDescriptor(t *testing.T) {
++	f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	require.IsType(t, &codecmunger.VP8DD{}, f.codecMunger)
++	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 2})
++
++	// libwebrtc strips the VP8 payload descriptor when it sends the dependency
++	// descriptor: no TID and no layer sync bit
++	packet := func(frameNum uint64, tid int, dtis string, frameDiffs []int, isKeyFrame bool) *buffer.ExtPacket {
++		extPkt, err := testutils.GetTestExtPacketVP8DD(
++			&testutils.TestExtPacketParams{SequenceNumber: uint16(frameNum), PayloadSize: 20, Marker: true, IsKeyFrame: isKeyFrame},
++			&testutils.TestDDParams{
++				FirstPacketInFrame: true,
++				ExtFrameNum:        frameNum,
++				TemporalID:         tid,
++				DTIs:               dtis,
++				FrameDiffs:         frameDiffs,
++				DecodeTargets:      testutils.TestVP8DecodeTargets,
++			},
++		)
++		require.NoError(t, err)
++		return extPkt
++	}
++
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	require.Equal(t, int32(0), f.vls.SelectTemporal(packet(0, 0, "SSS", nil, true)))
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 2})
++	require.Equal(t, int32(0), f.vls.SelectTemporal(packet(1, 2, "--D", []int{1}, false)))
++	require.Equal(t, int32(0), f.vls.GetCurrent().Temporal)
++	require.Equal(t, int32(2), f.vls.SelectTemporal(packet(2, 1, "-SS", []int{2}, false)))
++	require.Equal(t, int32(2), f.vls.GetCurrent().Temporal)
++
++	// padding never carries the descriptor and leaves it on
++	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	padding, err := testutils.GetTestExtPacket(&testutils.TestExtPacketParams{SequenceNumber: 3, PaddingSize: 20})
++	require.NoError(t, err)
++	_, _ = f.getTranslationParamsVideo(padding, 0)
++	require.True(t, f.isDDAvailable)
++
++	// a packet with a payload and without the descriptor means the buffer stopped
++	// parsing it, the Y bit then raises the layer
++	extPkt, err := testutils.GetTestExtPacketVP8(
++		&testutils.TestExtPacketParams{SequenceNumber: 4, PayloadSize: 20},
++		&codec.VP8{S: true, I: true, PictureID: 4, T: true, TID: 0},
++	)
++	require.NoError(t, err)
++	_, _ = f.getTranslationParamsVideo(extPkt, 0)
++	require.False(t, f.isDDAvailable)
++	require.IsType(t, &codecmunger.VP8{}, f.codecMunger)
++
++	extPkt, err = testutils.GetTestExtPacketVP8(
++		&testutils.TestExtPacketParams{SequenceNumber: 5, PayloadSize: 20},
++		&codec.VP8{S: true, I: true, PictureID: 5, T: true, TID: 1, Y: true},
++	)
++	require.NoError(t, err)
++	require.Equal(t, int32(1), f.vls.SelectTemporal(extPkt))
++	require.Equal(t, int32(1), f.vls.GetCurrent().Temporal)
++}
++
++func TestForwarderVP8DDTemporalFilterAfterGap(t *testing.T) {
++	f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++
++	// one packet per frame, the minimized VP8 payload descriptor has no picture ID
++	packet := func(sn uint16, frameNum uint64, tid int, isKeyFrame bool) *buffer.ExtPacket {
++		extPkt, err := testutils.GetTestExtPacketVP8DD(
++			&testutils.TestExtPacketParams{
++				SequenceNumber: sn,
++				Timestamp:      uint32(frameNum) * 3000,
++				SSRC:           0x12345678,
++				PayloadSize:    20,
++				Marker:         true,
++				IsKeyFrame:     isKeyFrame,
++			},
++			&testutils.TestDDParams{
++				FirstPacketInFrame: true,
++				ExtFrameNum:        frameNum,
++				TemporalID:         tid,
++				DTIs:               "SSS",
++				DecodeTargets:      testutils.TestVP8DecodeTargets,
++			},
++		)
++		require.NoError(t, err)
++		return extPkt
++	}
++
++	steps := []struct {
++		name       string
++		sn         uint16
++		frameNum   uint64
++		tid        int
++		isKeyFrame bool
++		shouldDrop bool
++	}{
++		{name: "key frame", sn: 100, frameNum: 0, tid: 0, isKeyFrame: true},
++		{name: "TL2 after a gap", sn: 102, frameNum: 2, tid: 2, shouldDrop: true},
++		{name: "TL2", sn: 103, frameNum: 3, tid: 2, shouldDrop: true},
++		{name: "TL0", sn: 104, frameNum: 4, tid: 0},
++		{name: "TL2 after TL0", sn: 105, frameNum: 5, tid: 2, shouldDrop: true},
++	}
++	for _, step := range steps {
++		tp, err := f.GetTranslationParams(packet(step.sn, step.frameNum, step.tid, step.isKeyFrame), 0)
++		require.NoError(t, err, step.name)
++		require.Equal(t, step.shouldDrop, tp.shouldDrop, step.name)
++	}
++}
++
++func TestForwarderVP8DDWithPictureID(t *testing.T) {
++	f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 2})
++	require.IsType(t, &codecmunger.VP8DD{}, f.codecMunger)
++
++	// the one byte descriptor keeps the dependency descriptor munger
++	extPkt, err := testutils.GetTestExtPacketVP8DD(
++		&testutils.TestExtPacketParams{SequenceNumber: 1, Timestamp: 3000, SSRC: 0x12345678, PayloadSize: 20, Marker: true, IsKeyFrame: true},
++		&testutils.TestDDParams{FirstPacketInFrame: true, ExtFrameNum: 1, DTIs: "SSS", DecodeTargets: testutils.TestVP8DecodeTargets},
++	)
++	require.NoError(t, err)
++	_, _ = f.GetTranslationParams(extPkt, 0)
++	require.IsType(t, &codecmunger.VP8DD{}, f.codecMunger)
++	require.True(t, f.started)
++
++	// a picture ID next to the dependency descriptor needs the VP8 munger
++	extPkt, err = testutils.GetTestExtPacketVP8DD(
++		&testutils.TestExtPacketParams{SequenceNumber: 2, Timestamp: 6000, SSRC: 0x12345678, PayloadSize: 20, Marker: true},
++		&testutils.TestDDParams{FirstPacketInFrame: true, ExtFrameNum: 2, TemporalID: 1, DTIs: "-SS", FrameDiffs: []int{1}, DecodeTargets: testutils.TestVP8DecodeTargets},
++	)
++	require.NoError(t, err)
++	extPkt.VP8 = &codec.VP8{S: true, I: true, PictureID: 2}
++	_, _ = f.GetTranslationParams(extPkt, 0)
++	require.IsType(t, &codecmunger.VP8{}, f.codecMunger)
++	require.True(t, f.codecMunger.GetState().(*livekit.VP8MungerState).PictureIdUsed, "seeded from the packet")
++	require.True(t, f.isDDAvailable, "temporal layers still switch with the dependency descriptor")
++}
++
++func TestForwarderVP8ForwardsDependencyDescriptor(t *testing.T) {
++	// an L3T3 key frame descriptor with its dependency structure, the capture the
++	// dependency descriptor package tests with
++	raw, err := hex.DecodeString("c1017280081485214eafffaaaa863cf0430c10c302afc0aaa0063c00430010c002a000a80006000040001d954926e082b04a0941b820ac1282503157f974000ca864330e222222eca8655304224230eca877530077004200ef008601df010d")
++	require.NoError(t, err)
++	keyFrameDescriptor := dd.DependencyDescriptor{}
++	_, err = (&dd.DependencyDescriptorExtension{Descriptor: &keyFrameDescriptor}).Unmarshal(raw)
++	require.NoError(t, err)
++	require.NotNil(t, keyFrameDescriptor.AttachedStructure)
++
++	packet := func(sn uint16, frameNum uint64, isKeyFrame bool) *buffer.ExtPacket {
++		extPkt, err := testutils.GetTestExtPacketVP8DD(
++			&testutils.TestExtPacketParams{SequenceNumber: sn, Timestamp: 0xabcdef + uint32(frameNum)*3000, SSRC: 0x12345678, PayloadSize: 20, Marker: true, IsKeyFrame: isKeyFrame},
++			&testutils.TestDDParams{FirstPacketInFrame: true, ExtFrameNum: frameNum, DTIs: "SSS", DecodeTargets: testutils.TestVP8DecodeTargets},
++		)
++		require.NoError(t, err)
++		descriptor := keyFrameDescriptor
++		descriptor.FrameNumber = uint16(frameNum)
++		if !isKeyFrame {
++			descriptor.AttachedStructure = nil
++			descriptor.ActiveDecodeTargetsBitmask = nil
++		}
++		extPkt.DependencyDescriptor.Descriptor = &descriptor
++		return extPkt
++	}
++
++	f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++
++	// the key frame carries the structure, too big to hold inline
++	tp, err := f.GetTranslationParams(packet(10, 100, true), 0)
++	require.NoError(t, err)
++	require.False(t, tp.shouldDrop)
++	require.NotEmpty(t, tp.ddBytesSpill)
++
++	tp, err = f.GetTranslationParams(packet(11, 101, false), 0)
++	require.NoError(t, err)
++	require.False(t, tp.shouldDrop)
++	require.NotEmpty(t, tp.ddInline())
++
++	// a restarted upstream receiver sets the codec again, the frame numbers continue on
++	// the same downtrack
++	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	tp, err = f.GetTranslationParams(packet(12, 50, true), 0)
++	require.NoError(t, err)
++	require.False(t, tp.shouldDrop)
++	out := dd.DependencyDescriptor{}
++	_, err = (&dd.DependencyDescriptorExtension{Descriptor: &out, Structure: keyFrameDescriptor.AttachedStructure}).Unmarshal(tp.ddBytesSpill)
++	require.NoError(t, err)
++	require.Equal(t, uint16(102), out.FrameNumber)
++
++	// the last packet of a TL2 frame that starts a down switch to TL0 is forwarded at TL2,
++	// its descriptor names the TL2 decode target
++	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 2})
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	tl2 := packet(13, 51, false)
++	tl2.Temporal = 2
++	tp, err = f.GetTranslationParams(tl2, 0)
++	require.NoError(t, err)
++	require.False(t, tp.shouldDrop)
++	require.Equal(t, int32(0), f.vls.GetCurrent().Temporal, "the switch takes effect after this packet")
++	out = dd.DependencyDescriptor{}
++	_, err = (&dd.DependencyDescriptorExtension{Descriptor: &out, Structure: keyFrameDescriptor.AttachedStructure}).Unmarshal(tp.ddInline())
++	require.NoError(t, err)
++	require.Equal(t, uint32(1<<0|1<<1|1<<2), *out.ActiveDecodeTargetsBitmask)
++
++	// without the extension the forwarder writes no descriptor
++	f = NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++	f.DetermineCodec(testutils.TestVP8Codec, nil, livekit.VideoLayer_MODE_UNUSED)
++	require.Nil(t, f.ddForwarder)
++}
++
++func TestForwarderPadDroppedSlot(t *testing.T) {
++	f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++
++	packet := func(sn uint16, frameNum uint64, tid int, isOutOfOrder bool) *buffer.ExtPacket {
++		extPkt, err := testutils.GetTestExtPacketVP8DD(
++			&testutils.TestExtPacketParams{SequenceNumber: sn, Timestamp: 0xabcdef, SSRC: 0x12345678, PayloadSize: 20, Marker: true, IsOutOfOrder: isOutOfOrder},
++			&testutils.TestDDParams{
++				FirstPacketInFrame: true,
++				ExtFrameNum:        frameNum,
++				TemporalID:         tid,
++				DTIs:               "SSS",
++				DecodeTargets:      testutils.TestVP8DecodeTargets,
++			},
++		)
++		require.NoError(t, err)
++		return extPkt
++	}
++
++	tp, err := f.GetTranslationParams(packet(10, 0, 0, false), 0)
++	require.NoError(t, err)
++	require.False(t, tp.shouldDrop)
++
++	// a gap, the munger hands out a slot for sequence number 11
++	tp, err = f.GetTranslationParams(packet(12, 2, 0, false), 0)
++	require.NoError(t, err)
++	require.False(t, tp.shouldDrop)
++	require.Equal(t, uint64(12), tp.rtp.extSequenceNumber)
++
++	// the late packet is on a filtered layer, its slot gets padding
++	tp, err = f.GetTranslationParams(packet(11, 1, 2, true), 0)
++	require.NoError(t, err)
++	require.True(t, tp.shouldDrop)
++	require.True(t, tp.padDroppedSlot)
++	require.Equal(t, uint64(11), tp.rtp.extSequenceNumber)
++	require.Equal(t, uint64(0xabcdef), tp.rtp.extTimestamp)
++
++	// an in-order drop rolls the slot back instead
++	tp, err = f.GetTranslationParams(packet(13, 3, 2, false), 0)
++	require.NoError(t, err)
++	require.True(t, tp.shouldDrop)
++	require.False(t, tp.padDroppedSlot)
++	tp, err = f.GetTranslationParams(packet(14, 4, 0, false), 0)
++	require.NoError(t, err)
++	require.False(t, tp.shouldDrop)
++	require.Equal(t, uint64(13), tp.rtp.extSequenceNumber)
++}
++
++// dropSelector drops one packet as relevant, the result a decode target selector gives for a
++// frame outside the target
++type dropSelector struct {
++	videolayerselector.VideoLayerSelector
++	dropSN uint64
++}
++
++func (d *dropSelector) Select(extPkt *buffer.ExtPacket, layer int32) videolayerselector.VideoLayerSelectorResult {
++	if extPkt.ExtSequenceNumber == d.dropSN {
++		return videolayerselector.VideoLayerSelectorResult{IsRelevant: true}
++	}
++	return d.VideoLayerSelector.Select(extPkt, layer)
++}
++
++func TestForwarderPadFilteredSlotAfterGap(t *testing.T) {
++	for _, tc := range []struct {
++		name           string
++		dropBySelector bool
++	}{
++		{"codec munger", false},
++		{"layer selector", true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			f := NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++			f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++			f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++			f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++			if tc.dropBySelector {
++				f.vls = &dropSelector{VideoLayerSelector: f.vls, dropSN: 12}
++			}
++
++			packet := func(sn uint16, frameNum uint64, tid int, isOutOfOrder bool) *buffer.ExtPacket {
++				extPkt, err := testutils.GetTestExtPacketVP8DD(
++					&testutils.TestExtPacketParams{SequenceNumber: sn, Timestamp: 0xabcdef + uint32(frameNum)*3000, SSRC: 0x12345678, PayloadSize: 20, Marker: true, IsOutOfOrder: isOutOfOrder},
++					&testutils.TestDDParams{
++						FirstPacketInFrame: true,
++						ExtFrameNum:        frameNum,
++						TemporalID:         tid,
++						DTIs:               "SSS",
++						DecodeTargets:      testutils.TestVP8DecodeTargets,
++					},
++				)
++				require.NoError(t, err)
++				return extPkt
++			}
++
++			tp, err := f.GetTranslationParams(packet(10, 0, 0, false), 0)
++			require.NoError(t, err)
++			require.False(t, tp.shouldDrop)
++
++			// 11 is lost, 12 is on a filtered layer: its slot gets padding and is not rolled back
++			tp, err = f.GetTranslationParams(packet(12, 2, 2, false), 0)
++			require.NoError(t, err)
++			require.True(t, tp.shouldDrop)
++			require.True(t, tp.padDroppedSlot)
++			require.Equal(t, uint64(12), tp.rtp.extSequenceNumber)
++
++			// the retransmission of 11 still has its slot
++			tp, err = f.GetTranslationParams(packet(11, 1, 0, true), 0)
++			require.NoError(t, err)
++			require.False(t, tp.shouldDrop)
++			require.Equal(t, uint64(11), tp.rtp.extSequenceNumber)
++
++			// the next packet follows the padded slot
++			tp, err = f.GetTranslationParams(packet(13, 3, 0, false), 0)
++			require.NoError(t, err)
++			require.False(t, tp.shouldDrop)
++			require.Equal(t, uint64(13), tp.rtp.extSequenceNumber)
++		})
++	}
++}
++
+ func TestForwarderGetSnTsForPadding(t *testing.T) {
+ 	f := newForwarder(testutils.TestVP8Codec, webrtc.RTPCodecTypeVideo)
+ 
+@@ -2233,24 +2611,24 @@ func TestForwarderIsEndOfLayerFrame(t *testing.T) {
+ 	vp9Codec := webrtc.RTPCodecCapability{MimeType: mime.MimeTypeVP9.String(), ClockRate: 90000}
+ 
+ 	f := newForwarder(testutils.TestVP8Codec, webrtc.RTPCodecTypeVideo)
+-	require.False(t, f.isEndOfLayerFrame(&buffer.ExtPacket{Payload: codecs.VP9Packet{E: true}}))
++	require.False(t, f.isEndOfLayerFrame(&buffer.ExtPacket{VP9: &codecs.VP9Packet{E: true}}))
+ 
+ 	f = newForwarder(vp9Codec, webrtc.RTPCodecTypeVideo)
+-	require.True(t, f.isEndOfLayerFrame(&buffer.ExtPacket{Payload: codecs.VP9Packet{E: true}}))
+-	require.False(t, f.isEndOfLayerFrame(&buffer.ExtPacket{Payload: codecs.VP9Packet{E: false}}))
++	require.True(t, f.isEndOfLayerFrame(&buffer.ExtPacket{VP9: &codecs.VP9Packet{E: true}}))
++	require.False(t, f.isEndOfLayerFrame(&buffer.ExtPacket{VP9: &codecs.VP9Packet{E: false}}))
+ 	require.False(t, f.isEndOfLayerFrame(&buffer.ExtPacket{}))
+ 
+ 	require.True(t, f.isEndOfLayerFrame(&buffer.ExtPacket{
+ 		DependencyDescriptor: &buffer.ExtDependencyDescriptor{
+ 			Descriptor: &dd.DependencyDescriptor{LastPacketInFrame: true},
+ 		},
+-		Payload: codecs.VP9Packet{E: false},
++		VP9: &codecs.VP9Packet{E: false},
+ 	}))
+ 	require.False(t, f.isEndOfLayerFrame(&buffer.ExtPacket{
+ 		DependencyDescriptor: &buffer.ExtDependencyDescriptor{
+ 			Descriptor: &dd.DependencyDescriptor{LastPacketInFrame: false},
+ 		},
+-		Payload: codecs.VP9Packet{E: true},
++		VP9: &codecs.VP9Packet{E: true},
+ 	}))
+ 	require.False(t, f.isEndOfLayerFrame(&buffer.ExtPacket{
+ 		DependencyDescriptor: &buffer.ExtDependencyDescriptor{},
+@@ -2272,3 +2650,22 @@ func TestPacerScratchFitsInlineDependencyDescriptor(t *testing.T) {
+ 	require.Len(t, p.HoldExtension(make([]byte, dd.MaxInlineExtensionSize)), dd.MaxInlineExtensionSize)
+ 	require.Nil(t, p.HoldExtension(make([]byte, dd.MaxInlineExtensionSize+1)))
+ }
++
++func TestForwarderNeedsPeriodicSyncCheck(t *testing.T) {
++	f := newForwarder(testutils.TestVP8Codec, webrtc.RTPCodecTypeVideo)
++	require.False(t, f.NeedsPeriodicSyncCheck())
++
++	// VP8 with the dependency descriptor uses it only for temporal layers
++	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	require.False(t, f.NeedsPeriodicSyncCheck())
++
++	// a new max published layer before any layer is forwarded arms the acquisition grace
++	require.True(t, f.SetMaxPublishedLayer(1))
++	require.True(t, f.NeedsPeriodicSyncCheck())
++
++	// spatial layers selected with the dependency descriptor
++	f = newForwarder(testutils.TestVP8Codec, webrtc.RTPCodecTypeVideo)
++	av1 := webrtc.RTPCodecCapability{MimeType: mime.MimeTypeAV1.String(), ClockRate: 90000}
++	f.DetermineCodec(av1, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	require.True(t, f.NeedsPeriodicSyncCheck())
++}
+diff --git a/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorextension.go b/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorextension.go
+index 28812d09..3a1bb476 100644
+--- a/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorextension.go
++++ b/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorextension.go
+@@ -113,9 +113,10 @@ const (
+ // ------------------------------------------------------------------------------
+ 
+ type DependencyDescriptor struct {
+-	FirstPacketInFrame         bool
+-	LastPacketInFrame          bool
+-	FrameNumber                uint16
++	FirstPacketInFrame bool
++	LastPacketInFrame  bool
++	FrameNumber        uint16
++	// Unmarshal writes into FrameDependencies and Resolution when they are set, else it allocates them
+ 	FrameDependencies          *FrameDependencyTemplate
+ 	Resolution                 *RenderResolution
+ 	ActiveDecodeTargetsBitmask *uint32
+@@ -201,6 +202,15 @@ func (t *FrameDependencyTemplate) Clone() *FrameDependencyTemplate {
+ 	return t2
+ }
+ 
++// CopyInto copies t into dst and reuses the slices of dst
++func (t *FrameDependencyTemplate) CopyInto(dst *FrameDependencyTemplate) {
++	dst.SpatialId = t.SpatialId
++	dst.TemporalId = t.TemporalId
++	dst.DecodeTargetIndications = append(dst.DecodeTargetIndications[:0], t.DecodeTargetIndications...)
++	dst.FrameDiffs = append(dst.FrameDiffs[:0], t.FrameDiffs...)
++	dst.ChainDiffs = append(dst.ChainDiffs[:0], t.ChainDiffs...)
++}
++
+ // ------------------------------------------------------------------------------
+ 
+ type FrameDependencyStructure struct {
+diff --git a/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorextension_test.go b/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorextension_test.go
+index 95c3aba3..58efec95 100644
+--- a/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorextension_test.go
++++ b/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorextension_test.go
+@@ -17,6 +17,8 @@ package dependencydescriptor
+ import (
+ 	"encoding/hex"
+ 	"testing"
++
++	"github.com/stretchr/testify/require"
+ )
+ 
+ func TestDependencyDescriptorUnmarshal(t *testing.T) {
+@@ -63,3 +65,80 @@ func TestDependencyDescriptorUnmarshal(t *testing.T) {
+ 		t.Log(ddVal.String())
+ 	}
+ }
++
++// Unmarshal into a descriptor whose FrameDependencies and Resolution are set writes into that
++// storage, gives the same result as a fresh descriptor, and leaves the structure's templates intact
++func TestDependencyDescriptorUnmarshalIntoStorage(t *testing.T) {
++	hexes := []string{
++		"c1017280081485214eafffaaaa863cf0430c10c302afc0aaa0063c00430010c002a000a80006000040001d954926e082b04a0941b820ac1282503157f974000ca864330e222222eca8655304224230eca877530077004200ef008601df010d",
++		"86017340fc",
++		"46017340fc",
++		"c3017540fc",
++		"88017640fc",
++		"48017640fc",
++		"c2017840fc",
++	}
++
++	var structure *FrameDependencyStructure
++	var fd FrameDependencyTemplate
++	var res RenderResolution
++	for _, h := range hexes {
++		buf, err := hex.DecodeString(h)
++		require.NoError(t, err)
++
++		var fresh DependencyDescriptor
++		_, err = (&DependencyDescriptorExtension{Structure: structure, Descriptor: &fresh}).Unmarshal(buf)
++		require.NoError(t, err)
++
++		reused := DependencyDescriptor{FrameDependencies: &fd, Resolution: &res}
++		_, err = (&DependencyDescriptorExtension{Structure: structure, Descriptor: &reused}).Unmarshal(buf)
++		require.NoError(t, err)
++
++		require.Same(t, &fd, reused.FrameDependencies)
++		require.Equal(t, fresh.FrameDependencies, reused.FrameDependencies)
++		require.Equal(t, fresh.Resolution, reused.Resolution)
++		require.Equal(t, fresh.String(), reused.String())
++
++		if fresh.AttachedStructure != nil {
++			structure = fresh.AttachedStructure
++		}
++	}
++
++	// the templates are copied out, not shared
++	for _, template := range structure.Templates {
++		require.NotSame(t, template, &fd)
++	}
++}
++
++// a caller may hand Unmarshal a descriptor that still points at one of the structure's templates,
++// custom fields of the packet must not change that template
++func TestDependencyDescriptorUnmarshalDoesNotWriteIntoTemplate(t *testing.T) {
++	fixture := newDependencyDescriptorMarshalFixture(t)
++	structure := fixture.Structure
++
++	// a per-packet descriptor using a template with frame diffs, with one custom diff
++	var template *FrameDependencyTemplate
++	for _, tmpl := range structure.Templates {
++		if len(tmpl.FrameDiffs) > 0 {
++			template = tmpl
++			break
++		}
++	}
++	require.NotNil(t, template)
++	want := append([]int(nil), template.FrameDiffs...)
++
++	custom := template.Clone()
++	custom.FrameDiffs[0] += 2
++	buf, err := (&DependencyDescriptorExtension{
++		Descriptor: &DependencyDescriptor{FrameNumber: 7, FrameDependencies: custom},
++		Structure:  structure,
++	}).Marshal()
++	require.NoError(t, err)
++
++	parsed := DependencyDescriptor{FrameDependencies: template}
++	_, err = (&DependencyDescriptorExtension{Structure: structure, Descriptor: &parsed}).Unmarshal(buf)
++	require.NoError(t, err)
++	require.Equal(t, custom.FrameDiffs, parsed.FrameDependencies.FrameDiffs)
++	require.NotSame(t, template, parsed.FrameDependencies)
++	require.Equal(t, want, template.FrameDiffs)
++}
+diff --git a/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorreader.go b/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorreader.go
+index b3baf6f3..0b7d8ac0 100644
+--- a/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorreader.go
++++ b/pkg/sfu/rtpextension/dependencydescriptor/dependencydescriptorreader.go
+@@ -16,6 +16,7 @@ package dependencydescriptor
+ 
+ import (
+ 	"errors"
++	"slices"
+ )
+ 
+ var (
+@@ -356,8 +357,14 @@ func (r *DependencyDescriptorReader) readFrameDependencyDefinition() error {
+ 		return ErrDDReaderInvalidTemplateIndex
+ 	}
+ 
+-	// Copy all the fields from the matching template
+-	r.descriptor.FrameDependencies = r.structure.Templates[templateIndex].Clone()
++	// Copy all the fields from the matching template into caller storage,
++	// never into one of the structure's templates, custom fields would change the template
++	dst := r.descriptor.FrameDependencies
++	if dst == nil || slices.Contains(r.structure.Templates, dst) {
++		dst = &FrameDependencyTemplate{}
++		r.descriptor.FrameDependencies = dst
++	}
++	r.structure.Templates[templateIndex].CopyInto(dst)
+ 
+ 	if r.customDtisFlag {
+ 		err := r.readFrameDtis()
+@@ -389,8 +396,10 @@ func (r *DependencyDescriptorReader) readFrameDependencyDefinition() error {
+ 			r.buffer.Invalidate()
+ 			return ErrDDReaderInvalidSpatialLayer
+ 		}
+-		res := r.structure.Resolutions[r.descriptor.FrameDependencies.SpatialId]
+-		r.descriptor.Resolution = &res
++		if r.descriptor.Resolution == nil {
++			r.descriptor.Resolution = &RenderResolution{}
++		}
++		*r.descriptor.Resolution = r.structure.Resolutions[r.descriptor.FrameDependencies.SpatialId]
+ 	}
+ 
+ 	return nil
+diff --git a/pkg/sfu/testutils/data.go b/pkg/sfu/testutils/data.go
+index 9b8a1386..6ac6a9f2 100644
+--- a/pkg/sfu/testutils/data.go
++++ b/pkg/sfu/testutils/data.go
+@@ -21,6 +21,7 @@ import (
+ 	"github.com/pion/webrtc/v4"
+ 
+ 	"github.com/livekit/livekit-server/pkg/sfu/buffer"
++	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
+ 	"github.com/livekit/mediatransportutil/pkg/codec"
+ )
+ 
+@@ -87,7 +88,8 @@ func GetTestExtPacketVP8(params *TestExtPacketParams, vp8 *codec.VP8) (*buffer.E
+ 	}
+ 
+ 	ep.IsKeyFrame = vp8.IsKeyFrame
+-	ep.Payload = *vp8
++	vp8Copy := *vp8 // keep the packet independent of later changes to vp8
++	ep.VP8 = &vp8Copy
+ 	if ep.DependencyDescriptor == nil {
+ 		ep.Temporal = int32(vp8.TID)
+ 	}
+@@ -96,6 +98,67 @@ func GetTestExtPacketVP8(params *TestExtPacketParams, vp8 *codec.VP8) (*buffer.E
+ 
+ // --------------------------------------
+ 
++type TestDDParams struct {
++	FirstPacketInFrame bool
++	ExtFrameNum        uint64
++	TemporalID         int
++	// decode target indications as one character per decode target: S, R, D or -
++	DTIs          string
++	FrameDiffs    []int
++	DecodeTargets []buffer.DependencyDescriptorDecodeTarget
++}
++
++// GetTestExtPacketVP8DD returns a VP8 packet with a dependency descriptor and the
++// minimized VP8 payload descriptor that libwebrtc sends with it: no TID, no Y bit and
++// no picture ID.
++func GetTestExtPacketVP8DD(params *TestExtPacketParams, ddParams *TestDDParams) (*buffer.ExtPacket, error) {
++	ep, err := GetTestExtPacketVP8(params, &codec.VP8{S: ddParams.FirstPacketInFrame, IsKeyFrame: params.IsKeyFrame})
++	if err != nil {
++		return nil, err
++	}
++
++	dtis := make([]dd.DecodeTargetIndication, 0, len(ddParams.DTIs))
++	for _, c := range ddParams.DTIs {
++		switch c {
++		case 'S':
++			dtis = append(dtis, dd.DecodeTargetSwitch)
++		case 'R':
++			dtis = append(dtis, dd.DecodeTargetRequired)
++		case 'D':
++			dtis = append(dtis, dd.DecodeTargetDiscardable)
++		default:
++			dtis = append(dtis, dd.DecodeTargetNotPresent)
++		}
++	}
++	ep.Temporal = int32(ddParams.TemporalID)
++	ep.DependencyDescriptor = &buffer.ExtDependencyDescriptor{
++		Descriptor: &dd.DependencyDescriptor{
++			FirstPacketInFrame: ddParams.FirstPacketInFrame,
++			LastPacketInFrame:  params.Marker,
++			FrameDependencies: &dd.FrameDependencyTemplate{
++				TemporalId:              ddParams.TemporalID,
++				DecodeTargetIndications: dtis,
++				FrameDiffs:              ddParams.FrameDiffs,
++			},
++		},
++		DecodeTargets: ddParams.DecodeTargets,
++		ExtFrameNum:   ddParams.ExtFrameNum,
++		// all decode targets active, as the parser reports after a structure
++		ActiveDecodeTargetsMask: 1<<len(ddParams.DecodeTargets) - 1,
++	}
++	return ep, nil
++}
++
++// TestVP8DecodeTargets are the decode targets of libwebrtc's three layer VP8 structure,
++// sorted from high to low.
++var TestVP8DecodeTargets = []buffer.DependencyDescriptorDecodeTarget{
++	{Target: 2, Layer: buffer.VideoLayer{Temporal: 2}},
++	{Target: 1, Layer: buffer.VideoLayer{Temporal: 1}},
++	{Target: 0, Layer: buffer.VideoLayer{Temporal: 0}},
++}
++
++// --------------------------------------
++
+ var TestVP8Codec = webrtc.RTPCodecCapability{
+ 	MimeType:  "video/vp8",
+ 	ClockRate: 90000,
+diff --git a/pkg/sfu/videolayerselector/ddforwarder.go b/pkg/sfu/videolayerselector/ddforwarder.go
+new file mode 100644
+index 00000000..c5394df8
+--- /dev/null
++++ b/pkg/sfu/videolayerselector/ddforwarder.go
+@@ -0,0 +1,141 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package videolayerselector
++
++import (
++	"github.com/livekit/livekit-server/pkg/sfu/buffer"
++	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
++	"github.com/livekit/protocol/logger"
++)
++
++// DDForwarder forwards the dependency descriptor of a simulcast stream. Without it, a
++// subscriber of a stream without picture IDs, VP8 from libwebrtc for example, finds frame
++// references by sequence number alone and stalls on every sequence number it cannot account
++// for.
++//
++// libwebrtc numbers frames with one counter for all simulcast layers of a sender, so the
++// frame numbers of a new layer are close to those of the old one. The numbers sent to the
++// subscriber must still never go back: a key frame older than the last structure the
++// subscriber received is dropped. So whenever the stream changes, a layer switch, a stream
++// restart or a new forwarder, the numbers are moved up past the last one sent if needed.
++// Otherwise they pass through with the current offset, so frame diffs and chain diffs stay
++// valid. A migrated subscriber starts with the publisher's numbers, which continue its old
++// ones in most cases but not all, as the last number sent is not part of the migrated state.
++type DDForwarder struct {
++	logger logger.Logger
++
++	initialized       bool // a key frame with a structure set the stream
++	ssrc              uint32
++	restartGeneration int
++	structure         *dd.FrameDependencyStructure
++
++	frameNumOffset  uint64 // added to the incoming extended frame number
++	hasLast         bool
++	extLastFrameNum uint64 // highest outgoing extended frame number
++
++	descriptor                 dd.DependencyDescriptor
++	activeDecodeTargetsBitmask uint32
++}
++
++func NewDDForwarder(logger logger.Logger) *DDForwarder {
++	return &DDForwarder{
++		logger: logger,
++	}
++}
++
++// NewDDForwarderFromOther continues the frame numbers of a forwarder it replaces on the
++// same downtrack, a restarted upstream receiver for example.
++func NewDDForwarderFromOther(other *DDForwarder, logger logger.Logger) *DDForwarder {
++	d := NewDDForwarder(logger)
++	if other != nil && other.hasLast {
++		d.hasLast = true
++		d.extLastFrameNum = other.extLastFrameNum
++	}
++	return d
++}
++
++// Forward marshals the descriptor of a forwarded packet into result. temporal is the
++// temporal layer the packet is forwarded at. It returns false when there is nothing to
++// send, before the first key frame of the stream for example.
++func (d *DDForwarder) Forward(extPkt *buffer.ExtPacket, temporal int32, result *VideoLayerSelectorResult) bool {
++	ddwdt := extPkt.DependencyDescriptor
++	if ddwdt == nil || ddwdt.Descriptor == nil || ddwdt.Descriptor.FrameDependencies == nil {
++		return false
++	}
++	descriptor := ddwdt.Descriptor
++
++	extFrameNum := ddwdt.ExtFrameNum
++	hasStructure := extPkt.IsKeyFrame && descriptor.AttachedStructure != nil
++	switch {
++	case !d.initialized || extPkt.Packet.SSRC != d.ssrc:
++		// a stream starts on a key frame, a late packet of the old layer is not described
++		if !hasStructure {
++			return false
++		}
++		d.rebase(extFrameNum)
++		d.initialized = true
++		d.ssrc = extPkt.Packet.SSRC
++		d.restartGeneration = ddwdt.RestartGeneration
++
++	case ddwdt.RestartGeneration != d.restartGeneration:
++		// the restarted stream numbers its frames from a new start and has its own structure,
++		// the first packet can be a delta frame
++		d.rebase(extFrameNum)
++		d.restartGeneration = ddwdt.RestartGeneration
++		d.structure = nil
++	}
++	if hasStructure {
++		d.structure = descriptor.AttachedStructure
++	}
++	if d.structure == nil {
++		return false
++	}
++
++	extOutFrameNum := extFrameNum + d.frameNumOffset
++	if !d.hasLast || extOutFrameNum > d.extLastFrameNum {
++		d.hasLast = true
++		d.extLastFrameNum = extOutFrameNum
++	}
++
++	// tell the subscriber which decode targets to expect: the publisher's active ones up to
++	// the forwarded temporal layer. On a key frame too, where the structure alone would make
++	// all of them active.
++	d.activeDecodeTargetsBitmask = 0
++	for _, dt := range ddwdt.DecodeTargets {
++		if dt.Layer.Temporal <= temporal {
++			d.activeDecodeTargetsBitmask |= 1 << dt.Target
++		}
++	}
++	d.activeDecodeTargetsBitmask &= ddwdt.ActiveDecodeTargetsMask
++	d.descriptor = *descriptor
++	d.descriptor.FrameNumber = uint16(extOutFrameNum)
++	d.descriptor.ActiveDecodeTargetsBitmask = &d.activeDecodeTargetsBitmask
++
++	if err := result.marshalDependencyDescriptorExtension(&dd.DependencyDescriptorExtension{
++		Descriptor: &d.descriptor,
++		Structure:  d.structure,
++	}); err != nil {
++		d.logger.Warnw("could not marshal dependency descriptor", err, "extFrameNum", extFrameNum)
++		return false
++	}
++	return true
++}
++
++// rebase moves the frame numbers up when a new stream would go back past the last one sent
++func (d *DDForwarder) rebase(extFrameNum uint64) {
++	if d.hasLast && extFrameNum+d.frameNumOffset <= d.extLastFrameNum {
++		d.frameNumOffset = d.extLastFrameNum + 1 - extFrameNum
++	}
++}
+diff --git a/pkg/sfu/videolayerselector/ddforwarder_test.go b/pkg/sfu/videolayerselector/ddforwarder_test.go
+new file mode 100644
+index 00000000..cc4a47a4
+--- /dev/null
++++ b/pkg/sfu/videolayerselector/ddforwarder_test.go
+@@ -0,0 +1,234 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package videolayerselector
++
++import (
++	"encoding/hex"
++	"testing"
++
++	"github.com/pion/rtp"
++	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/livekit-server/pkg/sfu/buffer"
++	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
++	"github.com/livekit/protocol/logger"
++)
++
++// ddForwarderTest builds packets with the L3T3 fixture descriptor and decodes what a
++// DDForwarder writes
++type ddForwarderTest struct {
++	t                  *testing.T
++	keyFrameDescriptor dd.DependencyDescriptor
++	structure          *dd.FrameDependencyStructure
++	decodeTargets      []buffer.DependencyDescriptorDecodeTarget
++}
++
++func newDDForwarderTest(t *testing.T) *ddForwarderTest {
++	raw, err := hex.DecodeString(dependencyDescriptorFixture)
++	require.NoError(t, err)
++	keyFrameDescriptor := dd.DependencyDescriptor{}
++	_, err = (&dd.DependencyDescriptorExtension{Descriptor: &keyFrameDescriptor}).Unmarshal(raw)
++	require.NoError(t, err)
++	require.NotNil(t, keyFrameDescriptor.AttachedStructure)
++
++	return &ddForwarderTest{
++		t:                  t,
++		keyFrameDescriptor: keyFrameDescriptor,
++		structure:          keyFrameDescriptor.AttachedStructure,
++		decodeTargets: []buffer.DependencyDescriptorDecodeTarget{
++			{Target: 2, Layer: buffer.VideoLayer{Temporal: 2}},
++			{Target: 1, Layer: buffer.VideoLayer{Temporal: 1}},
++			{Target: 0, Layer: buffer.VideoLayer{Temporal: 0}},
++		},
++	}
++}
++
++func (d *ddForwarderTest) packet(ssrc uint32, extFrameNum uint64, isKeyFrame bool, restartGeneration int) *buffer.ExtPacket {
++	descriptor := d.keyFrameDescriptor
++	descriptor.FrameNumber = uint16(extFrameNum)
++	if !isKeyFrame {
++		descriptor.AttachedStructure = nil
++		descriptor.ActiveDecodeTargetsBitmask = nil
++	}
++	return &buffer.ExtPacket{
++		Packet:     &rtp.Packet{Header: rtp.Header{SSRC: ssrc}},
++		IsKeyFrame: isKeyFrame,
++		DependencyDescriptor: &buffer.ExtDependencyDescriptor{
++			Descriptor:        &descriptor,
++			DecodeTargets:     d.decodeTargets,
++			ExtFrameNum:       extFrameNum,
++			RestartGeneration: restartGeneration,
++			// all decode targets active, as the parser reports after a structure
++			ActiveDecodeTargetsMask: 1<<len(d.decodeTargets) - 1,
++		},
++	}
++}
++
++// forward returns the decoded descriptor, nil when f writes none
++func (d *ddForwarderTest) forward(f *DDForwarder, extPkt *buffer.ExtPacket, temporal int32) *dd.DependencyDescriptor {
++	result := VideoLayerSelectorResult{}
++	if !f.Forward(extPkt, temporal, &result) {
++		return nil
++	}
++	ddBytes := result.DDBytesSpill
++	if ddBytes == nil {
++		ddBytes = result.DDBytes[:result.DDBytesLen]
++	}
++	out := &dd.DependencyDescriptor{}
++	_, err := (&dd.DependencyDescriptorExtension{Descriptor: out, Structure: d.structure}).Unmarshal(ddBytes)
++	require.NoError(d.t, err)
++	return out
++}
++
++func TestDDForwarder(t *testing.T) {
++	d := newDDForwarderTest(t)
++	f := NewDDForwarder(logger.GetLogger())
++
++	// nothing before the first key frame, there is no structure to write it with
++	require.Nil(t, d.forward(f, d.packet(1, 999, false, 0), 0))
++
++	// the first key frame keeps the publisher's frame number and carries the structure,
++	// with the decode targets the subscriber gets, not all of them
++	out := d.forward(f, d.packet(1, 1000, true, 0), 0)
++	require.Equal(t, uint16(1000), out.FrameNumber)
++	require.NotNil(t, out.AttachedStructure)
++	require.Equal(t, uint32(1<<0), *out.ActiveDecodeTargetsBitmask)
++
++	// delta frames name the active decode targets, frames dropped in between leave gaps
++	out = d.forward(f, d.packet(1, 1001, false, 0), 0)
++	require.Equal(t, uint16(1001), out.FrameNumber)
++	require.Equal(t, uint32(1<<0), *out.ActiveDecodeTargetsBitmask)
++	out = d.forward(f, d.packet(1, 1003, false, 0), 1)
++	require.Equal(t, uint16(1003), out.FrameNumber)
++	require.Equal(t, uint32(1<<0|1<<1), *out.ActiveDecodeTargetsBitmask)
++
++	// a layer switch: the new layer's lower frame numbers continue after the last one
++	out = d.forward(f, d.packet(2, 40, true, 0), 0)
++	require.Equal(t, uint16(1004), out.FrameNumber)
++	require.NotNil(t, out.AttachedStructure)
++	out = d.forward(f, d.packet(2, 41, false, 0), 0)
++	require.Equal(t, uint16(1005), out.FrameNumber)
++
++	// a retransmitted key frame packet keeps its number
++	out = d.forward(f, d.packet(2, 40, true, 0), 0)
++	require.Equal(t, uint16(1004), out.FrameNumber)
++
++	// a late packet of the previous layer is not described
++	require.Nil(t, d.forward(f, d.packet(1, 1004, false, 0), 0))
++
++	// a restarted stream starts its frame numbers over, they still continue
++	out = d.forward(f, d.packet(2, 5, true, 1), 0)
++	require.Equal(t, uint16(1006), out.FrameNumber)
++	out = d.forward(f, d.packet(2, 6, false, 1), 0)
++	require.Equal(t, uint16(1007), out.FrameNumber)
++}
++
++func TestDDForwarderSharedFrameCounter(t *testing.T) {
++	// libwebrtc numbers the frames of all simulcast layers with one counter
++	d := newDDForwarderTest(t)
++	f := NewDDForwarder(logger.GetLogger())
++
++	require.Equal(t, uint16(100), d.forward(f, d.packet(1, 100, true, 0), 0).FrameNumber)
++	require.Equal(t, uint16(102), d.forward(f, d.packet(1, 102, false, 0), 0).FrameNumber)
++
++	// the new layer's key frame was encoded before the last frame sent, it moves up
++	require.Equal(t, uint16(103), d.forward(f, d.packet(2, 101, true, 0), 0).FrameNumber)
++	require.Equal(t, uint16(106), d.forward(f, d.packet(2, 104, false, 0), 0).FrameNumber)
++
++	// a key frame ahead of the last frame sent keeps the current offset
++	require.Equal(t, uint16(112), d.forward(f, d.packet(1, 110, true, 0), 0).FrameNumber)
++}
++
++func TestDDForwarderFromOther(t *testing.T) {
++	d := newDDForwarderTest(t)
++	f := NewDDForwarder(logger.GetLogger())
++	require.Equal(t, uint16(100), d.forward(f, d.packet(1, 100, true, 0), 0).FrameNumber)
++	require.Equal(t, uint16(103), d.forward(f, d.packet(1, 103, false, 0), 0).FrameNumber)
++
++	// a replacement on the same downtrack, a restarted upstream receiver for example, gets
++	// a key frame behind the last frame sent: it continues after the last frame sent
++	f = NewDDForwarderFromOther(f, logger.GetLogger())
++	require.Nil(t, d.forward(f, d.packet(1, 101, false, 0), 0))
++	require.Equal(t, uint16(104), d.forward(f, d.packet(1, 101, true, 0), 0).FrameNumber)
++	require.Equal(t, uint16(105), d.forward(f, d.packet(1, 102, false, 0), 0).FrameNumber)
++
++	// a replacement of nothing keeps the publisher's frame numbers
++	f = NewDDForwarderFromOther(nil, logger.GetLogger())
++	require.Equal(t, uint16(50), d.forward(f, d.packet(2, 50, true, 0), 0).FrameNumber)
++}
++
++func TestDDForwarderRestartOnDeltaFrame(t *testing.T) {
++	d := newDDForwarderTest(t)
++	f := NewDDForwarder(logger.GetLogger())
++	require.Equal(t, uint16(1000), d.forward(f, d.packet(1, 1000, true, 0), 0).FrameNumber)
++	require.Equal(t, uint16(1001), d.forward(f, d.packet(1, 1001, false, 0), 0).FrameNumber)
++
++	// the restarted stream's first packet is a delta frame: it has no structure to be
++	// written with, but its numbers already continue
++	require.Nil(t, d.forward(f, d.packet(1, 3, false, 1), 0))
++	require.Equal(t, uint16(1003), d.forward(f, d.packet(1, 4, true, 1), 0).FrameNumber)
++	require.Equal(t, uint16(1004), d.forward(f, d.packet(1, 5, false, 1), 0).FrameNumber)
++}
++
++func TestDDForwarderPublisherActiveDecodeTargets(t *testing.T) {
++	d := newDDForwarderTest(t)
++	f := NewDDForwarder(logger.GetLogger())
++	require.Equal(t, uint32(1<<0|1<<1|1<<2), *d.forward(f, d.packet(1, 100, true, 0), 2).ActiveDecodeTargetsBitmask)
++
++	// the publisher turned off its upper decode targets on a packet that was not forwarded,
++	// the next forwarded packet still reports it
++	delta := d.packet(1, 102, false, 0)
++	delta.DependencyDescriptor.ActiveDecodeTargetsMask = 1 << 0
++	require.Equal(t, uint32(1<<0), *d.forward(f, delta, 2).ActiveDecodeTargetsBitmask)
++
++	// and turned them on again
++	require.Equal(t, uint32(1<<0|1<<1|1<<2), *d.forward(f, d.packet(1, 103, true, 0), 2).ActiveDecodeTargetsBitmask)
++}
++
++func TestDDForwarderAllocations(t *testing.T) {
++	raw, err := hex.DecodeString(dependencyDescriptorFixture)
++	require.NoError(t, err)
++	keyFrameDescriptor := dd.DependencyDescriptor{}
++	_, err = (&dd.DependencyDescriptorExtension{Descriptor: &keyFrameDescriptor}).Unmarshal(raw)
++	require.NoError(t, err)
++
++	decodeTargets := []buffer.DependencyDescriptorDecodeTarget{{Target: 0, Layer: buffer.VideoLayer{Temporal: 0}}}
++	keyFrame := &buffer.ExtPacket{
++		Packet:               &rtp.Packet{Header: rtp.Header{SSRC: 1}},
++		IsKeyFrame:           true,
++		DependencyDescriptor: &buffer.ExtDependencyDescriptor{Descriptor: &keyFrameDescriptor, DecodeTargets: decodeTargets, ExtFrameNum: 100, ActiveDecodeTargetsMask: 1},
++	}
++	deltaDescriptor := keyFrameDescriptor
++	deltaDescriptor.AttachedStructure = nil
++	deltaDescriptor.ActiveDecodeTargetsBitmask = nil
++	delta := &buffer.ExtPacket{
++		Packet:               &rtp.Packet{Header: rtp.Header{SSRC: 1}},
++		DependencyDescriptor: &buffer.ExtDependencyDescriptor{Descriptor: &deltaDescriptor, DecodeTargets: decodeTargets, ExtFrameNum: 101, ActiveDecodeTargetsMask: 1},
++	}
++
++	f := NewDDForwarder(logger.GetLogger())
++	result := VideoLayerSelectorResult{}
++	require.True(t, f.Forward(keyFrame, 0, &result))
++
++	// a delta frame's descriptor fits inline
++	allocs := testing.AllocsPerRun(100, func() {
++		delta.DependencyDescriptor.ExtFrameNum++
++		result = VideoLayerSelectorResult{}
++		if !f.Forward(delta, 0, &result) {
++			t.Fatal("not forwarded")
++		}
++	})
++	require.Zero(t, allocs)
++}
+diff --git a/pkg/sfu/videolayerselector/selectordecisioncache.go b/pkg/sfu/videolayerselector/selectordecisioncache.go
+index ea60086b..3571e00c 100644
+--- a/pkg/sfu/videolayerselector/selectordecisioncache.go
++++ b/pkg/sfu/videolayerselector/selectordecisioncache.go
+@@ -128,7 +128,13 @@ func (s *SelectorDecisionCache) addEntity(entity uint64, sd selectorDecision) {
+ 		return
+ 	}
+ 
+-	for e := s.last + 1; e != entity; e++ {
++	// only the last numEntries entities fit in the ring
++	floor := uint64(0)
++	if entity > s.numEntries {
++		floor = entity - s.numEntries
++	}
++
++	for e := max(s.last+1, floor); e != entity; e++ {
+ 		s.setEntity(e, selectorDecisionUnknown)
+ 	}
+ 
+@@ -145,6 +151,9 @@ func (s *SelectorDecisionCache) addEntity(entity uint64, sd selectorDecision) {
+ 	} else {
+ 		missingEnd = s.base
+ 	}
++	if missingEnd > missingStart+s.numEntries {
++		missingStart = missingEnd - s.numEntries
++	}
+ 	if missingEnd > missingStart {
+ 		for e := missingStart; e != missingEnd; e++ {
+ 			s.setEntityIfUnknown(e, selectorDecisionMissing)
+diff --git a/pkg/sfu/videolayerselector/selectordecisioncache_test.go b/pkg/sfu/videolayerselector/selectordecisioncache_test.go
+new file mode 100644
+index 00000000..ed62a692
+--- /dev/null
++++ b/pkg/sfu/videolayerselector/selectordecisioncache_test.go
+@@ -0,0 +1,84 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package videolayerselector
++
++import (
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/require"
++)
++
++func TestSelectorDecisionCacheLargeJump(t *testing.T) {
++	s := NewSelectorDecisionCache(256, 80)
++	s.AddForwarded(10)
++	s.AddForwarded(11)
++
++	var expected []selectorDecision
++	require.True(t, s.ExpectDecision(12, func(_ uint64, sd selectorDecision) {
++		expected = append(expected, sd)
++	}))
++
++	jumpTo := uint64(11 + 65535)
++	s.AddDropped(jumpTo)
++
++	// skipped entity that was expected is reported missing
++	require.Equal(t, []selectorDecision{selectorDecisionMissing}, expected)
++
++	sd, err := s.GetDecision(jumpTo)
++	require.NoError(t, err)
++	require.Equal(t, selectorDecisionDropped, sd)
++
++	// the missing range wraps the whole ring, so every other slot reads missing
++	for e := jumpTo - s.numEntries + 1; e < jumpTo; e++ {
++		sd, err = s.GetDecision(e)
++		require.NoError(t, err)
++		require.Equal(t, selectorDecisionMissing, sd, "entity %d", e)
++	}
++
++	_, err = s.GetDecision(jumpTo - s.numEntries)
++	require.Error(t, err)
++}
++
++func TestSelectorDecisionCacheSmallJump(t *testing.T) {
++	s := NewSelectorDecisionCache(256, 80)
++	s.AddForwarded(1000)
++	s.AddDropped(1100)
++
++	// within nack window -> unknown, older skipped -> missing
++	for e := uint64(1001); e < 1100; e++ {
++		sd, err := s.GetDecision(e)
++		require.NoError(t, err)
++		if e >= 1100-80 {
++			require.Equal(t, selectorDecisionUnknown, sd, "entity %d", e)
++		} else {
++			require.Equal(t, selectorDecisionMissing, sd, "entity %d", e)
++		}
++	}
++}
++
++func TestSelectorDecisionCacheJumpIsBounded(t *testing.T) {
++	s := NewSelectorDecisionCache(256, 80)
++	entity := uint64(1)
++	s.AddForwarded(entity)
++
++	// uncapped, each jump walks ~2x the gap (seconds in total), capped it walks ~2x the ring
++	start := time.Now()
++	for range 10000 {
++		entity += 65535
++		s.AddDropped(entity)
++	}
++	require.Less(t, time.Since(start), time.Second)
++}
+diff --git a/pkg/sfu/videolayerselector/temporallayerselector/dependencydescriptor.go b/pkg/sfu/videolayerselector/temporallayerselector/dependencydescriptor.go
+new file mode 100644
+index 00000000..1c064166
+--- /dev/null
++++ b/pkg/sfu/videolayerselector/temporallayerselector/dependencydescriptor.go
+@@ -0,0 +1,125 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package temporallayerselector
++
++import (
++	"github.com/livekit/livekit-server/pkg/sfu/buffer"
++	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
++	"github.com/livekit/protocol/logger"
++)
++
++// frames tracked behind the highest frame number, more than temporal references reach
++const ddFrameWindow = 64
++
++// DependencyDescriptor switches temporal layers with the dependency descriptor alone, for
++// a stream with one spatial layer. It only picks the layer, the codec munger drops the
++// packets above it. libwebrtc strips the VP8 payload descriptor when it sends the
++// dependency descriptor, so for VP8 the temporal ID and the layer sync bit are only here.
++type DependencyDescriptor struct {
++	logger logger.Logger
++
++	initialized   bool
++	highestFrame  uint64
++	forwardedMask uint64 // bit i: frame highestFrame - i was forwarded
++}
++
++func NewDependencyDescriptor(logger logger.Logger) *DependencyDescriptor {
++	return &DependencyDescriptor{
++		logger: logger,
++	}
++}
++
++func (d *DependencyDescriptor) Select(extPkt *buffer.ExtPacket, current int32, target int32) (this int32, next int32) {
++	this = current
++	next = current
++
++	ddwdt := extPkt.DependencyDescriptor
++	if ddwdt == nil || ddwdt.Descriptor == nil || ddwdt.Descriptor.FrameDependencies == nil {
++		return
++	}
++
++	// A late first packet, a retransmission for example, starts a frame whose other
++	// packets were already decided. A key frame is the exception: it references nothing,
++	// and it restarts the frame numbers on a stream restart.
++	isFrameStart := ddwdt.Descriptor.FirstPacketInFrame && !extPkt.IsOutOfOrder
++	switch {
++	case current < target && extPkt.IsKeyFrame:
++		this = target
++		next = target
++
++	case current < target && isFrameStart:
++		// A switch point of a decode target makes all later frames of that target
++		// decodable if this frame is decodable, so also every frame this one references
++		// has to have been forwarded.
++		if !d.areForwarded(ddwdt.ExtFrameNum, ddwdt.Descriptor.FrameDependencies.FrameDiffs) {
++			break
++		}
++		dtis := ddwdt.Descriptor.FrameDependencies.DecodeTargetIndications
++		for _, dt := range ddwdt.DecodeTargets { // sorted from high to low
++			if dt.Layer.Temporal <= current || dt.Layer.Temporal > target || dt.Target >= len(dtis) {
++				continue
++			}
++			if dtis[dt.Target] == dd.DecodeTargetSwitch {
++				this = dt.Layer.Temporal
++				next = dt.Layer.Temporal
++				break
++			}
++		}
++
++	case current > target && extPkt.Packet.Marker:
++		next = target
++	}
++
++	if extPkt.IsKeyFrame || isFrameStart {
++		d.onFrame(ddwdt.ExtFrameNum, extPkt.IsKeyFrame, extPkt.Temporal <= this)
++	}
++	return
++}
++
++func (d *DependencyDescriptor) onFrame(frame uint64, isKeyFrame bool, isForwarded bool) {
++	switch {
++	case isKeyFrame || !d.initialized || frame >= d.highestFrame+ddFrameWindow:
++		d.initialized = true
++		d.highestFrame = frame
++		d.forwardedMask = 0
++
++	case frame > d.highestFrame:
++		d.forwardedMask <<= frame - d.highestFrame
++		d.highestFrame = frame
++
++	case d.highestFrame-frame >= ddFrameWindow:
++		return
++	}
++
++	if isForwarded {
++		d.forwardedMask |= 1 << (d.highestFrame - frame)
++	}
++}
++
++func (d *DependencyDescriptor) areForwarded(frame uint64, frameDiffs []int) bool {
++	if !d.initialized {
++		return false
++	}
++	for _, diff := range frameDiffs {
++		if diff <= 0 || uint64(diff) > frame {
++			return false
++		}
++		ref := frame - uint64(diff)
++		if ref > d.highestFrame || d.highestFrame-ref >= ddFrameWindow || d.forwardedMask&(1<<(d.highestFrame-ref)) == 0 {
++			return false
++		}
++	}
++	return true
++}
+diff --git a/pkg/sfu/videolayerselector/temporallayerselector/dependencydescriptor_test.go b/pkg/sfu/videolayerselector/temporallayerselector/dependencydescriptor_test.go
+new file mode 100644
+index 00000000..319ecc9e
+--- /dev/null
++++ b/pkg/sfu/videolayerselector/temporallayerselector/dependencydescriptor_test.go
+@@ -0,0 +1,184 @@
++// Copyright 2026 LiveKit, Inc.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++package temporallayerselector
++
++import (
++	"testing"
++
++	"github.com/stretchr/testify/require"
++
++	"github.com/livekit/livekit-server/pkg/sfu/buffer"
++	"github.com/livekit/livekit-server/pkg/sfu/testutils"
++	"github.com/livekit/protocol/logger"
++)
++
++type vp8DDFrame struct {
++	tid        int
++	dtis       string
++	frameDiffs []int
++	keyFrame   bool
++}
++
++// libwebrtc's three layer VP8 pattern: T0 refreshes "last", T1 refreshes "golden", and
++// frame diffs point at the frames in those buffers
++var vp8DDPattern = []vp8DDFrame{
++	{tid: 0, dtis: "SSS", frameDiffs: []int{4}},
++	{tid: 2, dtis: "--D", frameDiffs: []int{1}},
++	{tid: 1, dtis: "-SS", frameDiffs: []int{2}},
++	{tid: 2, dtis: "--D", frameDiffs: []int{1, 3}},
++	{tid: 0, dtis: "SRR", frameDiffs: []int{4}},
++	{tid: 2, dtis: "--D", frameDiffs: []int{1, 3}},
++	{tid: 1, dtis: "-DS", frameDiffs: []int{2, 4}},
++	{tid: 2, dtis: "--D", frameDiffs: []int{1, 3}},
++}
++
++func vp8DDPacket(t *testing.T, frameNum uint64, f vp8DDFrame, first bool, marker bool) *buffer.ExtPacket {
++	extPkt, err := testutils.GetTestExtPacketVP8DD(
++		&testutils.TestExtPacketParams{SequenceNumber: uint16(frameNum), PayloadSize: 20, Marker: marker, IsKeyFrame: f.keyFrame},
++		&testutils.TestDDParams{
++			FirstPacketInFrame: first,
++			ExtFrameNum:        frameNum,
++			TemporalID:         f.tid,
++			DTIs:               f.dtis,
++			FrameDiffs:         f.frameDiffs,
++			DecodeTargets:      testutils.TestVP8DecodeTargets,
++		},
++	)
++	require.NoError(t, err)
++	return extPkt
++}
++
++// runDependencyDescriptor sends one packet per frame: a key frame, the pattern at the start target until
++// frame switchAt, then at target 2. It returns the frame number of the up-switch.
++func runDependencyDescriptor(t *testing.T, startTarget int32, switchAt uint64) (uint64, bool) {
++	v := NewDependencyDescriptor(logger.GetLogger())
++	current := int32(0)
++	for frameNum := uint64(0); frameNum < 40; frameNum++ {
++		f := vp8DDPattern[frameNum%uint64(len(vp8DDPattern))]
++		if frameNum == 0 {
++			f = vp8DDFrame{tid: 0, dtis: "SSS", keyFrame: true}
++		}
++		target := startTarget
++		if frameNum >= switchAt {
++			target = 2
++		}
++		this, next := v.Select(vp8DDPacket(t, frameNum, f, true, true), current, target)
++		if frameNum >= switchAt && next == 2 {
++			require.Equal(t, int32(2), this)
++			return frameNum, true
++		}
++		current = next
++	}
++	return 0, false
++}
++
++func TestDependencyDescriptorSelect(t *testing.T) {
++	t.Run("from TL0, up-switch at the next T0 switch point", func(t *testing.T) {
++		// frame 14 is the "-DS" T1 frame, it references T1 frame 10 that was dropped
++		frameNum, ok := runDependencyDescriptor(t, 0, 12)
++		require.True(t, ok)
++		require.Equal(t, uint64(16), frameNum)
++
++		// frame 10 is the "-SS" T1 frame, it references only T0
++		frameNum, ok = runDependencyDescriptor(t, 0, 10)
++		require.True(t, ok)
++		require.Equal(t, uint64(10), frameNum)
++	})
++
++	t.Run("from TL1, the -DS frame is a switch point", func(t *testing.T) {
++		frameNum, ok := runDependencyDescriptor(t, 1, 14)
++		require.True(t, ok)
++		require.Equal(t, uint64(14), frameNum)
++	})
++
++	t.Run("switch point that references a dropped frame", func(t *testing.T) {
++		// libwebrtc L1T4: a T2 frame that is a switch point for TL2 but references the
++		// previous T2 frame
++		v := NewDependencyDescriptor(logger.GetLogger())
++		_, current := v.Select(vp8DDPacket(t, 0, vp8DDFrame{tid: 0, dtis: "SSS", keyFrame: true}, true, true), 1, 1)
++		_, current = v.Select(vp8DDPacket(t, 1, vp8DDFrame{tid: 2, dtis: "--D", frameDiffs: []int{1}}, true, true), current, 1)
++		this, next := v.Select(vp8DDPacket(t, 2, vp8DDFrame{tid: 2, dtis: "--S", frameDiffs: []int{1}}, true, true), current, 2)
++		require.Equal(t, int32(1), this)
++		require.Equal(t, int32(1), next)
++	})
++
++	t.Run("reference lost upstream", func(t *testing.T) {
++		v := NewDependencyDescriptor(logger.GetLogger())
++		_, current := v.Select(vp8DDPacket(t, 0, vp8DDFrame{tid: 0, dtis: "SSS", keyFrame: true}, true, true), 0, 0)
++		// frame 1 never arrives
++		this, next := v.Select(vp8DDPacket(t, 2, vp8DDFrame{tid: 1, dtis: "-SS", frameDiffs: []int{1}}, true, true), current, 2)
++		require.Equal(t, int32(0), this)
++		require.Equal(t, int32(0), next)
++	})
++
++	t.Run("up-switch only on the first packet of a frame, in order", func(t *testing.T) {
++		v := NewDependencyDescriptor(logger.GetLogger())
++		_, current := v.Select(vp8DDPacket(t, 0, vp8DDFrame{tid: 0, dtis: "SSS", keyFrame: true}, true, true), 0, 0)
++		f := vp8DDFrame{tid: 1, dtis: "-SS", frameDiffs: []int{1}}
++
++		_, next := v.Select(vp8DDPacket(t, 1, f, false, true), current, 2)
++		require.Equal(t, int32(0), next, "second packet")
++
++		late := vp8DDPacket(t, 1, f, true, true)
++		late.IsOutOfOrder = true
++		_, next = v.Select(late, current, 2)
++		require.Equal(t, int32(0), next, "late first packet")
++
++		this, next := v.Select(vp8DDPacket(t, 1, f, true, true), current, 2)
++		require.Equal(t, int32(2), this)
++		require.Equal(t, int32(2), next)
++	})
++
++	t.Run("late key frame packet of a stream restart", func(t *testing.T) {
++		v := NewDependencyDescriptor(logger.GetLogger())
++		_, current := v.Select(vp8DDPacket(t, 100, vp8DDFrame{tid: 0, dtis: "SSS", keyFrame: true}, true, true), 0, 0)
++
++		// the restart moves the frame numbers back, and its key frame arrives out of order
++		keyFrame := vp8DDPacket(t, 5, vp8DDFrame{tid: 0, dtis: "SSS", keyFrame: true}, true, true)
++		keyFrame.IsOutOfOrder = true
++		_, current = v.Select(keyFrame, current, 0)
++
++		this, next := v.Select(vp8DDPacket(t, 6, vp8DDFrame{tid: 1, dtis: "-SS", frameDiffs: []int{1}}, true, true), current, 2)
++		require.Equal(t, int32(2), this)
++		require.Equal(t, int32(2), next)
++	})
++
++	t.Run("key frame", func(t *testing.T) {
++		v := NewDependencyDescriptor(logger.GetLogger())
++		this, next := v.Select(vp8DDPacket(t, 0, vp8DDFrame{tid: 0, dtis: "SSS", keyFrame: true}, true, false), 0, 2)
++		require.Equal(t, int32(2), this)
++		require.Equal(t, int32(2), next)
++	})
++
++	t.Run("no dependency descriptor", func(t *testing.T) {
++		v := NewDependencyDescriptor(logger.GetLogger())
++		extPkt := vp8DDPacket(t, 0, vp8DDFrame{tid: 0, dtis: "SSS", keyFrame: true}, true, true)
++		extPkt.DependencyDescriptor = nil
++		this, next := v.Select(extPkt, 0, 2)
++		require.Equal(t, int32(0), this)
++		require.Equal(t, int32(0), next)
++	})
++
++	t.Run("down-switch at the end of a frame", func(t *testing.T) {
++		v := NewDependencyDescriptor(logger.GetLogger())
++		f := vp8DDFrame{tid: 2, dtis: "--D", frameDiffs: []int{1}}
++		this, next := v.Select(vp8DDPacket(t, 1, f, true, false), 2, 0)
++		require.Equal(t, int32(2), this)
++		require.Equal(t, int32(2), next)
++		this, next = v.Select(vp8DDPacket(t, 1, f, false, true), 2, 0)
++		require.Equal(t, int32(2), this)
++		require.Equal(t, int32(0), next)
++	})
++}
+diff --git a/pkg/sfu/videolayerselector/temporallayerselector/vp8.go b/pkg/sfu/videolayerselector/temporallayerselector/vp8.go
+index 39480c43..57162b2f 100644
+--- a/pkg/sfu/videolayerselector/temporallayerselector/vp8.go
++++ b/pkg/sfu/videolayerselector/temporallayerselector/vp8.go
+@@ -16,7 +16,6 @@ package temporallayerselector
+ 
+ import (
+ 	"github.com/livekit/livekit-server/pkg/sfu/buffer"
+-	"github.com/livekit/mediatransportutil/pkg/codec"
+ 	"github.com/livekit/protocol/logger"
+ )
+ 
+@@ -37,14 +36,23 @@ func (v *VP8) Select(extPkt *buffer.ExtPacket, current int32, target int32) (thi
+ 		return
+ 	}
+ 
+-	vp8, ok := extPkt.Payload.(codec.VP8)
+-	if !ok {
++	vp8 := extPkt.VP8
++	if vp8 == nil {
+ 		return
+ 	}
+ 
+ 	tid := extPkt.Temporal
+ 	if current < target {
+-		if tid > current && tid <= target && vp8.S {
++		// Up-switch only where nothing dropped can be referenced: a layer sync
++		// (Y) frame depends only on TL0 (RFC 7741), a key frame refreshes all
++		// reference buffers. Key frames also cover encoders that never set Y.
++		// A sync frame raises one layer at a time, the layers in between would
++		// otherwise forward frames that reference their dropped frames.
++		switch {
++		case vp8.IsKeyFrame && tid <= target:
++			this = target
++			next = target
++		case tid == current+1 && tid <= target && vp8.S && vp8.Y:
+ 			this = tid
+ 			next = tid
+ 		}
+diff --git a/pkg/sfu/videolayerselector/vp9.go b/pkg/sfu/videolayerselector/vp9.go
+index 4b11d37a..7cb5de7c 100644
+--- a/pkg/sfu/videolayerselector/vp9.go
++++ b/pkg/sfu/videolayerselector/vp9.go
+@@ -15,8 +15,6 @@
+ package videolayerselector
+ 
+ import (
+-	"github.com/pion/rtp/codecs"
+-
+ 	"github.com/livekit/livekit-server/pkg/sfu/buffer"
+ 	"github.com/livekit/protocol/logger"
+ )
+@@ -40,8 +38,8 @@ func (v *VP9) IsOvershootOkay() bool {
+ }
+ 
+ func (v *VP9) Select(extPkt *buffer.ExtPacket, _layer int32) (result VideoLayerSelectorResult) {
+-	vp9, ok := extPkt.Payload.(codecs.VP9Packet)
+-	if !ok {
++	vp9 := extPkt.VP9
++	if vp9 == nil {
+ 		return
+ 	}
+ 
+diff --git a/version/version.go b/version/version.go
+index 0486d629..27cf088c 100644
+--- a/version/version.go
++++ b/version/version.go
+@@ -14,4 +14,4 @@
+ 
+ package version
+ 
+-const Version = "1.13.7"
++const Version = "1.13.9"

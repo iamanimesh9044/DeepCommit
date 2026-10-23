@@ -1,0 +1,204 @@
+diff --git a/go.mod b/go.mod
+index d6ddedc3..806263a4 100644
+--- a/go.mod
++++ b/go.mod
+@@ -21,7 +21,7 @@ require (
+ 	github.com/jxskiss/base62 v1.1.0
+ 	github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731
+ 	github.com/livekit/mediatransportutil v0.0.0-20260821083140-f234b534b095
+-	github.com/livekit/protocol v1.52.2-0.20261007103317-a935cd67c29a
++	github.com/livekit/protocol v1.52.2-0.20261012065025-9bb708cdb819
+ 	github.com/livekit/psrpc v0.8.2
+ 	github.com/mackerelio/go-osstat v0.2.8
+ 	github.com/magefile/mage v1.17.2
+diff --git a/go.sum b/go.sum
+index 895a278b..f7599ec1 100644
+--- a/go.sum
++++ b/go.sum
+@@ -166,8 +166,8 @@ github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731 h1:9x+U2HGLrSw5AT
+ github.com/livekit/mageutil v0.0.0-20250511045019-0f1ff63f7731/go.mod h1:Rs3MhFwutWhGwmY1VQsygw28z5bWcnEYmS1OG9OxjOQ=
+ github.com/livekit/mediatransportutil v0.0.0-20260821083140-f234b534b095 h1:BcliKAXoMhl/nWmzQweQ5kmh4Qqagxl4s3Z5pvM/7AY=
+ github.com/livekit/mediatransportutil v0.0.0-20260821083140-f234b534b095/go.mod h1:o8CFmAdrVwzJNOCsQCLUzXRjokkufNshnQHOe4fRaqU=
+-github.com/livekit/protocol v1.52.2-0.20261007103317-a935cd67c29a h1:Sa9+0Kr+MVIabmJaBFtX8Yl3NYewkv02/mMDvLEKYiQ=
+-github.com/livekit/protocol v1.52.2-0.20261007103317-a935cd67c29a/go.mod h1:k7v95/DNhMkslMeBxdQ+lQ6gKc8hMNGYB7t0+6sEGU4=
++github.com/livekit/protocol v1.52.2-0.20261012065025-9bb708cdb819 h1:oZ/dI5RG22t0GalRDU1BJWCMtNAEQVPU+odrRgycKDE=
++github.com/livekit/protocol v1.52.2-0.20261012065025-9bb708cdb819/go.mod h1:k7v95/DNhMkslMeBxdQ+lQ6gKc8hMNGYB7t0+6sEGU4=
+ github.com/livekit/psrpc v0.8.2 h1:7tbkhBJoYlK5Csfkdv1XYbZjyAQeaEZgupvIXNCv7Dc=
+ github.com/livekit/psrpc v0.8.2/go.mod h1:6KnU8vULoizX0Er9NNfeKJDV8ug87j3fuo19M0bhj6Q=
+ github.com/livekit/webrtc-pion/v4 v4.2.18-warp.6 h1:UaGYlQ/Ma73LN12xPDlH3OBYNfOEDTVOtHdRZbHg2dY=
+diff --git a/pkg/sfu/forwarder.go b/pkg/sfu/forwarder.go
+index ef5b0548..99e229d9 100644
+--- a/pkg/sfu/forwarder.go
++++ b/pkg/sfu/forwarder.go
+@@ -283,6 +283,8 @@ type Forwarder struct {
+ 	vls videolayerselector.VideoLayerSelector
+ 	// set for VP8 with the dependency descriptor, forwards the descriptor to the subscriber
+ 	ddForwarder *videolayerselector.DDForwarder
++	// migrated descriptor state that arrived before the codec was known
++	ddForwarderSeed *livekit.DependencyDescriptorForwarderState
+ 	// temporal layer of the packet being translated, the selector's current layer is
+ 	// already the next one on the last packet before a down switch
+ 	packetTemporal int32
+@@ -427,6 +429,8 @@ func (f *Forwarder) DetermineCodec(codec webrtc.RTPCodecCapability, extensions [
+ 			f.codecMunger = codecmunger.NewVP8DD(f.logger)
+ 			// the downtrack keeps its SSRC, so the frame numbers continue
+ 			f.ddForwarder = videolayerselector.NewDDForwarderFromOther(prevDDForwarder, f.logger)
++			f.ddForwarder.SeedState(f.ddForwarderSeed)
++			f.ddForwarderSeed = nil
+ 		} else {
+ 			f.codecMunger = codecmunger.NewVP8FromOther(f.codecMunger, f.logger)
+ 		}
+@@ -539,6 +543,12 @@ func (f *Forwarder) GetState() *livekit.RTPForwarderState {
+ 	for layer, refInfo := range f.refInfos {
+ 		state.SenderReportState[layer] = proto.CloneOf(refInfo.senderReport)
+ 	}
++	if f.ddForwarder != nil {
++		state.DependencyDescriptorForwarder = f.ddForwarder.GetState()
++	} else {
++		// seeded, but migrating on before the codec was known
++		state.DependencyDescriptorForwarder = proto.CloneOf(f.ddForwarderSeed)
++	}
+ 	return state
+ }
+ 
+@@ -559,6 +569,11 @@ func (f *Forwarder) SeedState(state *livekit.RTPForwarderState) {
+ 
+ 	f.rtpMunger.SeedState(state.RtpMunger)
+ 	f.codecMunger.SeedState(state.CodecMunger)
++	if f.ddForwarder != nil {
++		f.ddForwarder.SeedState(state.DependencyDescriptorForwarder)
++	} else {
++		f.ddForwarderSeed = state.DependencyDescriptorForwarder
++	}
+ 
+ 	f.started = true
+ 	f.referenceLayerSpatial = state.ReferenceLayerSpatial
+diff --git a/pkg/sfu/forwarder_test.go b/pkg/sfu/forwarder_test.go
+index 36f2e92b..398a3ee9 100644
+--- a/pkg/sfu/forwarder_test.go
++++ b/pkg/sfu/forwarder_test.go
+@@ -2183,6 +2183,29 @@ func TestForwarderVP8ForwardsDependencyDescriptor(t *testing.T) {
+ 	require.NoError(t, err)
+ 	require.Equal(t, uint32(1<<0|1<<1|1<<2), *out.ActiveDecodeTargetsBitmask)
+ 
++	// a migrated subscriber: the state is seeded before the codec is known, and the new
++	// node's first key frame continues after the last number sent
++	state := f.GetState()
++	require.Equal(t, uint64(103), state.DependencyDescriptorForwarder.ExtLastFrameNumber)
++	f = NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++	f.SeedState(state)
++
++	// it migrates on before its codec is known, the next node still gets the number
++	state = f.GetState()
++	require.Equal(t, uint64(103), state.DependencyDescriptorForwarder.ExtLastFrameNumber)
++	f = NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
++	f.SeedState(state)
++	f.DetermineCodec(testutils.TestVP8Codec, []webrtc.RTPHeaderExtensionParameter{{URI: dd.ExtensionURI}}, livekit.VideoLayer_MODE_UNUSED)
++	f.vls.SetCurrent(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	f.vls.SetTarget(buffer.VideoLayer{Spatial: 0, Temporal: 0})
++	tp, err = f.GetTranslationParams(packet(20, 60, true), 0)
++	require.NoError(t, err)
++	require.False(t, tp.shouldDrop)
++	out = dd.DependencyDescriptor{}
++	_, err = (&dd.DependencyDescriptorExtension{Descriptor: &out, Structure: keyFrameDescriptor.AttachedStructure}).Unmarshal(tp.ddBytesSpill)
++	require.NoError(t, err)
++	require.Equal(t, uint16(104), out.FrameNumber)
++
+ 	// without the extension the forwarder writes no descriptor
+ 	f = NewForwarder(webrtc.RTPCodecTypeVideo, logger.GetLogger(), true, true, true, nil)
+ 	f.DetermineCodec(testutils.TestVP8Codec, nil, livekit.VideoLayer_MODE_UNUSED)
+diff --git a/pkg/sfu/videolayerselector/ddforwarder.go b/pkg/sfu/videolayerselector/ddforwarder.go
+index c5394df8..f5e52557 100644
+--- a/pkg/sfu/videolayerselector/ddforwarder.go
++++ b/pkg/sfu/videolayerselector/ddforwarder.go
+@@ -17,6 +17,7 @@ package videolayerselector
+ import (
+ 	"github.com/livekit/livekit-server/pkg/sfu/buffer"
+ 	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
++	"github.com/livekit/protocol/livekit"
+ 	"github.com/livekit/protocol/logger"
+ )
+ 
+@@ -31,8 +32,8 @@ import (
+ // subscriber received is dropped. So whenever the stream changes, a layer switch, a stream
+ // restart or a new forwarder, the numbers are moved up past the last one sent if needed.
+ // Otherwise they pass through with the current offset, so frame diffs and chain diffs stay
+-// valid. A migrated subscriber starts with the publisher's numbers, which continue its old
+-// ones in most cases but not all, as the last number sent is not part of the migrated state.
++// valid. A migrated subscriber continues with the last number sent, which is part of the
++// migrated forwarder state.
+ type DDForwarder struct {
+ 	logger logger.Logger
+ 
+@@ -66,6 +67,29 @@ func NewDDForwarderFromOther(other *DDForwarder, logger logger.Logger) *DDForwar
+ 	return d
+ }
+ 
++// GetState returns the last frame number sent, nil before the first one.
++func (d *DDForwarder) GetState() *livekit.DependencyDescriptorForwarderState {
++	if !d.hasLast {
++		return nil
++	}
++	return &livekit.DependencyDescriptorForwarderState{
++		ExtLastFrameNumber: d.extLastFrameNum,
++	}
++}
++
++// SeedState continues after the last frame number a forwarder on another node sent to the
++// subscriber. Extended numbers there started from a lower or equal base, so the first key
++// frame here moves past it, and the 16 bit numbers continue.
++func (d *DDForwarder) SeedState(state *livekit.DependencyDescriptorForwarderState) {
++	if state == nil {
++		return
++	}
++	if !d.hasLast || state.ExtLastFrameNumber > d.extLastFrameNum {
++		d.hasLast = true
++		d.extLastFrameNum = state.ExtLastFrameNumber
++	}
++}
++
+ // Forward marshals the descriptor of a forwarded packet into result. temporal is the
+ // temporal layer the packet is forwarded at. It returns false when there is nothing to
+ // send, before the first key frame of the stream for example.
+diff --git a/pkg/sfu/videolayerselector/ddforwarder_test.go b/pkg/sfu/videolayerselector/ddforwarder_test.go
+index cc4a47a4..701fe250 100644
+--- a/pkg/sfu/videolayerselector/ddforwarder_test.go
++++ b/pkg/sfu/videolayerselector/ddforwarder_test.go
+@@ -23,6 +23,7 @@ import (
+ 
+ 	"github.com/livekit/livekit-server/pkg/sfu/buffer"
+ 	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
++	"github.com/livekit/protocol/livekit"
+ 	"github.com/livekit/protocol/logger"
+ )
+ 
+@@ -197,6 +198,29 @@ func TestDDForwarderPublisherActiveDecodeTargets(t *testing.T) {
+ 	require.Equal(t, uint32(1<<0|1<<1|1<<2), *d.forward(f, d.packet(1, 103, true, 0), 2).ActiveDecodeTargetsBitmask)
+ }
+ 
++func TestDDForwarderState(t *testing.T) {
++	d := newDDForwarderTest(t)
++	f := NewDDForwarder(logger.GetLogger())
++	require.Nil(t, f.GetState())
++	require.Equal(t, uint16(1000), d.forward(f, d.packet(1, 1000, true, 0), 0).FrameNumber)
++	require.Equal(t, uint16(1003), d.forward(f, d.packet(1, 1003, false, 0), 0).FrameNumber)
++	state := f.GetState()
++	require.Equal(t, uint64(1003), state.ExtLastFrameNumber)
++
++	// a migrated subscriber whose new node's key frame is behind continues after the last
++	// number sent
++	f = NewDDForwarder(logger.GetLogger())
++	f.SeedState(state)
++	require.Nil(t, d.forward(f, d.packet(1, 999, false, 0), 0))
++	require.Equal(t, uint16(1004), d.forward(f, d.packet(1, 1001, true, 0), 0).FrameNumber)
++
++	// the old node had wrapped its extended numbers, the new node starts from the 16 bit
++	// value: the 16 bit numbers still continue
++	f = NewDDForwarder(logger.GetLogger())
++	f.SeedState(&livekit.DependencyDescriptorForwarderState{ExtLastFrameNumber: 1<<16 + 1003})
++	require.Equal(t, uint16(1004), d.forward(f, d.packet(1, 1001, true, 0), 0).FrameNumber)
++}
++
+ func TestDDForwarderAllocations(t *testing.T) {
+ 	raw, err := hex.DecodeString(dependencyDescriptorFixture)
+ 	require.NoError(t, err)

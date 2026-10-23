@@ -20,11 +20,28 @@ Each repo follows its **real upstream history**. For every milestone, `ctx-<id>`
 
 In X001, X006 and X004 the protocol commit lands inside an earlier milestone's history slice, so it is already in the workspace as context. Those milestones link to protocol but the agent only edits the dependent repo. X005 is the milestone where the agent must change protocol and livekit together (X007 and X002 also touch both, but X007's protocol side has no required tests).
 
+## Environment (Docker)
+The task runs in a container with all dependencies baked in, so it needs no network at run time.
+
+| File | What |
+|---|---|
+| `docker/base/Dockerfile` | Go 1.26 + Rust 1.97.1, both base images pinned by digest, plus build packages (protoc, OpenSSL headers, clang, lld) |
+| `docker/agent/Dockerfile` | The agent workspace: protocol, livekit and rust-sdks reduced to one "base state" commit (no later upstream history), Go modules and Cargo crates for **every** milestone state, `go.work`, `go.work.sum`, `submit.sh`, `prompt.md` |
+| `harness/ctx/`, `harness/gold/` | Context and gold patches. They stay outside the image: context patches are applied when a milestone unlocks, gold patches are used only by the oracle run |
+
+The published `livekit/protocol` source is deleted from the Go module cache, so the agent writes the protocol changes itself. `GOPROXY=off` and `CARGO_NET_OFFLINE=true` are set in the image.
+
+```bash
+uv run --with pyyaml python -m deepcommit.multirepo.container build --config config/multirepo/livekit.yaml --task tasks/livekit --workspace WS --ctx CTX   # needs the trunk workspace from `trunk build`
+uv run --with pyyaml python -m deepcommit.multirepo.container run --config config/multirepo/livekit.yaml --task tasks/livekit --mode oracle --offline
+uv run --with pyyaml python -m deepcommit.multirepo.container run --config config/multirepo/livekit.yaml --task tasks/livekit --mode nop --offline
+```
+
 ## Validation (run on this trajectory)
 | Run | Result |
 |---|---|
-| Oracle (gold at each milestone) | 4 of 4 graded milestones resolved, score 1.0 |
-| No-change (start state of each milestone) | 0 of 4 resolved, recall 0 everywhere |
+| Oracle in the container, network off (gold applied at each milestone) | 4 of 4 graded milestones resolved, score 1.0 |
+| No-change in the container, network off (milestone submitted unchanged, gold prefix applied between milestones) | 0 of 4 resolved, recall 0 everywhere |
 
 No real agent has been run on it.
 
@@ -40,7 +57,9 @@ uv run --with pyyaml python -m deepcommit.multirepo.e2e oracle --config config/m
 ```
 
 ## Known limits
-- **No agent run, and the harness is not agent-ready.** Missing: an unlock step that applies context commits onto the agent's own tree, and isolated clones (workspaces share tags through the local clones, so an agent's `agent-impl-*` tags would overwrite gold tags).
+- **No agent run.** The container flow unlocks milestones by applying the context patch (plain apply, then `git apply --3way` if the agent's tree has diverged). The three-way fallback has never been exercised, because oracle and no-change trees match gold exactly.
+- The `trunk build` step still needs the upstream clones to produce the base tags and patches. The image itself needs only the files in `harness/`, `srs/` and `e2e_tests/`, but there is no script yet that builds it without those clones.
+- Apt packages in the base image are not version-pinned. The built image is the pin; it has not been published (about 7 GB).
 - **A large share of each milestone's start state is context.** X005 begins with 69 protocol and 94 livekit upstream commits already applied. The spec covers only the selected commits.
 - Required tests exist only in packages touched by the selected commits. P2P covers only packages changed in the slice, not full suites.
 - Index-named subtests (`Test/9/name`) are dropped as unstable. Other flaky tests are not detected; no replicate runs.
