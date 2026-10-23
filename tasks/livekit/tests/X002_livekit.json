@@ -1,0 +1,23 @@
+{
+ "fail_to_pass": [],
+ "none_to_pass": [],
+ "pass_to_pass": [
+  "github.com/livekit/livekit-server/cmd/test-server/TestCloseBeforeJoin",
+  "github.com/livekit/livekit-server/cmd/test-server/TestCloseWhenConnected",
+  "github.com/livekit/livekit-server/cmd/test-server/TestDropWhenConnected",
+  "github.com/livekit/livekit-server/cmd/test-server/TestHappyJoinAndPingPong",
+  "github.com/livekit/livekit-server/cmd/test-server/TestLeaveActionByName",
+  "github.com/livekit/livekit-server/cmd/test-server/TestLeaveActionOverride",
+  "github.com/livekit/livekit-server/cmd/test-server/TestLeaveDuringReconnect",
+  "github.com/livekit/livekit-server/cmd/test-server/TestLeaveFirstMessage",
+  "github.com/livekit/livekit-server/cmd/test-server/TestLeaveWhenConnected",
+  "github.com/livekit/livekit-server/cmd/test-server/TestNoFirstMessage",
+  "github.com/livekit/livekit-server/cmd/test-server/TestNoPong",
+  "github.com/livekit/livekit-server/cmd/test-server/TestReconnectResponse",
+  "github.com/livekit/livekit-server/cmd/test-server/TestV1PathHappy",
+  "github.com/livekit/livekit-server/cmd/test-server/TestValidateCORSHeader",
+  "github.com/livekit/livekit-server/cmd/test-server/TestValidateErrorModesRefuseWS",
+  "github.com/livekit/livekit-server/cmd/test-server/TestValidateModes",
+  "github.com/livekit/livekit-server/cmd/test-server/TestWSCrossOrigin"
+ ]
+}

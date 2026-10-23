@@ -1,0 +1,247 @@
+{
+ "name": "livekit",
+ "window": {
+  "since": "2026-07-28",
+  "until": "2026-10-23"
+ },
+ "repos": {
+  "protocol": {
+   "repo": "livekit/protocol",
+   "lang": "go"
+  },
+  "livekit": {
+   "repo": "livekit/livekit",
+   "lang": "go"
+  },
+  "rust-sdks": {
+   "repo": "livekit/rust-sdks",
+   "lang": "rust"
+  }
+ },
+ "milestones": [
+  {
+   "id": "X001",
+   "title": "Use CreateIngress with return value instead of CreateIngress2  (#1708)",
+   "repos": {
+    "protocol": {
+     "start": "5a20e57cfbd8929b999165505045518516772277",
+     "commits": [
+      "6ad5660c9f8fe9a2ecbf36efd22df95f1dd0e287"
+     ],
+     "subjects": [
+      "Use CreateIngress with return value instead of CreateIngress2  (#1708)"
+     ]
+    },
+    "livekit": {
+     "start": "223587e140390a8d0ffb6161ba8026c25f6ccd9c",
+     "commits": [
+      "fad2cc4afeb2f812d2f0ffa211f03d7d5a209b02",
+      "f7954d5747c606435029f15bca71c8b4dee36661"
+     ],
+     "subjects": [
+      "Use request id to make api idempotence on sdk retry (#4694)",
+      "Return created ingress info from io service (#4787)"
+     ]
+    }
+   },
+   "graded": false,
+   "tests": {
+    "protocol": {
+     "fail_to_pass": 0,
+     "none_to_pass": 0,
+     "pass_to_pass": 335
+    },
+    "livekit": {
+     "fail_to_pass": 0,
+     "none_to_pass": 0,
+     "pass_to_pass": 0
+    }
+   }
+  },
+  {
+   "id": "X002",
+   "title": "TEL-912 Adding a transferResponse with a reason and a status (#1730)",
+   "repos": {
+    "protocol": {
+     "start": "575370573266dadf2a74c5d2de3cbd2920365af2",
+     "commits": [
+      "17c16cf496fd20697ff862daf9768f9830ebe6fd"
+     ],
+     "subjects": [
+      "TEL-912 Adding a transferResponse with a reason and a status (#1730)"
+     ]
+    },
+    "livekit": {
+     "start": "803864dc7b451bae48ddbe059ebafa9fb6ba47af",
+     "commits": [
+      "788d4c354474383956067e3a22ffba88dd4803e4"
+     ],
+     "subjects": [
+      "TEL-912 Adding response for TransferSIPParticipant rpc (#4783)"
+     ]
+    }
+   },
+   "graded": false,
+   "tests": {
+    "protocol": {
+     "fail_to_pass": 0,
+     "none_to_pass": 0,
+     "pass_to_pass": 338
+    },
+    "livekit": {
+     "fail_to_pass": 0,
+     "none_to_pass": 0,
+     "pass_to_pass": 17
+    }
+   }
+  },
+  {
+   "id": "X004",
+   "title": "Add FlexFEC metrics to RTPStats (#1818)",
+   "repos": {
+    "protocol": {
+     "start": "9f0ebd07cef8e0134fc4958dda85d76a5db262de",
+     "commits": [
+      "f979b9bfed651708e964ab5d4e6ab6b150e8c696"
+     ],
+     "subjects": [
+      "Add FlexFEC metrics to RTPStats (#1818)"
+     ]
+    },
+    "livekit": {
+     "start": "a390d03d28c895742d9b13c0894880ee67733801",
+     "commits": [
+      "6342d8fd1b375bc564c5d00cd100ee62c6d1d16d"
+     ],
+     "subjects": [
+      "Enable upstream FlexFEC03 (#4845)"
+     ]
+    }
+   },
+   "graded": true,
+   "tests": {
+    "protocol": {
+     "fail_to_pass": 0,
+     "none_to_pass": 1,
+     "pass_to_pass": 405
+    },
+    "livekit": {
+     "fail_to_pass": 0,
+     "none_to_pass": 52,
+     "pass_to_pass": 385
+    }
+   }
+  },
+  {
+   "id": "X005",
+   "title": "Add the agent HTTP endpoints data plane protocol (#1728)",
+   "repos": {
+    "protocol": {
+     "start": "1efe2b4d9ed570f61b541a158bbbcdddeb4c1c48",
+     "commits": [
+      "196ffef79fa3bb994046188a7f37e8f35c9518da"
+     ],
+     "subjects": [
+      "Add the agent HTTP endpoints data plane protocol (#1728)"
+     ]
+    },
+    "livekit": {
+     "start": "6816ccdd9ca8fbedc00605f900648dfae815c44f",
+     "commits": [
+      "c264da5b8a602dae3fd8952d98c6b418e619270e"
+     ],
+     "subjects": [
+      "agent: HTTP endpoints data plane (#4779)"
+     ]
+    }
+   },
+   "graded": true,
+   "tests": {
+    "protocol": {
+     "fail_to_pass": 0,
+     "none_to_pass": 32,
+     "pass_to_pass": 373
+    },
+    "livekit": {
+     "fail_to_pass": 0,
+     "none_to_pass": 169,
+     "pass_to_pass": 56
+    }
+   }
+  },
+  {
+   "id": "X006",
+   "title": "agent threads: thread messages and grant, agent-db service to gRPC (#1841)",
+   "repos": {
+    "protocol": {
+     "start": "6716a9e3f84697ca414b82be13cf2832c8d63b4c",
+     "commits": [
+      "07403806c0759a507608708b16082e5dfb98e30e"
+     ],
+     "subjects": [
+      "agent threads: thread messages and grant, agent-db service to gRPC (#1841)"
+     ]
+    },
+    "rust-sdks": {
+     "start": "bb60d68cba82ece7e13c84388261769ab067cdf5",
+     "commits": [
+      "6b038ef80fbfa232be7bdff3b05be4f82302db47"
+     ],
+     "subjects": [
+      "livekit-protocol, livekit-token, livekit-api: the agent package, agent grants, thread and database clients (#1379)"
+     ]
+    }
+   },
+   "graded": true,
+   "tests": {
+    "protocol": {
+     "fail_to_pass": 0,
+     "none_to_pass": 4,
+     "pass_to_pass": 391
+    },
+    "rust-sdks": {
+     "fail_to_pass": 0,
+     "none_to_pass": 3,
+     "pass_to_pass": 32
+    }
+   }
+  },
+  {
+   "id": "X007",
+   "title": "Add dependency descriptor forwarder state to RTPForwarderState (#1855)",
+   "repos": {
+    "protocol": {
+     "start": "b16ea12cc45cc9913c6564f4f24f21d9fbc4e351",
+     "commits": [
+      "9bb708cdb81918a6c63dd25e915b4644310b45b6"
+     ],
+     "subjects": [
+      "Add dependency descriptor forwarder state to RTPForwarderState (#1855)"
+     ]
+    },
+    "livekit": {
+     "start": "099e03fdf8838cda332ca16b086b74ced24040ac",
+     "commits": [
+      "d621849e3a4ffa1996ae0b33cd74a7b44616e57b"
+     ],
+     "subjects": [
+      "sfu: keep VP8 descriptor frame numbers across migration (#4989)"
+     ]
+    }
+   },
+   "graded": true,
+   "tests": {
+    "protocol": {
+     "fail_to_pass": 0,
+     "none_to_pass": 0,
+     "pass_to_pass": 324
+    },
+    "livekit": {
+     "fail_to_pass": 0,
+     "none_to_pass": 1,
+     "pass_to_pass": 109
+    }
+   }
+  }
+ ]
+}

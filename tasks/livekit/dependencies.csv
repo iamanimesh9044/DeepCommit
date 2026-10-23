@@ -1,0 +1,4 @@
+source_id,target_id,type,strength,rationale,confidence_score
+X004,X005,TEXT,Weak,both edit livekit:pkg/config/config.go,0.7
+X005,X006,TEXT,Strong,"both edit protocol:auth/accesstoken.go, protocol:auth/accesstoken_test.go, protocol:auth/grants.go",0.7
+X004,X007,TEXT,Weak,both edit protocol:protobufs/livekit_models.proto,0.7

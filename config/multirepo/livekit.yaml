@@ -1,0 +1,32 @@
+# Repo set: shared contract repo plus hand-written dependents in other languages.
+name: livekit
+window:
+  since: "2026-07-28"
+  until: "2026-10-23"
+contract:
+  id: protocol
+  repo: livekit/protocol
+  local: /private/tmp/claude-501/-Users-iamanimesh-workspace-csf-data/8795c4c0-8aa1-4b8d-b3a3-bb6cd475f7bb/scratchpad/lk/protocol
+  ident_paths: ["protobufs"]          # where new messages/fields are defined
+dependents:
+  - id: livekit
+    repo: livekit/livekit
+    lang: go
+    local: /private/tmp/claude-501/-Users-iamanimesh-workspace-csf-data/8795c4c0-8aa1-4b8d-b3a3-bb6cd475f7bb/scratchpad/lk/livekit
+    pin: {kind: gomod, path: go.mod, module: github.com/livekit/protocol}
+  - id: rust-sdks
+    repo: livekit/rust-sdks
+    lang: rust
+    local: /private/tmp/claude-501/-Users-iamanimesh-workspace-csf-data/8795c4c0-8aa1-4b8d-b3a3-bb6cd475f7bb/scratchpad/lk/rust-sdks
+    pin: {kind: submodule, path: livekit-protocol/protocol}
+generated:                              # regexes; matching files are ignored as evidence
+  - '\.pb\.go$'
+  - '\.twirp\.go$'
+  - '(^|/)generated(/|$)'
+  - 'Cargo\.lock$'
+  - 'go\.sum$'
+  - '(package-lock|pnpm-lock)'
+  - 'openapi\.yaml$'
+  - '\.serde\.rs$'
+  - 'public_api/generated\.rs$'
+  - 'livekit-protocol/src/livekit(\.\w+)?\.rs$'

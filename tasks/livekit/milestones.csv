@@ -1,0 +1,7 @@
+id,title,contract_commit,repos,n_dependent_repos,commits,titles,graded_candidate,src_loc,oversize,start_time,end_time
+X001,Use CreateIngress with return value instead of CreateIngress2  (#1708),protocol@6ad5660c,protocol+livekit,1,protocol@6ad5660c;livekit@fad2cc4a;livekit@f7954d57,Use request id to make api idempotence on sdk retry (#4694) || Return created ingress info from io service (#4787),,301,,2026-08-11,2026-08-25
+X002,TEL-912 Adding a transferResponse with a reason and a status (#1730),protocol@17c16cf4,protocol+livekit,1,protocol@17c16cf4;livekit@788d4c35,TEL-912 Adding response for TransferSIPParticipant rpc (#478,,145,,2026-08-21,2026-08-21
+X004,Add FlexFEC metrics to RTPStats (#1818),protocol@f979b9bf,protocol+livekit,1,protocol@f979b9bf;livekit@6342d8fd,Enable upstream FlexFEC03 (#4845),,3168,,2026-09-24,2026-10-22
+X005,Add the agent HTTP endpoints data plane protocol (#1728),protocol@196ffef7,protocol+livekit,1,protocol@196ffef7;livekit@c264da5b,agent: HTTP endpoints data plane (#4779),,10491,livekit@c264da5b,2026-10-05,2026-10-05
+X006,"agent threads: thread messages and grant, agent-db service to gRPC (#1841)",protocol@07403806,protocol+rust-sdks,1,protocol@07403806;rust-sdks@6b038ef8,"livekit-protocol, livekit-token, livekit-api: the agent pack",,1616,,2026-10-09,2026-10-12
+X007,Add dependency descriptor forwarder state to RTPForwarderState (#1855),protocol@9bb708cd,protocol+livekit,1,protocol@9bb708cd;livekit@d621849e,sfu: keep VP8 descriptor frame numbers across migration (#49,,103,,2026-10-12,2026-10-12
