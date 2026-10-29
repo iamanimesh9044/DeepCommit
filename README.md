@@ -47,10 +47,46 @@ and how to run each phase.
 
 ### Multi-repo workspaces
 
-Milestones can span several repositories (for example an API contract repo plus its SDKs) and end as a Harbor multi-step CSF task.
-Describe the repos in a workspace manifest and run `deepcommit workspace <validate|preproc|merge|run|bundle|export-task|finalize-task|check-task>`.
-How it works and the commands to generate a task: [docs/multirepo.md](docs/multirepo.md). A finished example with every artifact:
-[`examples/qdrant-clients-v1/`](examples/qdrant-clients-v1/).
+Milestones can span several repositories (for example an API contract repo plus its SDKs) and end as a Harbor multi-step
+CSF task, where one agent keeps one environment across all steps and hidden tests grade every repo. Describe the repos in a
+workspace manifest and run `deepcommit workspace <validate|preproc|merge|run|bundle|export-task|finalize-task|check-task>`.
+
+```bash
+uv run deepcommit workspace validate config/qdrant_clients_v1.workspace.yaml
+uv run deepcommit workspace preproc  config/qdrant_clients_v1.workspace.yaml
+uv run deepcommit workspace merge    config/qdrant_clients_v1.workspace.yaml
+uv run deepcommit workspace run      config/qdrant_clients_v1.workspace.yaml --trial-name <trial>
+uv run deepcommit workspace export-task   config/qdrant_clients_v1.workspace.yaml --trial-name <trial>
+uv run deepcommit workspace finalize-task <task folder>
+```
+
+The full sequence, the milestone rules and the grading are in [docs/multirepo.md](docs/multirepo.md).
+
+#### What is in the multi-repo code
+
+| Path | What it holds |
+| --- | --- |
+| [`deepcommit/multirepo/`](deepcommit/multirepo/) | Workspace manifest (`workspace.py`), per-repo Phase 1 merge (`merge.py`), cross-repo edge detection (`xrepo.py`), SHA to repo resolver, and `bundle.py` which joins single-repo milestones into cross-repo ones |
+| [`deepcommit/export/`](deepcommit/export/) | CSF task export: `csf_task.py` (task folder from milestones), `finalize.py` (measure, curate, fold, instructions, README), `curate.py` (F2P/P2P ids), `fold.py` (merge ungradable steps), `gen_instructions.py`, `csf_check.py` (format checker) |
+| [`deepcommit/export/templates/`](deepcommit/export/templates/) | Files copied into every task: `grade.py`, `test.sh`, `measure.py`, and `viewer_gen.py` (HTML viewer of a task) |
+| [`config/`](config/) and [`config/examples/`](config/examples/) | Workspace manifests: the Qdrant pilot, plus Qdrant and Temporal examples |
+| [`docs/multirepo.md`](docs/multirepo.md) | How it works and the commands to generate a task |
+| [`examples/qdrant-clients-v1/`](examples/qdrant-clients-v1/) | A finished run with every artifact (see below) |
+
+#### Example: Qdrant + two SDKs
+
+[`examples/qdrant-clients-v1/`](examples/qdrant-clients-v1/) is a complete pilot: Qdrant (contract only) + `rust-client` + `qdrant-client`,
+v1.18.0 to v1.20.0. 35 milestones were found, 19 became steps, and measuring the real tests folded them into 11 steps. The oracle scores 1
+on all 11 and the no-op scores 0 on all 11.
+
+| Look at | To see |
+| --- | --- |
+| [`export/task_viewer.html`](examples/qdrant-clients-v1/export/task_viewer.html) | Each step's instruction, gold code and hidden tests (download and open in a browser) |
+| [`export/graph.html`](examples/qdrant-clients-v1/export/graph.html) | The commit and milestone graph |
+| [`phase2_milestones/`](examples/qdrant-clients-v1/phase2_milestones/) | Milestone proposals, consolidation report and final `milestones.csv` |
+| [`task/`](examples/qdrant-clients-v1/task/) | The task folder: `task.toml`, instructions, gold patches, test ids, grader |
+| [`gates/`](examples/qdrant-clients-v1/gates/) | Oracle and no-op results per step |
+| [`ARTIFACTS.md`](examples/qdrant-clients-v1/ARTIFACTS.md) | Where the complete task zip (69 MB) and a copy of the artifacts are stored |
 
 ## Contributing
 
