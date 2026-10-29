@@ -1,0 +1,52 @@
+# Pilot workspace: Qdrant server API (contract) + rust-client + qdrant-client, v1.18.0 -> v1.20.0.
+# Server repo_src_dirs is limited to lib/api/ for the pilot (70 of 1355 commits in range touch it).
+# Server implementation code outside lib/api/ is only seen through commits that also touch lib/api/.
+workspace_id: qdrant_clients_v1
+repos:
+  - name: qdrant
+    owner: qdrant
+    repo: qdrant
+    role: contract
+    contract_only: true
+    start: v1.18.0
+    end: v1.20.0
+    main_branch: master
+    repo_src_dirs: [lib/api/]
+    test_dirs: ["tests/**", "**/tests/**"]
+    exclude: []
+    contract_paths:
+      - "lib/api/src/grpc/proto/**/*.proto"
+      # docs/redoc/master/openapi.json is generated from the Rust code (8,000+ changed lines in one step),
+      # so it is not part of the contract the agent edits; it stays at its base version.
+  - name: rust-client
+    owner: qdrant
+    repo: rust-client
+    role: sdk
+    start: v1.18.0
+    end: v1.20.0
+    main_branch: master
+    repo_src_dirs: [src/]
+    test_dirs: ["tests/**"]
+    exclude: []
+  - name: qdrant-client
+    owner: qdrant
+    repo: qdrant-client
+    role: sdk
+    start: v1.18.0
+    end: v1.20.0
+    main_branch: master
+    repo_src_dirs: [qdrant_client/]
+    test_dirs: ["tests/**"]
+    exclude: []
+xrepo:
+  pin_files: [Cargo.toml, pyproject.toml]
+  link_confidence_threshold: 0.7
+  time_window_days: 3
+  generated_globs:
+    - "**/*.pb.rs"
+    - "**/*_pb2.py"
+    - "**/*_pb2_grpc.py"
+    - "**/*_pb2.pyi"
+    - "qdrant_client/grpc/**"
+    - "qdrant_client/http/**"
+    - "src/qdrant.rs"

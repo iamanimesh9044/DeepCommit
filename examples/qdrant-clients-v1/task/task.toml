@@ -1,0 +1,83 @@
+schema_version = "1.4"
+multi_step_reward_strategy = "mean"
+
+[task]
+name = "csf/qdrant-clients-v1-001"
+version = "0.1.0"
+description = "Cross-repo milestones over qdrant/qdrant, qdrant/rust-client, qdrant/qdrant-client (v1.18.0..v1.20.0): 19 of 35 planned milestones built."
+keywords = ["csf", "cross-repo-change", "python", "rust", "multi-repo", "multi-step"]
+
+[[task.authors]]
+name = "Deccan AI"
+email = "csf@deccan.ai"
+
+[metadata]
+family = "cross-repo-change"
+source_repo = "https://github.com/qdrant/qdrant"
+source_commit = "db3fca327851e360c521065649e0f65a57fe7d3c"
+milestones_planned = 35
+milestones_built = 11
+languages = ["python", "rust"]
+repos = ["qdrant", "rust-client", "qdrant-client"]
+repo_roles = { "qdrant" = "contract", "rust-client" = "sdk", "qdrant-client" = "sdk" }
+contract_only_repos = ["qdrant"]
+source_repos = [
+  { name = "qdrant", url = "https://github.com/qdrant/qdrant", commit = "db3fca327851e360c521065649e0f65a57fe7d3c" },
+  { name = "rust-client", url = "https://github.com/qdrant/rust-client", commit = "357dec9e56da4e5afd41645e8c414873a7f8681d" },
+  { name = "qdrant-client", url = "https://github.com/qdrant/qdrant-client", commit = "326adefcc2158121dd0d04877e1a483b5aa2627b" },
+]
+csf_task_source = "derived"
+csf_milestone_dag = "m2 -> m3; m3 -> m4; m3 -> m5; m1 + m5 -> m6; m1 -> m7; m7 -> m8; m7 -> m9; m9 -> m10; m3 -> m11"
+source_license = "Apache-2.0"
+
+[environment]
+build_timeout_sec = 3600
+cpus = 4
+memory_mb = 8192
+storage_mb = 20480
+workdir = "/app"
+
+[agent]
+timeout_sec = 7200
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 1800
+
+# Runs in the agent's container after each step: writes /logs/artifacts/model.<repo>.patch for every repo.
+[[verifier.collect]]
+command = "csf-collect"
+timeout_sec = 300
+
+[[steps]]
+name = "m1-upgrade-tonic-prost-reqwest-dependencies"
+
+[[steps]]
+name = "m2-remove-deprecated-fastembed-methods"
+
+[[steps]]
+name = "m3-remove-max-disk-usage-percent-and-deprec"
+
+[[steps]]
+name = "m4-filter-and-prefix-sdk-consumption-in-pyt"
+
+[[steps]]
+name = "m5-grpc-payload-conversion-performance-qdra"
+
+[[steps]]
+name = "m6-qdrantserverless-rust-client"
+
+[[steps]]
+name = "m7-rust-client-v1-19-sdk-sync"
+
+[[steps]]
+name = "m8-deprecated-search-sdk-sync-in-rust-clien"
+
+[[steps]]
+name = "m9-bm25-and-formula-contract-with-rust-clie"
+
+[[steps]]
+name = "m10-sync-nested-payload-index-parameters-to"
+
+[[steps]]
+name = "m11-python-client-grpc-and-rest-conversion-f"

@@ -1,0 +1,1176 @@
+{
+  "background": {
+    "qdrant": {
+      "contract_background_commits": 17,
+      "contract_base_background_commits": 8,
+      "contract_base_commit": "7cc755c2259d80a03fc4f76117a1c19468e339a0",
+      "history_commits": 1355,
+      "mode": "contract-only"
+    },
+    "qdrant-client": {
+      "applied_to_base": 27,
+      "attached": 16,
+      "deferred_commits": [
+        "dcf43b1b5509d9f39aa6017205842d59b9ccfe4a"
+      ],
+      "merges_skipped": 0,
+      "owned_by_steps": 143,
+      "total": 187,
+      "unresolved": 0,
+      "unused": 1
+    },
+    "rust-client": {
+      "applied_to_base": 9,
+      "attached": 1,
+      "deferred_commits": [],
+      "merges_skipped": 0,
+      "owned_by_steps": 13,
+      "total": 23,
+      "unresolved": 0,
+      "unused": 0
+    }
+  },
+  "check": {
+    "errors": [],
+    "ok": true
+  },
+  "conflicts": [
+    {
+      "commit": "8409ae34b558e0696edfe62957792de03c3ac363",
+      "files": [
+        "poetry.lock",
+        "tests/test_local_persistence.py"
+      ],
+      "milestone": "M35",
+      "repo": "qdrant-client",
+      "step": "M35"
+    }
+  ],
+  "notes": [
+    "dependencies from DATA/trial_space/qdrant_clients_v1_v1_rerun_stage3/stage4_decomp/output/dependencies.csv",
+    "milestones from DATA/trial_space/qdrant_clients_v1_v1_rerun_stage3/stage4_decomp/output/milestones.csv",
+    "M22_sub-01: test files deleted by the milestone (not hidden): {'qdrant-client': ['tests/congruence_tests/test_nested_filter.py']}"
+  ],
+  "splits": [
+    {
+      "chain": [
+        "fa792772721c7774be6a2d928b20168b90a04de4",
+        "d7e7af3c05415941ee48b2bf203d667a4025371f",
+        "4b8fb0c0b29a73fc1a49bc591057e3be218ec962",
+        "5bed475ccacb7f03b6f0ea5ae5ed8f48400b0b92",
+        "6937cf2847474b69d8624e51eac8c9fee66b43f1"
+      ],
+      "original": "3247b10cb39ea35e07130b6dc82244519e3c33ed",
+      "repo": "qdrant-client",
+      "union_ok": true
+    },
+    {
+      "chain": [
+        "c82a9d300fed8b4a91fedc577ececda07d0d1022",
+        "b56d267ff20a78210cdcbb6484648b73f340213c",
+        "f81888f2c47f95add1f3904b6fb42c220e8350cf",
+        "03fe5e7c146198e2d57c2192c8ef4383ac473733",
+        "9f3c870e90d43fcc0a3fc6d5d7285008a3f50cf4",
+        "553255e91bc6d53c65c60788dde26509965bdf57"
+      ],
+      "original": "589aece6f5458024548f032914244d494aa5324a",
+      "repo": "qdrant-client",
+      "union_ok": true
+    },
+    {
+      "chain": [
+        "111b04694d023fad2c9fd6f40ee4946c1eaf2d32",
+        "2e497b2cf5db7b6f4b067b89e47d6f4cd7c6dec5",
+        "2439ecb379a4addfb1ae00b1251b2e425a88e423",
+        "28b80bc1c5d3cbdb88524da99edac27ec2b874cb",
+        "cc6b6d36ae7f7a54c1b3d1b11618e328f9a551dc"
+      ],
+      "original": "7e917d1bf1c49e96b55e2e4b89865504af7335b9",
+      "repo": "qdrant-client",
+      "union_ok": true
+    }
+  ],
+  "steps": [
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M01",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Upgrade tonic to v0.14.6 in qdrant gRPC API layer"
+    },
+    {
+      "attached_background": [
+        {
+          "commit": "749dc78730177accbeac63996def564a1928d3a1",
+          "files": [
+            "Cargo.toml"
+          ],
+          "repo": "rust-client",
+          "resolution": "clean"
+        }
+      ],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation; 1 background commit(s) attached to the gold",
+      "mid": "M02",
+      "name": "m1-upgrade-tonic-prost-reqwest-dependencies",
+      "repos": [
+        "rust-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "rust-client": 3
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "rust-client": 1
+      },
+      "title": "Upgrade tonic/prost/reqwest dependencies in rust-client SDK"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M05",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Resource Management: Strict Mode to Global Quotas"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M06",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Fix Stale Snapshot Transfer Breaking Cluster"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M16",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Keyword Index Prefix Matching"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M07",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Qdrant v1.19-v1.20 Contract Foundation: TurboQuant, Memory Placement, IDF Corpus, BM25 Stemmer"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M11",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Substring Match Filter Condition"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M13",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Slice Filter Condition and Deprecated Search Removal"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M20",
+      "name": null,
+      "repos": [
+        "rust-client"
+      ],
+      "status": "background",
+      "title": "Opt-In Connection Check on Client Build"
+    },
+    {
+      "attached_background": [
+        {
+          "commit": "fa6f7ea1ecda8f9fc95d0848bc58403ec714f7ec",
+          "files": [
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "9a9f37fafe7a25a602110f4d568232227333dc64",
+          "files": [
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "clean"
+        },
+        {
+          "commit": "cf747f4b6fa71ba35dfb467931f3fa65f2cdf263",
+          "files": [
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "clean"
+        },
+        {
+          "commit": "1d4a1d3e30c7eb87908c8b9b005e9b9b581b92be",
+          "files": [
+            "poetry.lock"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "f77540b56d84b647295c194bff55699da0e04501",
+          "files": [
+            "poetry.lock",
+            "tests/embed_tests/test_local_inference.py"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "clean"
+        },
+        {
+          "commit": "00b244bd472d60ed022ac030923ea8284c9e8e97",
+          "files": [
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "53e5da115fd8e19ec8b069118685ce965158f6a9",
+          "files": [
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "clean"
+        },
+        {
+          "commit": "0ac6c9caa158a8f748d44f7329d43f6cfc1f63d1",
+          "files": [
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "7a2dd5dbcbf5b9e6bf6878d548e925bef81524b4",
+          "files": [
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "ffc80cfeffbcab64e342fedc19864b57b0c3d64b",
+          "files": [
+            "README.md",
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "clean"
+        },
+        {
+          "commit": "928be60a85f38003a52518151eb5b7375371b3a4",
+          "files": [
+            "poetry.lock"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "bfb4438d1a4ff5a4fd4a1d9e4f4fe81b46d170d3",
+          "files": [
+            "poetry.lock",
+            "pyproject.toml"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        }
+      ],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation; 12 background commit(s) attached to the gold",
+      "mid": "M21",
+      "name": "m2-remove-deprecated-fastembed-methods",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "qdrant-client": 6
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "qdrant-client": 2
+      },
+      "title": "Remove Deprecated Fastembed Methods"
+    },
+    {
+      "attached_background": [
+        {
+          "commit": "6859fefa9b8710bf8322163d5f419884d58300e4",
+          "files": [
+            "tests/congruence_tests/test_complex_filters.py"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "24b2a27365e4764c63f3667e260bb4062396e91e",
+          "files": [
+            "tests/congruence_tests/test_complex_filters.py",
+            "tests/congruence_tests/test_query.py",
+            "tests/fixtures/filters.py"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "315ae4cdc947a3e119c85b646ca9f229251d4060",
+          "files": [
+            "tests/congruence_tests/test_group_recommend.py",
+            "tests/congruence_tests/test_group_search.py",
+            "tests/congruence_tests/test_query.py"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        },
+        {
+          "commit": "02df4fa0ac11f9e6aab4f634799997b37bb89ab6",
+          "files": [
+            "tests/congruence_tests/test_group_search.py",
+            "tests/congruence_tests/test_query.py"
+          ],
+          "repo": "qdrant-client",
+          "resolution": "theirs"
+        }
+      ],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation; 4 background commit(s) attached to the gold",
+      "mid": "M22_sub-01",
+      "name": "m3-local-mode-payload-type-filter-query-and",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [
+        {
+          "original": "589aece6f5458024548f032914244d494aa5324a",
+          "repo": "qdrant-client",
+          "sub_commits": [
+            "553255e91bc6d53c65c60788dde26509965bdf57"
+          ],
+          "union_ok": true
+        }
+      ],
+      "src_files": {
+        "qdrant-client": 28
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [
+        {
+          "commit": "553255e91bc6d53c65c60788dde26509965bdf57",
+          "files": [
+            "tests/congruence_tests/test_complex_filters.py",
+            "tests/conversions/fixtures.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "34dbb37a559f15ea4f84bfcbd9b98a3c9f87daa3",
+          "files": [
+            "tests/congruence_tests/test_complex_filters.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "e6f0d08e16327bdaffe501120904126bd19eceac",
+          "files": [
+            "tests/congruence_tests/test_group_search.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "27a5563b074ae3ccc8161d5cdac9efa343e5cf98",
+          "files": [
+            "tests/congruence_tests/test_query.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "28196c39298fbd320b2e1c646563782d8bc7ef8e",
+          "files": [
+            "tests/congruence_tests/test_common.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "23c0de59e341cee751db19a202e48ebc7f55e64c",
+          "files": [
+            "tests/congruence_tests/test_updates.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "3497f1e43767da3c7aa07231fbcfe72285e48584",
+          "files": [
+            "tests/congruence_tests/test_complex_filters.py"
+          ],
+          "repo": "qdrant-client"
+        }
+      ],
+      "test_files": {
+        "qdrant-client": 19
+      },
+      "title": "Local Mode Payload, Type, Filter, Query, and Formula Correctness"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M22_sub-02",
+      "name": "m4-v1-19-proto-and-grpc-stub-regeneration",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [
+        {
+          "original": "589aece6f5458024548f032914244d494aa5324a",
+          "repo": "qdrant-client",
+          "sub_commits": [
+            "c82a9d300fed8b4a91fedc577ececda07d0d1022"
+          ],
+          "union_ok": true
+        }
+      ],
+      "src_files": {
+        "qdrant-client": 15
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [
+        {
+          "commit": "7bd755bf32974d4ae4d7ba72fdd1d3c21725f76c",
+          "files": [
+            "tests/congruence_tests/test_nested_filter.py"
+          ],
+          "repo": "qdrant-client"
+        }
+      ],
+      "test_files": {
+        "qdrant-client": 2
+      },
+      "title": "v1.19 Proto and gRPC Stub Regeneration"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M22_sub-03",
+      "name": null,
+      "repos": [
+        "qdrant-client"
+      ],
+      "status": "background",
+      "title": "v1.19 REST Model and Conversion Sync"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M22_sub-04",
+      "name": "m5-v1-19-local-mode-client-api-and-post-syn",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [
+        {
+          "original": "589aece6f5458024548f032914244d494aa5324a",
+          "repo": "qdrant-client",
+          "sub_commits": [
+            "03fe5e7c146198e2d57c2192c8ef4383ac473733",
+            "9f3c870e90d43fcc0a3fc6d5d7285008a3f50cf4"
+          ],
+          "union_ok": true
+        }
+      ],
+      "src_files": {
+        "qdrant-client": 11
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [
+        {
+          "commit": "de3c4328ef6773a8ad1a6b9b0096bcb4aa5e6b1e",
+          "files": [
+            "tests/congruence_tests/test_common.py",
+            "tests/congruence_tests/test_complex_filters.py"
+          ],
+          "repo": "qdrant-client"
+        }
+      ],
+      "test_files": {
+        "qdrant-client": 7
+      },
+      "title": "v1.19 Local Mode, Client API, and Post-Sync Fixes"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M08",
+      "name": "m6-remove-max-disk-usage-percent-and-deprec",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "qdrant-client": 16
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "qdrant-client": 2
+      },
+      "title": "Remove max_disk_usage_percent and Deprecate max_resident_memory_percent in Python Client"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M22_sub-05",
+      "name": "m7-vector-validation-filter-chain-and-remot",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "qdrant-client": 23
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [
+        {
+          "commit": "1860632b68b9b34618fed6c71269a6bb425ecfdc",
+          "files": [
+            "tests/congruence_tests/test_updates.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "2a4d09497ad60bc040ef954ee1c1d3fb434c0465",
+          "files": [
+            "tests/test_local_persistence.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "e6817f7f2b1709ee9e374ebe0c739c671934ad9b",
+          "files": [
+            "tests/congruence_tests/test_collections.py"
+          ],
+          "repo": "qdrant-client"
+        }
+      ],
+      "test_files": {
+        "qdrant-client": 19
+      },
+      "title": "Vector Validation, Filter Chain, and Remote Correctness"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M15",
+      "name": "m8-filter-and-prefix-sdk-consumption-in-pyt",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "qdrant-client": 2
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [
+        {
+          "commit": "9a012915355bb190451bd4a91e83f88341c4310f",
+          "files": [
+            "tests/conversions/test_validate_conversions.py"
+          ],
+          "repo": "qdrant-client"
+        }
+      ],
+      "test_files": {
+        "qdrant-client": 1
+      },
+      "title": "Filter and Prefix SDK Consumption in Python Client"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M22_sub-06",
+      "name": "m9-sparse-vector-storage-payload-consolidat",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "qdrant-client": 16
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [
+        {
+          "commit": "0cb8f0bd315a3119b199d84b781813008533f0bd",
+          "files": [
+            "tests/congruence_tests/test_collections.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "d5ef5ccd36a9ad0c5a95a4e2dd4f8cba9867f394",
+          "files": [
+            "tests/test_local_persistence.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "6d287c3808c635d64bd347ef6d73c126383d0e0b",
+          "files": [
+            "tests/congruence_tests/test_group_recommend.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "4f9f8bb36aa86196dda3f87278d95617bd97f4a3",
+          "files": [
+            "tests/congruence_tests/test_collections.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "63b1d2e97662af71f83482c51b8b372ed0cd45ef",
+          "files": [
+            "tests/test_local_persistence.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "e39d152670de9a36f76583ac5abadb626af62c64",
+          "files": [
+            "tests/congruence_tests/test_updates.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "3b00b3fa548450a6002689bc55757b4861253a63",
+          "files": [
+            "tests/congruence_tests/test_complex_filters.py"
+          ],
+          "repo": "qdrant-client"
+        }
+      ],
+      "test_files": {
+        "qdrant-client": 13
+      },
+      "title": "Sparse Vector Storage, Payload Consolidation, and Collection Validation"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [
+        {
+          "commit": "bbc2694954b3743df860cbb2f34ad2839ae9d35a",
+          "files": [
+            "lib/api/src/grpc/proto/storage_read_service.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "76f4f3e2ce1fac7c3e83aae97a0a39e9005e7ecf",
+          "files": [
+            "lib/api/src/grpc/proto/points.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "55cf6b7d04059fc042c88ac434d5e3429e96e78d",
+          "files": [
+            "lib/api/src/grpc/proto/qdrant_common.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "73e6c16f9c6a74031f8e129dce06767a99420925",
+          "files": [
+            "lib/api/src/grpc/proto/points_service.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "c34acc1a36c0c0b139f680f84d3cafb4180e98db",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto",
+            "lib/api/src/grpc/proto/qdrant_internal_service.proto",
+            "lib/api/src/grpc/proto/quota_internal.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "bad18437a938e0ffe36a85a5740348304b68d001",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "bedab3c8e4c99b4b5326dc82e723b3319a9947af",
+          "files": [
+            "lib/api/src/grpc/proto/qdrant_common.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "7477c7c3691cd7bb210c68d6ea3e2bb52fdf197f",
+          "files": [
+            "lib/api/src/grpc/proto/collections_internal_service.proto",
+            "lib/api/src/grpc/proto/shard_snapshots_service.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "6b60fc72453b2308cd900c0b465e8ffecad55620",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto",
+            "lib/api/src/grpc/proto/points.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "a9ee13409147a63d5f8fc7570aeedd019c2851b5",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "3f793c5ca2ad3bc54c600925c467e305659403a1",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "b71c22a72ad9d6ea940efe797ced7d3faba2cb80",
+          "files": [
+            "lib/api/src/grpc/proto/points.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "4f88f5b7c3e78b517d0337c2cbbfd9b70c9d08be",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "fb0cda7853f60fb8b0d92651d09d7c80888489d1",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "5bc372099aa96affdb058435cd0089d77aa0b681",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "791ed05def67d182afff06ce49c2ebc282509a86",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto"
+          ],
+          "repo": "qdrant"
+        },
+        {
+          "commit": "65882ff24d23540e9b30e0f81436ce2c72a58959",
+          "files": [
+            "lib/api/src/grpc/proto/collections.proto"
+          ],
+          "repo": "qdrant"
+        }
+      ],
+      "contract_background_count": 17,
+      "contract_gold_lines": {
+        "qdrant": 743
+      },
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M24",
+      "name": "m10-grpc-payload-conversion-performance-qdra",
+      "repos": [
+        "qdrant",
+        "qdrant-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "qdrant": 10,
+        "qdrant-client": 5
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [
+        {
+          "commit": "70e3d30124342dfc79e2dc54ea4aa31ca0c5bd9a",
+          "files": [
+            "tests/test_uploader.py"
+          ],
+          "repo": "qdrant-client"
+        }
+      ],
+      "test_files": {
+        "qdrant-client": 5
+      },
+      "title": "gRPC Payload Conversion Performance + Qdrant gRPC and Internal Protocol Extensions (cross-repo)"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M03",
+      "name": "m11-qdrantserverless-rust-client",
+      "repos": [
+        "rust-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "rust-client": 11
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "rust-client": 1
+      },
+      "title": "QdrantServerless Rust Client"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M25",
+      "name": "m12-rust-client-v1-19-sdk-sync",
+      "repos": [
+        "rust-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "rust-client": 29
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "rust-client": 11
+      },
+      "title": "Rust Client v1.19 SDK Sync"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M14",
+      "name": "m13-deprecated-search-sdk-sync-in-rust-clien",
+      "repos": [
+        "rust-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "rust-client": 6
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "rust-client": 1
+      },
+      "title": "Deprecated Search SDK Sync in Rust Client"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M27",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Qdrant Release Version Bumps"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M28",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Qdrant API Input Validation Hardening"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M30",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Qdrant Tooling and Infrastructure"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M04_sub-01",
+      "name": "m14-qdrantserverless-proto-grpc-stubs-and-da",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [
+        {
+          "original": "7e917d1bf1c49e96b55e2e4b89865504af7335b9",
+          "repo": "qdrant-client",
+          "sub_commits": [
+            "111b04694d023fad2c9fd6f40ee4946c1eaf2d32",
+            "2e497b2cf5db7b6f4b067b89e47d6f4cd7c6dec5",
+            "cc6b6d36ae7f7a54c1b3d1b11618e328f9a551dc"
+          ],
+          "union_ok": true
+        }
+      ],
+      "src_files": {
+        "qdrant-client": 12
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "qdrant-client": 5
+      },
+      "title": "QdrantServerless Proto, gRPC Stubs, and Data Models"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M04_sub-02",
+      "name": "m15-qdrantserverless-sync-and-async-client-i",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [
+        {
+          "original": "7e917d1bf1c49e96b55e2e4b89865504af7335b9",
+          "repo": "qdrant-client",
+          "sub_commits": [
+            "2439ecb379a4addfb1ae00b1251b2e425a88e423",
+            "28b80bc1c5d3cbdb88524da99edac27ec2b874cb"
+          ],
+          "union_ok": true
+        }
+      ],
+      "src_files": {
+        "qdrant-client": 8
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "qdrant-client": 1
+      },
+      "title": "QdrantServerless Sync and Async Client Implementation"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M17_sub-01",
+      "name": "m16-bm25-and-formula-contract-with-rust-clie",
+      "repos": [
+        "qdrant",
+        "rust-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "rust-client": 15
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "rust-client": 5
+      },
+      "title": "BM25 and Formula Contract with Rust Client v1.20 SDK Sync"
+    },
+    {
+      "detail": "no hidden tests or too few repos: its commits are background",
+      "mid": "M09",
+      "name": null,
+      "repos": [
+        "qdrant"
+      ],
+      "status": "background",
+      "title": "Per-Element Nested Payload Indexes"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M10",
+      "name": "m17-sync-nested-payload-index-parameters-to",
+      "repos": [
+        "rust-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "rust-client": 10
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "rust-client": 3
+      },
+      "title": "Sync Nested Payload Index Parameters to Rust Client"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M34",
+      "name": "m18-python-client-grpc-and-rest-conversion-f",
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "qdrant-client": 8
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [
+        {
+          "commit": "5a0e0d00fbdfca3159063d708e7c05938eff2200",
+          "files": [
+            "tests/conversions/test_validate_conversions.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "715b48b720a33abe7f685fb3fe43dda14a98b45a",
+          "files": [
+            "tests/conversions/fixtures.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "52153fc33889ad86aad0cde6afdcb6f39fbaeee0",
+          "files": [
+            "tests/conversions/fixtures.py",
+            "tests/conversions/test_validate_conversions.py"
+          ],
+          "repo": "qdrant-client"
+        },
+        {
+          "commit": "dcaff1e23930c18cc47569e2bb5ba6e82bd1c66e",
+          "files": [
+            "tests/congruence_tests/test_updates.py"
+          ],
+          "repo": "qdrant-client"
+        }
+      ],
+      "test_files": {
+        "qdrant-client": 6
+      },
+      "title": "Python Client gRPC and REST Conversion Fixes"
+    },
+    {
+      "detail": "cherry-pick conflict in qdrant-client at 8409ae34b5: poetry.lock, tests/test_local_persistence.py",
+      "mid": "M35",
+      "name": null,
+      "repos": [
+        "qdrant-client"
+      ],
+      "split_commits": [],
+      "status": "blocked",
+      "title": "Python Client Upload Migration and Infrastructure"
+    },
+    {
+      "detail": "depends on M35, which is blocked",
+      "mid": "M17_sub-02",
+      "name": null,
+      "repos": [
+        "qdrant-client"
+      ],
+      "status": "skipped",
+      "title": "Python SDK v1.20 Proto, REST, and Conversion Sync"
+    },
+    {
+      "detail": "depends on M17_sub-02, which is skipped",
+      "mid": "M17_sub-03",
+      "name": null,
+      "repos": [
+        "qdrant-client"
+      ],
+      "status": "skipped",
+      "title": "Python SDK Local Mode BM25, Formula, and Client API for v1.20"
+    },
+    {
+      "attached_background": [],
+      "contract_background": [],
+      "contract_background_count": 0,
+      "detail": "pending: Phase 3 test curation",
+      "mid": "M36",
+      "name": "m19-rust-client-miscellaneous-fixes",
+      "repos": [
+        "rust-client"
+      ],
+      "split_commits": [],
+      "src_files": {
+        "rust-client": 3
+      },
+      "status": "built",
+      "test_file_conflicts_resolved": [],
+      "test_files": {
+        "rust-client": 1
+      },
+      "title": "Rust Client Miscellaneous Fixes"
+    }
+  ],
+  "task_id": "csf-qdrant-clients-v1-001"
+}

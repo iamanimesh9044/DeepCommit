@@ -1,0 +1,16 @@
+prerequisite_id,dependant_id,rationale
+M01,M02,Rust-client tonic upgrade (M02) consumes qdrant contract tonic upgrade (M01) — regenerated protobuf bindings require matching tonic version
+M05,M08,Python quota removal (M08) consumes qdrant global quota API changes (M05) — da58e7d removes fields added/deprecated by d75d805 and c34acc1
+M09,M10,Rust-client nested index sync (M10) consumes qdrant nested index API (M09) — 7f44c40 adds builders for nested parameter introduced by fb0cda7
+M11,M22,Python local mode text matching (M22 de3c432) consumes qdrant substring match condition (M11) — hard xrepo edge bedab3c→de3c432
+M13,M14,Rust deprecated search sync (M14) consumes qdrant deprecated search removal (M13) — hard xrepo edge 73e6c16→5ffa732
+M13,M15,Python filter consumption (M15) consumes qdrant slice filter condition (M13) — hard xrepo edge 55cf6b7→e4e44a7
+M16,M15,Python prefix round-trip fix (M15 9a01291) consumes qdrant keyword prefix API (M16) — hard xrepo edge 2573869→9a01291
+M07,M17,BM25/id-tracker/formula extensions (M17) build on qdrant contract foundation (M07) — ad3abf7 is on DAG paths to M17 commits
+M07,M25,Rust v1.19 sync (M25) consumes all qdrant v1.19 contract features (M07) — hard xrepo edges from M07 qdrant commits to 3631300
+M13,M25,Rust v1.19 sync (M25) consumes qdrant slice filter and deprecated search (M13) — hard xrepo edges 55cf6b7→3631300 and 73e6c16→3631300
+M16,M25,Rust v1.19 sync (M25) consumes qdrant keyword prefix (M16) — 2573869 contract consumed by 3631300
+M17,M25,Rust v1.19 sync (M25) consumes BM25 and formula contract changes (M17) — M17 qdrant commits are DAG ancestors of 3631300
+M17,M18,Rust v1.20 sync (M18) consumes BM25 and formula contract changes (M17) — hard xrepo edges fe27f6a→0dca5bf and aba9516→0dca5bf
+M17,M19,Python v1.20 sync (M19) consumes BM25 and formula contract (M17) — 3247b10 regenerates stubs for all M17 features
+M25,M18,Rust v1.20 sync (M18 0dca5bf) builds on v1.19 sync (M25 3631300) — intra-repo DAG edge in rust-client qdrant.rs

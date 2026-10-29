@@ -1,0 +1,1 @@
+# Core regression tests run as P2P at every step: '<repo> <test file or id>' per line.

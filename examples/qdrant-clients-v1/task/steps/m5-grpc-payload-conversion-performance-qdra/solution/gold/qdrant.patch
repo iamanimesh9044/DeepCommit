@@ -1,0 +1,743 @@
+diff --git a/lib/api/src/grpc/proto/collections.proto b/lib/api/src/grpc/proto/collections.proto
+index 9cc25a3cfa4db6bcaf728c34190e728b3e38b0d5..0aa9548c3032a7c8be51ba587f3343af8b6a7102 100644
+--- a/lib/api/src/grpc/proto/collections.proto
++++ b/lib/api/src/grpc/proto/collections.proto
+@@ -3,6 +3,7 @@ package qdrant;
+ 
+ import "json_with_int.proto";
+ import "qdrant_common.proto";
++import "google/protobuf/timestamp.proto";
+ 
+ option csharp_namespace = "Qdrant.Client.Grpc";
+ 
+@@ -12,6 +13,8 @@ enum Datatype {
+   Uint8 = 2;
+   Float16 = 3;
+   Turbo4 = 4;
++  Turbo8 = 5;
++  Turbo16 = 6;
+ }
+ 
+ // Memory placement of a component's data.
+@@ -226,6 +229,9 @@ message CollectionWarning {
+ message HnswConfigDiff {
+   // Number of edges per node in the index graph.
+   // Larger the value - more accurate the search, more space required.
++  // Set to 0 to disable the main HNSW graph. Additional payload-aware links
++  // may still be built when the effective payload M is positive (see payload_m).
++  // This setting alone does not guarantee exact search.
+   optional uint64 m = 1;
+   // Number of neighbours to consider during the index building.
+   // Larger the value - more accurate the search, more time required to build the index.
+@@ -245,8 +251,9 @@ message HnswConfigDiff {
+   // Deprecated: use `memory` instead.
+   // Store HNSW index on disk. If set to false, the index will be stored in RAM.
+   optional bool on_disk = 5 [deprecated = true];
+-  // Number of additional payload-aware links per node in the index graph.
+-  // If not set - regular M parameter will be used.
++  // Number of additional payload-aware links per node. If unset, the value of m is used.
++  // An effective value of 0 disables these additional links. A positive value allows
++  // them for indexed payload fields with HNSW enabled, even when m is 0.
+   optional uint64 payload_m = 6;
+   // Store copies of original and quantized vectors within the HNSW index file. Default: false.
+   // Enabling this option will trade the search speed for disk usage by reducing amount of
+@@ -299,7 +306,7 @@ message OptimizersConfigDiff {
+   optional uint64 default_segment_number = 3;
+   // Deprecated:
+   //
+-  // Do not create segments larger this size (in kilobytes).
++  // Do not create segments larger than this size (in kilobytes).
+   // Large segments might require disproportionately long indexation times,
+   // therefore it makes sense to limit the size of segments.
+   //
+@@ -423,6 +430,7 @@ enum TurboQuantBitSize{
+   Bits1_5 = 1;
+   Bits2 = 2;
+   Bits4 = 3;
++  Bits8 = 4;
+ }
+ 
+ message QuantizationConfig {
+@@ -494,12 +502,12 @@ message StrictModeConfig {
+   optional uint64 max_points_count = 18;
+   // Max number of payload indexes in a collection
+   optional uint64 max_payload_index_count = 19;
++  // Deprecated: memory is node-wide, use the global quota config instead. Removal planned for 1.21.
+   // Reject memory-consuming update operations when process resident memory exceeds this percentage of total RAM (cgroup-aware, 1-100).
+   // Delete-style operations are still allowed so memory can be freed.
+-  optional uint32 max_resident_memory_percent = 21;
+-  // Reject disk-consuming update operations when the filesystem hosting Qdrant storage exceeds this percentage of total capacity (1-100).
+-  // Free space is sampled with a small TTL cache so the gate may take a few seconds to react. Delete-style operations are still allowed so disk can be freed.
+-  optional uint32 max_disk_usage_percent = 22;
++  optional uint32 max_resident_memory_percent = 21 [deprecated = true];
++  // 22 was `max_disk_usage_percent`, superseded by the global quota config
++  reserved 22;
+ }
+ 
+ message StrictModeSparseConfig {
+@@ -528,6 +536,13 @@ message PayloadStorageParams {
+   optional Memory memory = 1;
+ }
+ 
++message IdTrackerParams {
++  // Memory placement of the point id mapping in indexed segments:
++  // `Cold` keeps it on disk and reads it on demand, `Cached` keeps it on disk
++  // but primes the page cache with it on load, `Pinned` keeps it in RAM.
++  optional Memory memory = 1;
++}
++
+ message CreateCollection {
+   // Name of the collection
+   string collection_name = 1;
+@@ -541,8 +556,8 @@ message CreateCollection {
+   optional WalConfigDiff wal_config = 5;
+   // Configuration of the optimizers
+   optional OptimizersConfigDiff optimizers_config = 6;
+-  // Number of shards in the collection, default is 1 for standalone, otherwise
+-  // equal to the number of nodes. Minimum is 1
++  // Number of shards in the collection. If not specified, selected
++  // automatically. Minimum is 1
+   optional uint32 shard_number = 7;
+   // Deprecated: use `payload.memory` instead.
+   // If true - point's payload will not be stored in memory
+@@ -570,6 +585,8 @@ message CreateCollection {
+   map<string, Value> metadata = 18;
+   // Configuration of the payload storage
+   optional PayloadStorageParams payload = 19;
++  // Configuration of the point id tracker
++  optional IdTrackerParams id_tracker = 20;
+ }
+ 
+ message UpdateCollection {
+@@ -640,6 +657,8 @@ message CollectionParams {
+   optional uint64 read_fan_out_delay_ms = 11;
+   // Configuration of the payload storage
+   optional PayloadStorageParams payload = 12;
++  // Configuration of the point id tracker
++  optional IdTrackerParams id_tracker = 13;
+ }
+ 
+ message CollectionParamsDiff {
+@@ -656,6 +675,8 @@ message CollectionParamsDiff {
+   optional uint64 read_fan_out_delay_ms = 5;
+   // Update params of the payload storage
+   optional PayloadStorageParams payload = 6;
++  // Update params of the point id tracker
++  optional IdTrackerParams id_tracker = 7;
+ }
+ 
+ message CollectionConfig {
+@@ -681,6 +702,7 @@ enum TokenizerType {
+   Whitespace = 2;
+   Word = 3;
+   Multilingual = 4;
++  Code = 5;
+ }
+ 
+ message KeywordIndexParams {
+@@ -698,6 +720,10 @@ message KeywordIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 5;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 6;
+ }
+ 
+ // Prefix matching options for the keyword index. Has no options yet:
+@@ -724,6 +750,10 @@ message IntegerIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 6;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 7;
+ }
+ 
+ message FloatIndexParams {
+@@ -740,6 +770,10 @@ message FloatIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 4;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 5;
+ }
+ 
+ message GeoIndexParams {
+@@ -753,6 +787,10 @@ message GeoIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 3;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 4;
+ }
+ 
+ message StopwordsSet {
+@@ -790,6 +828,25 @@ message TextIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 11;
++  // Enable ranking points by BM25 over this field.
++  // Changing it rebuilds the index.
++  // Default: disabled.
++  optional TextScoringParams scoring = 12;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].title`.
++  // The field must be inside the array's elements. Every query on the field, not only nested filters,
++  // treats each element as its own document: a condition matches a point when a single element
++  // matches it, and BM25 scores elements separately. `is_empty` on the field matches a point when
++  // one of its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 13;
++}
++
++enum TextScoringType {
++  Bm25 = 0;
++}
++
++message TextScoringParams {
++  // How documents are ranked
++  TextScoringType type = 1;
+ }
+ 
+ message StemmingAlgorithm {
+@@ -820,6 +877,10 @@ message BoolIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 3;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 4;
+ }
+ 
+ message DatetimeIndexParams {
+@@ -836,6 +897,10 @@ message DatetimeIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 4;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 5;
+ }
+ 
+ message UuidIndexParams {
+@@ -851,6 +916,10 @@ message UuidIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 4;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 5;
+ }
+ 
+ message PayloadIndexParams {
+@@ -916,6 +985,8 @@ message CollectionInfo {
+   repeated CollectionWarning warnings = 11;
+   // Update queue info
+   UpdateQueueInfo update_queue = 12;
++  // Time of the collection creation, absent for collections created before it was recorded
++  optional google.protobuf.Timestamp created_at = 13;
+ }
+ 
+ message ChangeAliases {
+@@ -1080,6 +1151,8 @@ message CollectionClusterInfoResponse {
+   repeated ShardTransferInfo shard_transfers = 5;
+   // Resharding operations
+   repeated ReshardingInfo resharding_operations = 6;
++  // Time spent to process
++  double time = 7;
+ }
+ 
+ message MoveShard {
+@@ -1180,6 +1253,8 @@ message UpdateCollectionClusterSetupRequest {
+ 
+ message UpdateCollectionClusterSetupResponse {
+   bool result = 1;
++  // Time spent to process
++  double time = 2;
+ }
+ 
+ message CreateShardKeyRequest {
+@@ -1209,10 +1284,14 @@ message ListShardKeysRequest {
+ 
+ message CreateShardKeyResponse {
+   bool result = 1;
++  // Time spent to process
++  double time = 2;
+ }
+ 
+ message DeleteShardKeyResponse {
+   bool result = 1;
++  // Time spent to process
++  double time = 2;
+ }
+ 
+ message ShardKeyDescription {
+diff --git a/lib/api/src/grpc/proto/collections_internal_service.proto b/lib/api/src/grpc/proto/collections_internal_service.proto
+index 18080551217040841b6a87938a836157934d0a03..9f5ad6222a89857f18fde56340e405bc4c3fd48c 100644
+--- a/lib/api/src/grpc/proto/collections_internal_service.proto
++++ b/lib/api/src/grpc/proto/collections_internal_service.proto
+@@ -39,6 +39,8 @@ message InitiateShardTransferRequest {
+   string collection_name = 1;
+   // Id of the temporary shard
+   uint32 shard_id = 2;
++  // Peer ID of the transfer source, checked against the registered shard transfer
++  optional uint64 from_peer_id = 3;
+ }
+ 
+ message WaitForShardStateRequest {
+diff --git a/lib/api/src/grpc/proto/points.proto b/lib/api/src/grpc/proto/points.proto
+index e2ff3f0a4627f3cdd66d10b7b35d574b14cdd699..7430375895cb97d9379e76d73224b8263014a18d 100644
+--- a/lib/api/src/grpc/proto/points.proto
++++ b/lib/api/src/grpc/proto/points.proto
+@@ -362,7 +362,7 @@ message DenseVectorCreationConfig {
+   Distance distance = 2;
+   // Configuration for multi-vector search (e.g., ColBERT)
+   optional MultiVectorConfig multivector_config = 3;
+-  // Data type of the vectors (Float32, Float16, Uint8, Turbo4)
++  // Data type of the vectors (Float32, Float16, Uint8, Turbo4, Turbo8, Turbo16)
+   optional Datatype datatype = 4;
+ }
+ 
+@@ -500,6 +500,14 @@ message AcornSearchParams {
+   optional double max_selectivity = 2;
+ }
+ 
++// Population over which IDF statistics are computed for scoring - the IDF corpus.
++// Only applicable to sparse vectors with the IDF modifier enabled, and to BM25 over a text index.
++message IdfParams {
++  // Filter defining the corpus: IDF statistics are computed over the points matching this filter.
++  // If unset, statistics are collection-wide (global) - same as omitting `idf` entirely.
++  optional Filter corpus = 1;
++}
++
+ message SearchParams {
+   // Params relevant to HNSW index. Size of the beam in a beam-search.
+   // Larger the value - more accurate the result, more time required for search.
+@@ -517,6 +525,10 @@ message SearchParams {
+ 
+   // ACORN search params
+   optional AcornSearchParams acorn = 5;
++
++  // Which population IDF statistics are computed over.
++  // If unset, statistics are collection-wide (global).
++  optional IdfParams idf = 6;
+ }
+ 
+ message SearchPoints {
+@@ -964,6 +976,12 @@ message Expression {
+     DecayParamsExpression gauss_decay = 18;
+     // Linear decay
+     DecayParamsExpression lin_decay = 19;
++    // Inverse hyperbolic cosine
++    Expression acosh = 20;
++    // Maximum
++    MaxExpression max = 21;
++    // Minimum
++    MinExpression min = 22;
+   }
+ }
+ 
+@@ -980,6 +998,14 @@ message SumExpression {
+   repeated Expression sum = 1;
+ }
+ 
++message MaxExpression {
++  repeated Expression max = 1;
++}
++
++message MinExpression {
++  repeated Expression min = 1;
++}
++
+ message DivExpression {
+   Expression left = 1;
+   Expression right = 2;
+@@ -1068,9 +1094,33 @@ message Query {
+     Rrf rrf = 10;
+     // Search with feedback from some oracle.
+     RelevanceFeedbackInput relevance_feedback = 11;
++    // Rank by BM25 over the text index of the payload field named by `using`.
++    TextQuery text = 12;
++  }
++}
++
++// Rank by BM25 over the text index of the payload field named by `using`,
++// which must have `scoring` set. A point scores when it holds any of the
++// query's terms: required or excluded terms belong in the request's filter.
++message TextQuery {
++  // Text to search for, tokenized by the field's text index.
++  string query = 1;
++  // Parameters of the scorer, keyed by its name. They must match the
++  // `scoring` type of the field's text index. If absent, the scorer runs
++  // with its defaults.
++  oneof scoring {
++    // BM25 parameters, for a field scored with BM25.
++    Bm25Params bm25 = 2;
+   }
+ }
+ 
++message Bm25Params {
++  // Term frequency saturation. Default is 1.2.
++  optional float k = 1;
++  // Document length normalization, from 0 (none) to 1 (full). Default is 0.75.
++  optional float b = 2;
++}
++
+ message PrefetchQuery {
+   // Sub-requests to perform first.
+   // If present, the query will be performed on the results of the prefetches.
+@@ -1080,6 +1130,7 @@ message PrefetchQuery {
+   optional Query query = 2;
+   // Define which vector to use for querying.
+   // If missing, the default vector is used.
++  // For a `text` query, the payload field whose text index to search.
+   optional string using = 3;
+   // Filter conditions - return only those points that satisfy the specified conditions.
+   optional Filter filter = 4;
+@@ -1104,6 +1155,7 @@ message QueryPoints {
+   optional Query query = 3;
+   // Define which vector to use for querying.
+   // If missing, the default vector is used.
++  // For a `text` query, the payload field whose text index to search.
+   optional string using = 4;
+   // Filter conditions - return only those points that satisfy the specified conditions.
+   optional Filter filter = 5;
+@@ -1150,6 +1202,7 @@ message QueryPointGroups {
+   optional Query query = 3;
+   // Define which vector to use for querying.
+   // If missing, the default vector is used.
++  // For a `text` query, the payload field whose text index to search.
+   optional string using = 4;
+   // Filter conditions - return only those points that satisfy the specified conditions.
+   optional Filter filter = 5;
+diff --git a/lib/api/src/grpc/proto/points_internal_service.proto b/lib/api/src/grpc/proto/points_internal_service.proto
+index 7253ef650042dfcb9152bb9736302b0b5d02e9af..d6aaa1e0bc7ee04237c357185caef3fbeda18f5b 100644
+--- a/lib/api/src/grpc/proto/points_internal_service.proto
++++ b/lib/api/src/grpc/proto/points_internal_service.proto
+@@ -2,6 +2,7 @@ syntax = "proto3";
+ 
+ import "points.proto";
+ import "qdrant_common.proto";
++import "json_with_int.proto";
+ 
+ package qdrant;
+ option csharp_namespace = "Qdrant.Client.Grpc";
+@@ -45,6 +46,28 @@ service PointsInternal {
+   rpc Facet(FacetCountsInternal) returns (FacetResponseInternal) {}
+ }
+ 
++message PointStructRaw {
++  PointId id = 1;
++  map<string, bytes> vectors = 2;
++  map<string, Value> payload = 3;
++  // Byte-encoded payload blob.
++  optional RawPayload raw_payload = 4;
++}
++
++// Encoding of `RawPayload.payload_bytes`.
++enum RawPayloadEncoding {
++  // serde_json encoding of the whole payload object, uncompressed,
++  // exactly as stored in gridstore.
++  JsonBytes = 0;
++}
++
++// The whole payload object of a point as a single encoded blob.
++message RawPayload {
++  // The encoded payload object, see `encoding` for the format.
++  bytes payload_bytes = 1;
++  RawPayloadEncoding encoding = 2;
++}
++
+ message SyncPoints {
+   // name of the collection
+   string collection_name = 1;
+@@ -58,6 +81,8 @@ message SyncPoints {
+   optional WriteOrdering ordering = 6;
+   // Timeout for the request in seconds
+   optional uint64 timeout = 7;
++  // Points with storage-native (raw bytes) vectors
++  repeated PointStructRaw raw_points = 8;
+ }
+ 
+ message SyncPointsInternal {
+@@ -76,6 +101,8 @@ message UpsertPointsInternal {
+   // When present, overrides the `wait` parameter of the wrapped public message.
+   // When absent, falls back to `wait` (backward compatible with older nodes).
+   optional WaitUntil wait_override = 4;
++  // Points with storage-native (raw bytes) vectors
++  repeated PointStructRaw raw_points = 5;
+ }
+ 
+ message DeletePointsInternal {
+@@ -385,6 +412,17 @@ message MmrInternal {
+   uint32 candidates_limit = 3;
+ }
+ 
++message TextScoringInternal {
++  // Payload field with a text index
++  string field = 1;
++  // Query text, tokenized on each shard by the field's tokenizer
++  string text = 2;
++  // BM25 term frequency saturation
++  float k1 = 3;
++  // BM25 length normalization
++  float b = 4;
++}
++
+ message QueryShardPoints {
+   message Query {
+     oneof score {
+@@ -402,6 +440,8 @@ message QueryShardPoints {
+       MmrInternal mmr = 6;
+       // Parameterized RRF fusion
+       Rrf rrf = 7;
++      // BM25 over the text index of a payload field
++      TextScoringInternal text = 8;
+     }
+   }
+ 
+diff --git a/lib/api/src/grpc/proto/points_service.proto b/lib/api/src/grpc/proto/points_service.proto
+index 162cb2f8601f7d105713f7901c54fed8e6f83fcf..cffc7d5b9f5b7034786637d7615b8442fbb57a7a 100644
+--- a/lib/api/src/grpc/proto/points_service.proto
++++ b/lib/api/src/grpc/proto/points_service.proto
+@@ -37,24 +37,48 @@ service Points {
+   rpc DeleteVectorName(DeleteVectorNameRequest) returns (PointsOperationResponse) {}
+   // Retrieve closest points based on vector similarity and given filtering
+   // conditions
+-  rpc Search(SearchPoints) returns (SearchResponse) {}
++  //
++  // Deprecated: use `Query` instead.
++  rpc Search(SearchPoints) returns (SearchResponse) {
++    option deprecated = true;
++  }
+   // Retrieve closest points based on vector similarity and given filtering
+   // conditions
+-  rpc SearchBatch(SearchBatchPoints) returns (SearchBatchResponse) {}
++  //
++  // Deprecated: use `QueryBatch` instead.
++  rpc SearchBatch(SearchBatchPoints) returns (SearchBatchResponse) {
++    option deprecated = true;
++  }
+   // Retrieve closest points based on vector similarity and given filtering
+   // conditions, grouped by a given field
+-  rpc SearchGroups(SearchPointGroups) returns (SearchGroupsResponse) {}
++  //
++  // Deprecated: use `QueryGroups` instead.
++  rpc SearchGroups(SearchPointGroups) returns (SearchGroupsResponse) {
++    option deprecated = true;
++  }
+   // Iterate over all or filtered points
+   rpc Scroll(ScrollPoints) returns (ScrollResponse) {}
+   // Look for the points which are closer to stored positive examples and at
+   // the same time further to negative examples.
+-  rpc Recommend(RecommendPoints) returns (RecommendResponse) {}
++  //
++  // Deprecated: use `Query` with a `recommend` query instead.
++  rpc Recommend(RecommendPoints) returns (RecommendResponse) {
++    option deprecated = true;
++  }
+   // Look for the points which are closer to stored positive examples and at
+   // the same time further to negative examples.
+-  rpc RecommendBatch(RecommendBatchPoints) returns (RecommendBatchResponse) {}
++  //
++  // Deprecated: use `QueryBatch` with `recommend` queries instead.
++  rpc RecommendBatch(RecommendBatchPoints) returns (RecommendBatchResponse) {
++    option deprecated = true;
++  }
+   // Look for the points which are closer to stored positive examples and at
+   // the same time further to negative examples, grouped by a given field
+-  rpc RecommendGroups(RecommendPointGroups) returns (RecommendGroupsResponse) {}
++  //
++  // Deprecated: use `QueryGroups` with a `recommend` query instead.
++  rpc RecommendGroups(RecommendPointGroups) returns (RecommendGroupsResponse) {
++    option deprecated = true;
++  }
+   // Use context and a target to find the most similar points to the target,
+   // constrained by the context.
+   //
+@@ -74,9 +98,17 @@ service Points {
+   // distance to the target. The context part of the score for each pair is
+   // calculated +1 if the point is closer to a positive than to a negative part
+   // of a pair, and -1 otherwise.
+-  rpc Discover(DiscoverPoints) returns (DiscoverResponse) {}
++  //
++  // Deprecated: use `Query` with a `discover` or `context` query instead.
++  rpc Discover(DiscoverPoints) returns (DiscoverResponse) {
++    option deprecated = true;
++  }
+   // Batch request points based on { positive, negative } pairs of examples, and/or a target
+-  rpc DiscoverBatch(DiscoverBatchPoints) returns (DiscoverBatchResponse) {}
++  //
++  // Deprecated: use `QueryBatch` with `discover` or `context` queries instead.
++  rpc DiscoverBatch(DiscoverBatchPoints) returns (DiscoverBatchResponse) {
++    option deprecated = true;
++  }
+   // Count points in collection with given filtering conditions
+   rpc Count(CountPoints) returns (CountResponse) {}
+ 
+diff --git a/lib/api/src/grpc/proto/qdrant_common.proto b/lib/api/src/grpc/proto/qdrant_common.proto
+index 03f2b14a036252152df5e10ae903a54c9f76c425..942bcfd0b6afb69600d7d80b3fbac2100325b2b5 100644
+--- a/lib/api/src/grpc/proto/qdrant_common.proto
++++ b/lib/api/src/grpc/proto/qdrant_common.proto
+@@ -45,6 +45,7 @@ message Condition {
+     IsNullCondition is_null = 5;
+     NestedCondition nested = 6;
+     HasVectorCondition has_vector = 7;
++    SliceCondition slice = 8;
+   }
+ }
+ 
+@@ -64,6 +65,13 @@ message HasVectorCondition {
+   string has_vector = 1;
+ }
+ 
++message SliceCondition {
++  // Total number of disjoint deterministic slices the id space is split into, must be >= 1
++  uint32 total = 1;
++  // Which slice to select, must be less than `total`
++  uint32 index = 2;
++}
++
+ message NestedCondition {
+   // Path to nested object
+   string key = 1;
+@@ -117,6 +125,8 @@ message Match {
+     string text_any = 10;
+     // Match keywords starting with the given prefix
+     string prefix = 11;
++    // Match keywords containing the given substring
++    string substring = 12;
+   }
+ }
+ 
+diff --git a/lib/api/src/grpc/proto/qdrant_internal_service.proto b/lib/api/src/grpc/proto/qdrant_internal_service.proto
+index 0a9372f4233b0e8a94426bda91b39091b72b9ec0..79e1dbc71f95828e7b3a4ec21a8272b7e6c3d57f 100644
+--- a/lib/api/src/grpc/proto/qdrant_internal_service.proto
++++ b/lib/api/src/grpc/proto/qdrant_internal_service.proto
+@@ -4,6 +4,7 @@ package qdrant;
+ option csharp_namespace = "Qdrant.Client.Grpc";
+ 
+ import "telemetry_internal.proto";
++import "quota_internal.proto";
+ 
+ service QdrantInternal {
+   // Get current commit and term on the target peer.
+@@ -19,6 +20,13 @@ service QdrantInternal {
+ 
+   // Get audit log entries from this peer
+   rpc GetAuditLog(GetAuditLogRequest) returns (GetAuditLogResponse) {}
++
++  // Get how much of its resource quota this peer is using
++  rpc GetQuotaUsage(GetQuotaUsageRequest) returns (GetQuotaUsageResponse) {}
++
++  // Get the log of recently applied consensus entries from this peer
++  rpc GetConsensusAppliedLog(GetConsensusAppliedLogRequest)
++      returns (GetConsensusAppliedLogResponse) {}
+ }
+ 
+ message GetConsensusCommitRequest {}
+@@ -44,6 +52,30 @@ message WaitOnConsensusCommitResponse {
+   bool ok = 1;
+ }
+ 
++message GetConsensusAppliedLogRequest {}
++
++message AppliedConsensusEntry {
++  // Raft log index of the entry
++  uint64 index = 1;
++  // Raft term the entry was proposed in
++  uint64 term = 2;
++  // Wall clock when the entry finished applying, milliseconds since the Unix epoch
++  uint64 applied_at_ms = 3;
++  // How long this single entry took to apply, in milliseconds
++  uint64 took_ms = 4;
++}
++
++message GetConsensusAppliedLogResponse {
++  // Recently applied entries, oldest first
++  repeated AppliedConsensusEntry entries = 1;
++  // Wall clock on the responding peer, milliseconds since the Unix epoch
++  uint64 now_ms = 2;
++  // Entries committed but not yet applied on the responding peer
++  uint64 pending_operations = 3;
++  // Highest entry index the responding peer has applied, from its consensus state
++  optional uint64 last_applied_index = 4;
++}
++
+ message GetAuditLogRequest {
+   // ISO-8601 start time (inclusive), omit for no lower bound
+   optional string time_from = 1;
+diff --git a/lib/api/src/grpc/proto/quota_internal.proto b/lib/api/src/grpc/proto/quota_internal.proto
+new file mode 100644
+index 0000000000000000000000000000000000000000..08b6ca2a1d4282c9e49c05ed74db27f7772bcc23
+--- /dev/null
++++ b/lib/api/src/grpc/proto/quota_internal.proto
+@@ -0,0 +1,25 @@
++syntax = "proto3";
++
++package qdrant;
++option csharp_namespace = "Qdrant.Client.Grpc";
++
++message GetQuotaUsageRequest {}
++
++message GetQuotaUsageResponse {
++  QuotaUsage result = 1;
++  // Time spent to process
++  double time = 2;
++}
++
++// Utilization of the quota-managed resources on the peer that answered.
++message QuotaUsage {
++  // Resident memory as a percentage of the memory available to the process,
++  // absent when the platform does not expose the stat.
++  optional uint32 resident_memory_percent = 1;
++  // Used space of the storage filesystem as a percentage of its capacity,
++  // absent when it cannot be read.
++  optional uint32 disk_usage_percent = 2;
++  // Whether this peer is at or over one of the limits it enforces, and so is
++  // currently refusing updates. Always false while the quota is disabled.
++  bool exceeded = 3;
++}
+diff --git a/lib/api/src/grpc/proto/shard_snapshots_service.proto b/lib/api/src/grpc/proto/shard_snapshots_service.proto
+index 2a8e833cc6895524f18cbf5925561b9ad9a8d7a2..d612bb7c687e9058f48117d634a3c264cf39e856 100644
+--- a/lib/api/src/grpc/proto/shard_snapshots_service.proto
++++ b/lib/api/src/grpc/proto/shard_snapshots_service.proto
+@@ -52,6 +52,8 @@ message RecoverShardSnapshotRequest {
+   optional string checksum = 5;
+   // Optional API key used when fetching the snapshot from a remote URL
+   optional string api_key = 6;
++  // Peer ID of the shard transfer source, checked against the registered shard transfer
++  optional uint64 from_peer_id = 7;
+ }
+ 
+ message ShardSnapshotLocation {
+diff --git a/lib/api/src/grpc/proto/storage_read_service.proto b/lib/api/src/grpc/proto/storage_read_service.proto
+index db8e98f2d0e09f4da835639c9aae3bd5daf251e8..6c6f4d426e8766248af05343d72f35bbec9def27 100644
+--- a/lib/api/src/grpc/proto/storage_read_service.proto
++++ b/lib/api/src/grpc/proto/storage_read_service.proto
+@@ -2,6 +2,8 @@ syntax = "proto3";
+ 
+ package qdrant;
+ 
++import "google/protobuf/timestamp.proto";
++
+ option csharp_namespace = "Qdrant.Client.Grpc";
+ 
+ // Shard-scoped raw I/O over on-disk collection storage.
+@@ -53,6 +55,8 @@ message FileExistsResponse {
+ message ListFilesEntry {
+   string path = 1;
+   uint64 size = 2;
++  // Last modification time, when the underlying storage exposes one.
++  optional google.protobuf.Timestamp last_modified = 3;
+ }
+ 
+ message ListFilesResponse {

@@ -1,0 +1,456 @@
+diff --git a/proto/collections.proto b/proto/collections.proto
+index fd067ab66dfadc8d7b5488349f903c6baab039f1..c7f2e1090bbe47b9cac291dfa6cd6695e60f287c 100644
+--- a/proto/collections.proto
++++ b/proto/collections.proto
+@@ -494,12 +494,12 @@ message StrictModeConfig {
+   optional uint64 max_points_count = 18;
+   // Max number of payload indexes in a collection
+   optional uint64 max_payload_index_count = 19;
++  // Deprecated: memory is node-wide, use the global quota config instead. Removal planned for 1.21.
+   // Reject memory-consuming update operations when process resident memory exceeds this percentage of total RAM (cgroup-aware, 1-100).
+   // Delete-style operations are still allowed so memory can be freed.
+-  optional uint32 max_resident_memory_percent = 21;
+-  // Reject disk-consuming update operations when the filesystem hosting Qdrant storage exceeds this percentage of total capacity (1-100).
+-  // Free space is sampled with a small TTL cache so the gate may take a few seconds to react. Delete-style operations are still allowed so disk can be freed.
+-  optional uint32 max_disk_usage_percent = 22;
++  optional uint32 max_resident_memory_percent = 21 [deprecated = true];
++  // 22 was `max_disk_usage_percent`, superseded by the global quota config
++  reserved 22;
+ }
+ 
+ message StrictModeSparseConfig {
+diff --git a/proto/points_service.proto b/proto/points_service.proto
+index 162cb2f8601f7d105713f7901c54fed8e6f83fcf..cffc7d5b9f5b7034786637d7615b8442fbb57a7a 100644
+--- a/proto/points_service.proto
++++ b/proto/points_service.proto
+@@ -37,24 +37,48 @@ service Points {
+   rpc DeleteVectorName(DeleteVectorNameRequest) returns (PointsOperationResponse) {}
+   // Retrieve closest points based on vector similarity and given filtering
+   // conditions
+-  rpc Search(SearchPoints) returns (SearchResponse) {}
++  //
++  // Deprecated: use `Query` instead.
++  rpc Search(SearchPoints) returns (SearchResponse) {
++    option deprecated = true;
++  }
+   // Retrieve closest points based on vector similarity and given filtering
+   // conditions
+-  rpc SearchBatch(SearchBatchPoints) returns (SearchBatchResponse) {}
++  //
++  // Deprecated: use `QueryBatch` instead.
++  rpc SearchBatch(SearchBatchPoints) returns (SearchBatchResponse) {
++    option deprecated = true;
++  }
+   // Retrieve closest points based on vector similarity and given filtering
+   // conditions, grouped by a given field
+-  rpc SearchGroups(SearchPointGroups) returns (SearchGroupsResponse) {}
++  //
++  // Deprecated: use `QueryGroups` instead.
++  rpc SearchGroups(SearchPointGroups) returns (SearchGroupsResponse) {
++    option deprecated = true;
++  }
+   // Iterate over all or filtered points
+   rpc Scroll(ScrollPoints) returns (ScrollResponse) {}
+   // Look for the points which are closer to stored positive examples and at
+   // the same time further to negative examples.
+-  rpc Recommend(RecommendPoints) returns (RecommendResponse) {}
++  //
++  // Deprecated: use `Query` with a `recommend` query instead.
++  rpc Recommend(RecommendPoints) returns (RecommendResponse) {
++    option deprecated = true;
++  }
+   // Look for the points which are closer to stored positive examples and at
+   // the same time further to negative examples.
+-  rpc RecommendBatch(RecommendBatchPoints) returns (RecommendBatchResponse) {}
++  //
++  // Deprecated: use `QueryBatch` with `recommend` queries instead.
++  rpc RecommendBatch(RecommendBatchPoints) returns (RecommendBatchResponse) {
++    option deprecated = true;
++  }
+   // Look for the points which are closer to stored positive examples and at
+   // the same time further to negative examples, grouped by a given field
+-  rpc RecommendGroups(RecommendPointGroups) returns (RecommendGroupsResponse) {}
++  //
++  // Deprecated: use `QueryGroups` with a `recommend` query instead.
++  rpc RecommendGroups(RecommendPointGroups) returns (RecommendGroupsResponse) {
++    option deprecated = true;
++  }
+   // Use context and a target to find the most similar points to the target,
+   // constrained by the context.
+   //
+@@ -74,9 +98,17 @@ service Points {
+   // distance to the target. The context part of the score for each pair is
+   // calculated +1 if the point is closer to a positive than to a negative part
+   // of a pair, and -1 otherwise.
+-  rpc Discover(DiscoverPoints) returns (DiscoverResponse) {}
++  //
++  // Deprecated: use `Query` with a `discover` or `context` query instead.
++  rpc Discover(DiscoverPoints) returns (DiscoverResponse) {
++    option deprecated = true;
++  }
+   // Batch request points based on { positive, negative } pairs of examples, and/or a target
+-  rpc DiscoverBatch(DiscoverBatchPoints) returns (DiscoverBatchResponse) {}
++  //
++  // Deprecated: use `QueryBatch` with `discover` or `context` queries instead.
++  rpc DiscoverBatch(DiscoverBatchPoints) returns (DiscoverBatchResponse) {
++    option deprecated = true;
++  }
+   // Count points in collection with given filtering conditions
+   rpc Count(CountPoints) returns (CountResponse) {}
+ 
+diff --git a/proto/quota_internal.proto b/proto/quota_internal.proto
+new file mode 100644
+index 0000000000000000000000000000000000000000..08b6ca2a1d4282c9e49c05ed74db27f7772bcc23
+--- /dev/null
++++ b/proto/quota_internal.proto
+@@ -0,0 +1,25 @@
++syntax = "proto3";
++
++package qdrant;
++option csharp_namespace = "Qdrant.Client.Grpc";
++
++message GetQuotaUsageRequest {}
++
++message GetQuotaUsageResponse {
++  QuotaUsage result = 1;
++  // Time spent to process
++  double time = 2;
++}
++
++// Utilization of the quota-managed resources on the peer that answered.
++message QuotaUsage {
++  // Resident memory as a percentage of the memory available to the process,
++  // absent when the platform does not expose the stat.
++  optional uint32 resident_memory_percent = 1;
++  // Used space of the storage filesystem as a percentage of its capacity,
++  // absent when it cannot be read.
++  optional uint32 disk_usage_percent = 2;
++  // Whether this peer is at or over one of the limits it enforces, and so is
++  // currently refusing updates. Always false while the quota is disabled.
++  bool exceeded = 3;
++}
+diff --git a/src/builders/strict_mode_config_builder.rs b/src/builders/strict_mode_config_builder.rs
+index 03a3f1e32bffcef8440c445f38f89b88f7715153..7c32779a1abbd2fc8d2181a6ddad4a5633974c24 100644
+--- a/src/builders/strict_mode_config_builder.rs
++++ b/src/builders/strict_mode_config_builder.rs
+@@ -23,8 +23,11 @@ pub struct StrictModeConfigBuilder {
+     pub(crate) sparse_config: Option<Option<StrictModeSparseConfig>>,
+     pub(crate) max_points_count: Option<Option<u64>>,
+     pub(crate) max_payload_index_count: Option<Option<u64>>,
++    ///
++    /// Reject memory-consuming update operations when process resident memory exceeds this
++    /// percentage of total RAM (cgroup-aware, 1-100).
++    /// Delete-style operations are still allowed so memory can be freed.
+     pub(crate) max_resident_memory_percent: Option<Option<u32>>,
+-    pub(crate) max_disk_usage_percent: Option<Option<u32>>,
+ }
+ 
+ impl StrictModeConfigBuilder {
+@@ -148,20 +151,20 @@ impl StrictModeConfigBuilder {
+         new
+     }
+ 
++    ///
++    /// Reject memory-consuming update operations when process resident memory exceeds this
++    /// percentage of total RAM (cgroup-aware, 1-100).
++    /// Delete-style operations are still allowed so memory can be freed.
++    ///
++    /// Deprecated since 1.20.0, memory is node-wide: use the global quota config instead.
++    /// Removal planned for 1.21.
+     pub fn max_resident_memory_percent(self, value: u32) -> Self {
+         let mut new = self;
+         new.max_resident_memory_percent = Option::Some(Option::Some(value));
+         new
+     }
+ 
+-    /// Reject disk-consuming update operations when the filesystem hosting Qdrant storage
+-    /// exceeds this percentage of total capacity (1-100).
+-    pub fn max_disk_usage_percent(self, value: u32) -> Self {
+-        let mut new = self;
+-        new.max_disk_usage_percent = Option::Some(Option::Some(value));
+-        new
+-    }
+-
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<StrictModeConfig, std::convert::Infallible> {
+         Ok(StrictModeConfig {
+             enabled: self.enabled.unwrap_or_default(),
+@@ -189,7 +192,6 @@ impl StrictModeConfigBuilder {
+             max_points_count: self.max_points_count.unwrap_or_default(),
+             max_payload_index_count: self.max_payload_index_count.unwrap_or_default(),
+             max_resident_memory_percent: self.max_resident_memory_percent.unwrap_or_default(),
+-            max_disk_usage_percent: self.max_disk_usage_percent.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -216,7 +218,6 @@ impl StrictModeConfigBuilder {
+             max_points_count: core::default::Default::default(),
+             max_payload_index_count: core::default::Default::default(),
+             max_resident_memory_percent: core::default::Default::default(),
+-            max_disk_usage_percent: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/qdrant.rs b/src/qdrant.rs
+index bafb445000bb2167eefca6f86fa8c23f09577990..de3ff634e2796112a192e3d574e1f9266fa67760 100644
+--- a/src/qdrant.rs
++++ b/src/qdrant.rs
+@@ -962,14 +962,12 @@ pub struct StrictModeConfig {
+     /// Max number of payload indexes in a collection
+     #[prost(uint64, optional, tag = "19")]
+     pub max_payload_index_count: ::core::option::Option<u64>,
++    /// Deprecated: memory is node-wide, use the global quota config instead. Removal planned for 1.21.
+     /// Reject memory-consuming update operations when process resident memory exceeds this percentage of total RAM (cgroup-aware, 1-100).
+     /// Delete-style operations are still allowed so memory can be freed.
++    #[deprecated]
+     #[prost(uint32, optional, tag = "21")]
+     pub max_resident_memory_percent: ::core::option::Option<u32>,
+-    /// Reject disk-consuming update operations when the filesystem hosting Qdrant storage exceeds this percentage of total capacity (1-100).
+-    /// Free space is sampled with a small TTL cache so the gate may take a few seconds to react. Delete-style operations are still allowed so disk can be freed.
+-    #[prost(uint32, optional, tag = "22")]
+-    pub max_disk_usage_percent: ::core::option::Option<u32>,
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct StrictModeSparseConfig {
+@@ -6732,6 +6730,9 @@ pub mod points_client {
+         }
+         /// Retrieve closest points based on vector similarity and given filtering
+         /// conditions
++        ///
++        /// Deprecated: use `Query` instead.
++        #[deprecated]
+         pub async fn search(
+             &mut self,
+             request: impl tonic::IntoRequest<super::SearchPoints>,
+@@ -6752,6 +6753,9 @@ pub mod points_client {
+         }
+         /// Retrieve closest points based on vector similarity and given filtering
+         /// conditions
++        ///
++        /// Deprecated: use `QueryBatch` instead.
++        #[deprecated]
+         pub async fn search_batch(
+             &mut self,
+             request: impl tonic::IntoRequest<super::SearchBatchPoints>,
+@@ -6777,6 +6781,9 @@ pub mod points_client {
+         }
+         /// Retrieve closest points based on vector similarity and given filtering
+         /// conditions, grouped by a given field
++        ///
++        /// Deprecated: use `QueryGroups` instead.
++        #[deprecated]
+         pub async fn search_groups(
+             &mut self,
+             request: impl tonic::IntoRequest<super::SearchPointGroups>,
+@@ -6822,6 +6829,9 @@ pub mod points_client {
+         }
+         /// Look for the points which are closer to stored positive examples and at
+         /// the same time further to negative examples.
++        ///
++        /// Deprecated: use `Query` with a `recommend` query instead.
++        #[deprecated]
+         pub async fn recommend(
+             &mut self,
+             request: impl tonic::IntoRequest<super::RecommendPoints>,
+@@ -6845,6 +6855,9 @@ pub mod points_client {
+         }
+         /// Look for the points which are closer to stored positive examples and at
+         /// the same time further to negative examples.
++        ///
++        /// Deprecated: use `QueryBatch` with `recommend` queries instead.
++        #[deprecated]
+         pub async fn recommend_batch(
+             &mut self,
+             request: impl tonic::IntoRequest<super::RecommendBatchPoints>,
+@@ -6871,6 +6884,9 @@ pub mod points_client {
+         }
+         /// Look for the points which are closer to stored positive examples and at
+         /// the same time further to negative examples, grouped by a given field
++        ///
++        /// Deprecated: use `QueryGroups` with a `recommend` query instead.
++        #[deprecated]
+         pub async fn recommend_groups(
+             &mut self,
+             request: impl tonic::IntoRequest<super::RecommendPointGroups>,
+@@ -6914,6 +6930,9 @@ pub mod points_client {
+         /// distance to the target. The context part of the score for each pair is
+         /// calculated +1 if the point is closer to a positive than to a negative part
+         /// of a pair, and -1 otherwise.
++        ///
++        /// Deprecated: use `Query` with a `discover` or `context` query instead.
++        #[deprecated]
+         pub async fn discover(
+             &mut self,
+             request: impl tonic::IntoRequest<super::DiscoverPoints>,
+@@ -6936,6 +6955,9 @@ pub mod points_client {
+             self.inner.unary(req, path, codec).await
+         }
+         /// Batch request points based on { positive, negative } pairs of examples, and/or a target
++        ///
++        /// Deprecated: use `QueryBatch` with `discover` or `context` queries instead.
++        #[deprecated]
+         pub async fn discover_batch(
+             &mut self,
+             request: impl tonic::IntoRequest<super::DiscoverBatchPoints>,
+@@ -7264,12 +7286,16 @@ pub mod points_server {
+         >;
+         /// Retrieve closest points based on vector similarity and given filtering
+         /// conditions
++        ///
++        /// Deprecated: use `Query` instead.
+         async fn search(
+             &self,
+             request: tonic::Request<super::SearchPoints>,
+         ) -> std::result::Result<tonic::Response<super::SearchResponse>, tonic::Status>;
+         /// Retrieve closest points based on vector similarity and given filtering
+         /// conditions
++        ///
++        /// Deprecated: use `QueryBatch` instead.
+         async fn search_batch(
+             &self,
+             request: tonic::Request<super::SearchBatchPoints>,
+@@ -7279,6 +7305,8 @@ pub mod points_server {
+         >;
+         /// Retrieve closest points based on vector similarity and given filtering
+         /// conditions, grouped by a given field
++        ///
++        /// Deprecated: use `QueryGroups` instead.
+         async fn search_groups(
+             &self,
+             request: tonic::Request<super::SearchPointGroups>,
+@@ -7293,6 +7321,8 @@ pub mod points_server {
+         ) -> std::result::Result<tonic::Response<super::ScrollResponse>, tonic::Status>;
+         /// Look for the points which are closer to stored positive examples and at
+         /// the same time further to negative examples.
++        ///
++        /// Deprecated: use `Query` with a `recommend` query instead.
+         async fn recommend(
+             &self,
+             request: tonic::Request<super::RecommendPoints>,
+@@ -7302,6 +7332,8 @@ pub mod points_server {
+         >;
+         /// Look for the points which are closer to stored positive examples and at
+         /// the same time further to negative examples.
++        ///
++        /// Deprecated: use `QueryBatch` with `recommend` queries instead.
+         async fn recommend_batch(
+             &self,
+             request: tonic::Request<super::RecommendBatchPoints>,
+@@ -7311,6 +7343,8 @@ pub mod points_server {
+         >;
+         /// Look for the points which are closer to stored positive examples and at
+         /// the same time further to negative examples, grouped by a given field
++        ///
++        /// Deprecated: use `QueryGroups` with a `recommend` query instead.
+         async fn recommend_groups(
+             &self,
+             request: tonic::Request<super::RecommendPointGroups>,
+@@ -7337,6 +7371,8 @@ pub mod points_server {
+         /// distance to the target. The context part of the score for each pair is
+         /// calculated +1 if the point is closer to a positive than to a negative part
+         /// of a pair, and -1 otherwise.
++        ///
++        /// Deprecated: use `Query` with a `discover` or `context` query instead.
+         async fn discover(
+             &self,
+             request: tonic::Request<super::DiscoverPoints>,
+@@ -7345,6 +7381,8 @@ pub mod points_server {
+             tonic::Status,
+         >;
+         /// Batch request points based on { positive, negative } pairs of examples, and/or a target
++        ///
++        /// Deprecated: use `QueryBatch` with `discover` or `context` queries instead.
+         async fn discover_batch(
+             &self,
+             request: tonic::Request<super::DiscoverBatchPoints>,
+diff --git a/src/qdrant_client/search.rs b/src/qdrant_client/search.rs
+index 0caf548444287bac76e2b852cd8ec1e8d0e0fa12..ad695530844be805f3e7163b27ebcd8a4dcc8bd1 100644
+--- a/src/qdrant_client/search.rs
++++ b/src/qdrant_client/search.rs
+@@ -39,6 +39,9 @@ impl Qdrant {
+     /// ```
+     ///
+     /// Documentation: <https://qdrant.tech/documentation/concepts/search/#search-api>
++    ///
++    /// Deprecated since 1.20.0, use [`query`](Qdrant::query) instead.
++    #[allow(deprecated)]
+     pub async fn search_points(
+         &self,
+         request: impl Into<SearchPoints>,
+@@ -79,6 +82,9 @@ impl Qdrant {
+     /// ```
+     ///
+     /// Documentation: <https://qdrant.tech/documentation/concepts/search/#batch-search-api>
++    ///
++    /// Deprecated since 1.20.0, use [`query_batch`](Qdrant::query_batch) instead.
++    #[allow(deprecated)]
+     pub async fn search_batch_points(
+         &self,
+         request: impl Into<SearchBatchPoints>,
+@@ -114,6 +120,9 @@ impl Qdrant {
+     /// ```
+     ///
+     /// Documentation: <https://qdrant.tech/documentation/concepts/search/#search-groups>
++    ///
++    /// Deprecated since 1.20.0, use [`query_groups`](Qdrant::query_groups) instead.
++    #[allow(deprecated)]
+     pub async fn search_groups(
+         &self,
+         request: impl Into<SearchPointGroups>,
+@@ -155,6 +164,10 @@ impl Qdrant {
+     /// ```
+     ///
+     /// Documentation: <https://qdrant.tech/documentation/concepts/explore/#recommendation-api>
++    ///
++    /// Deprecated since 1.20.0, use [`query`](Qdrant::query) with a
++    /// [`RecommendInput`](crate::qdrant::RecommendInput) query instead.
++    #[allow(deprecated)]
+     pub async fn recommend(
+         &self,
+         request: impl Into<RecommendPoints>,
+@@ -204,6 +217,10 @@ impl Qdrant {
+     /// ```
+     ///
+     /// Documentation: <https://qdrant.tech/documentation/concepts/explore/#batch-recommendation-api>
++    ///
++    /// Deprecated since 1.20.0, use [`query_batch`](Qdrant::query_batch) with
++    /// [`RecommendInput`](crate::qdrant::RecommendInput) queries instead.
++    #[allow(deprecated)]
+     pub async fn recommend_batch(
+         &self,
+         request: impl Into<RecommendBatchPoints>,
+@@ -244,6 +261,10 @@ impl Qdrant {
+     /// ```
+     ///
+     /// Documentation: <https://qdrant.tech/documentation/concepts/explore/#recommendation-api>
++    ///
++    /// Deprecated since 1.20.0, use [`query_groups`](Qdrant::query_groups) with a
++    /// [`RecommendInput`](crate::qdrant::RecommendInput) query instead.
++    #[allow(deprecated)]
+     pub async fn recommend_groups(
+         &self,
+         request: impl Into<RecommendPointGroups>,
+@@ -294,6 +315,11 @@ impl Qdrant {
+     /// ```
+     ///
+     /// Documentation: <https://qdrant.tech/documentation/concepts/explore/#discovery-api>
++    ///
++    /// Deprecated since 1.20.0, use [`query`](Qdrant::query) with a
++    /// [`DiscoverInput`](crate::qdrant::DiscoverInput) or
++    /// [`ContextInput`](crate::qdrant::ContextInput) query instead.
++    #[allow(deprecated)]
+     pub async fn discover(
+         &self,
+         request: impl Into<DiscoverPoints>,
+@@ -360,6 +386,11 @@ impl Qdrant {
+     /// ```
+     ///
+     /// Documentation: <https://qdrant.tech/documentation/concepts/explore/#discovery-api>
++    ///
++    /// Deprecated since 1.20.0, use [`query_batch`](Qdrant::query_batch) with
++    /// [`DiscoverInput`](crate::qdrant::DiscoverInput) or
++    /// [`ContextInput`](crate::qdrant::ContextInput) queries instead.
++    #[allow(deprecated)]
+     pub async fn discover_batch(
+         &self,
+         request: &DiscoverBatchPoints,

@@ -1,0 +1,556 @@
+diff --git a/qdrant_client/_pydantic_compat.py b/qdrant_client/_pydantic_compat.py
+index 7c62121b864db009eb93f298d923330172613923..81992518c83b7021f183b395ab047bfabfd066bf 100644
+--- a/qdrant_client/_pydantic_compat.py
++++ b/qdrant_client/_pydantic_compat.py
+@@ -14,10 +14,11 @@ if PYDANTIC_V2:
+ 
+     to_jsonable_python = pydantic_core.to_jsonable_python
+ else:
+-    from pydantic.json import ENCODERS_BY_TYPE
++    from pydantic.json import pydantic_encoder
+ 
+     def to_jsonable_python(x: Any) -> Any:
+-        return ENCODERS_BY_TYPE[type(x)](x)
++        # same encoding as BaseModel.json(), which the REST client uses to build request bodies
++        return json.loads(json.dumps(x, default=pydantic_encoder))
+ 
+ 
+ def update_forward_refs(model_class: Type[BaseModel], *args: Any, **kwargs: Any) -> None:
+diff --git a/qdrant_client/conversions/conversion.py b/qdrant_client/conversions/conversion.py
+index 153b4b4ab7910002948c977673db45efeebaa0da..26b67d345eabd78390e29105148e2c69cec09ea3 100644
+--- a/qdrant_client/conversions/conversion.py
++++ b/qdrant_client/conversions/conversion.py
+@@ -1,9 +1,9 @@
++import math
+ import uuid
+ from datetime import date, datetime, timezone
+ from typing import Any, Mapping, get_args
+ 
+ from google.protobuf.internal.containers import MessageMap
+-from google.protobuf.json_format import MessageToDict
+ from google.protobuf.timestamp_pb2 import Timestamp
+ 
+ try:
+@@ -12,88 +12,132 @@ except ImportError:
+     pass
+ 
+ from qdrant_client import grpc
+-from qdrant_client.grpc import ListValue, NullValue, Struct, Value
++from qdrant_client.grpc import NullValue, Struct, Value
+ from qdrant_client.http.models import models as rest
+ from qdrant_client._pydantic_compat import construct, to_jsonable_python
+ from qdrant_client.conversions.common_types import get_args_subscribed
+ 
+ 
+-def has_field(message: Any, field: str) -> bool:
+-    """
+-    Same as protobuf HasField, but also works for primitive values
+-    (https://stackoverflow.com/questions/51918871/check-if-a-field-has-been-set-in-protocol-buffer-3)
+-
+-    Args:
+-        message (Any): protobuf message
+-        field (str): name of the field
+-    """
+-    try:
+-        return message.HasField(field)
+-    except ValueError:
+-        all_fields = set([descriptor.name for descriptor, _value in message.ListFields()])
+-        return field in all_fields
++# protobuf resolves enum attributes in python, it takes ~0.5us on every access
++_NULL_VALUE = NullValue.NULL_VALUE
+ 
+ 
+ def json_to_value(payload: Any) -> Value:
+-    if payload is None:
+-        return Value(null_value=NullValue.NULL_VALUE)
+-    if isinstance(payload, bool):
++    # exact type checks are cheaper than isinstance and cover almost every value
++    payload_type = type(payload)
++    if payload_type is str:
++        return Value(string_value=payload)
++    if payload_type is int:
++        return Value(integer_value=payload)
++    if payload_type is float:
++        return Value(double_value=payload)
++    if payload_type is bool:
+         return Value(bool_value=payload)
++    if payload is None:
++        return Value(null_value=_NULL_VALUE)
++    return Value(**_json_to_value_kwargs(payload))
++
++
++# the field of a Value for values of these exact types
++_VALUE_FIELDS = {
++    str: "string_value",
++    int: "integer_value",
++    float: "double_value",
++    bool: "bool_value",
++}
++
++
++def _json_to_value_kwargs(payload: Any) -> dict[str, Any]:
++    # Returns the arguments of the Value constructor instead of a Value. Protobuf builds the whole
++    # tree from nested dicts of arguments at once, which is much faster than building a Value for
++    # every element and copying it into its parent. Containers wrap their values of the types in
++    # _VALUE_FIELDS themselves, which saves a call for each.
++    field = _VALUE_FIELDS.get(type(payload))
++    if field is not None:
++        return {field: payload}
++    if payload is None:
++        return {"null_value": _NULL_VALUE}
++    if isinstance(payload, (list, tuple)):
++        values = [
++            (
++                {field: value}
++                if (field := _VALUE_FIELDS.get(type(value)))
++                else _json_to_value_kwargs(value)
++            )
++            for value in payload
++        ]
++        return {"list_value": {"values": values}}
++    if isinstance(payload, dict) and all(isinstance(key, str) for key in payload):
++        return {"struct_value": {"fields": payload_to_grpc(payload)}}
++    # subclasses, e.g. enums
+     if isinstance(payload, int):
+-        return Value(integer_value=payload)
++        return {"integer_value": payload}
+     if isinstance(payload, float):
+-        return Value(double_value=payload)
++        return {"double_value": payload}
+     if isinstance(payload, str):
+-        return Value(string_value=payload)
+-    if isinstance(payload, (list, tuple)):
+-        return Value(list_value=ListValue(values=[json_to_value(v) for v in payload]))
+-    if isinstance(payload, dict):
+-        return Value(
+-            struct_value=Struct(fields=dict((k, json_to_value(v)) for k, v in payload.items()))
+-        )
+-    if isinstance(payload, datetime) or isinstance(payload, date):
+-        return Value(string_value=to_jsonable_python(payload))
+-    raise ValueError(f"Not supported json value: {payload}")  # pragma: no cover
++        return {"string_value": payload}
++    # Encode the rest (uuid, datetime, Decimal, set, bytes, non-str dict keys, etc.) the same way
++    # the REST client and local mode do
++    try:
++        jsonable_payload = to_jsonable_python(payload)
++    except (TypeError, ValueError) as e:  # pydantic v1 raises TypeError, v2 raises ValueError
++        raise ValueError(f"Not supported json value: {payload}") from e
++    return _json_to_value_kwargs(jsonable_payload)
+ 
+ 
+ def value_to_json(value: Value) -> Any:
+-    if isinstance(value, Value):
+-        value_ = MessageToDict(value, preserving_proto_field_name=False)
+-    else:
+-        value_ = value
+-
+-    if "integerValue" in value_:
+-        # by default int are represented as string for precision
+-        # But in python it is OK to just use `int`
+-        return int(value_["integerValue"])
+-    if "doubleValue" in value_:
+-        return value_["doubleValue"]
+-    if "stringValue" in value_:
+-        return value_["stringValue"]
+-    if "boolValue" in value_:
+-        return value_["boolValue"]
+-    if "structValue" in value_:
+-        if "fields" not in value_["structValue"]:
+-            return {}
+-        return dict(
+-            (key, value_to_json(val)) for key, val in value_["structValue"]["fields"].items()
+-        )
+-    if "listValue" in value_:
+-        if "values" in value_["listValue"]:
+-            return list(value_to_json(val) for val in value_["listValue"]["values"])
+-        else:
+-            return []
+-    if "nullValue" in value_:
++    # Reading the set field directly is several times faster than MessageToDict, which walks the
++    # message in python
++    kind = value.WhichOneof("kind")
++    if kind == "string_value":
++        return value.string_value
++    if kind == "integer_value":
++        return value.integer_value
++    if kind == "double_value":
++        double_value = value.double_value
++        if math.isfinite(double_value):
++            return double_value
++        # keep the strings MessageToDict used to return for non-finite doubles
++        if math.isnan(double_value):
++            return "NaN"
++        return "Infinity" if double_value > 0 else "-Infinity"
++    if kind == "bool_value":
++        return value.bool_value
++    if kind == "list_value":
++        return [value_to_json(val) for val in value.list_value.values]
++    if kind == "struct_value":
++        return grpc_to_payload(value.struct_value.fields)
++    if kind == "null_value":
+         return None
+-    raise ValueError(f"Not supported value: {value_}")  # pragma: no cover
++    raise ValueError(f"Not supported value: {value}")  # pragma: no cover
++
++
++def _payload_to_value_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
++    # dicts of Value arguments: message constructors build the map from them without making Value
++    # messages and copying them into it
++    return {
++        key: (
++            {field: val} if (field := _VALUE_FIELDS.get(type(val))) else _json_to_value_kwargs(val)
++        )
++        for key, val in payload.items()
++    }
+ 
+ 
+-def payload_to_grpc(payload: dict[str, Any]) -> dict[str, Value]:
+-    return dict((key, json_to_value(val)) for key, val in payload.items())
++def _payload_to_values(payload: dict[str, Any]) -> dict[str, Any]:
++    return {key: json_to_value(val) for key, val in payload.items()}
++
++
++try:
++    # protobuf < 6.30 does not accept dicts of arguments as values of a map, e.g. Struct.fields
++    Struct(fields={"": {}})
++    payload_to_grpc = _payload_to_value_kwargs
++except TypeError:  # pragma: no cover
++    payload_to_grpc = _payload_to_values
+ 
+ 
+ def grpc_to_payload(grpc_: MessageMap[str, Value]) -> dict[str, Any]:
+-    return dict((key, value_to_json(val)) for key, val in grpc_.items())
++    # upb implements items() of a map in python, looking up each key is faster
++    return {key: value_to_json(grpc_[key]) for key in grpc_}
+ 
+ 
+ def grpc_payload_schema_to_field_type(model: grpc.PayloadSchemaType) -> grpc.FieldType:
+@@ -629,7 +673,8 @@ class GrpcToRest:
+         return construct(
+             rest.ScoredPoint,
+             id=cls.convert_point_id(model.id),
+-            payload=cls.convert_payload(model.payload) if has_field(model, "payload") else None,
++            # HasField raises on map fields
++            payload=cls.convert_payload(model.payload) if len(model.payload) > 0 else None,
+             score=model.score,
+             vector=(
+                 cls.convert_vectors_output(model.vectors) if model.HasField("vectors") else None
+@@ -647,7 +692,7 @@ class GrpcToRest:
+ 
+     @classmethod
+     def convert_payload(cls, model: "MessageMapContainer") -> rest.Payload:
+-        return dict((key, value_to_json(model[key])) for key in model)
++        return grpc_to_payload(model)
+ 
+     @classmethod
+     def convert_values_count(cls, model: grpc.ValuesCount) -> rest.ValuesCount:
+@@ -3246,8 +3291,8 @@ class RestToGrpc:
+         )
+ 
+     @classmethod
+-    def convert_payload(cls, model: rest.Payload) -> dict[str, grpc.Value]:
+-        return dict((key, json_to_value(val)) for key, val in model.items())
++    def convert_payload(cls, model: rest.Payload) -> dict[str, Any]:
++        return payload_to_grpc(model)
+ 
+     @classmethod
+     def convert_hnsw_config_diff(cls, model: rest.HnswConfigDiff) -> grpc.HnswConfigDiff:
+@@ -4831,12 +4876,12 @@ class RestToGrpc:
+                 delete_points=delete_points,
+             )
+         elif isinstance(model, rest.SetPayloadOperation):
+-            if model.set_payload.points:
++            if model.set_payload.points is not None:
+                 points_selector = rest.PointIdsList(points=model.set_payload.points)
+-            elif model.set_payload.filter:
++            elif model.set_payload.filter is not None:
+                 points_selector = rest.FilterSelector(filter=model.set_payload.filter)
+             else:
+-                raise ValueError(f"invalid SetPayloadOperation model: {model}")  # pragma: no cover
++                raise ValueError(f"invalid SetPayloadOperation model: {model}")
+ 
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.set_payload.shard_key)
+@@ -4853,14 +4898,12 @@ class RestToGrpc:
+                 )
+             )
+         elif isinstance(model, rest.OverwritePayloadOperation):
+-            if model.overwrite_payload.points:
++            if model.overwrite_payload.points is not None:
+                 points_selector = rest.PointIdsList(points=model.overwrite_payload.points)
+-            elif model.overwrite_payload.filter:
++            elif model.overwrite_payload.filter is not None:
+                 points_selector = rest.FilterSelector(filter=model.overwrite_payload.filter)
+             else:
+-                raise ValueError(
+-                    f"invalid OverwritePayloadOperation model: {model}"
+-                )  # pragma: no cover
++                raise ValueError(f"invalid OverwritePayloadOperation model: {model}")
+ 
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.overwrite_payload.shard_key)
+@@ -4877,14 +4920,12 @@ class RestToGrpc:
+                 )
+             )
+         elif isinstance(model, rest.DeletePayloadOperation):
+-            if model.delete_payload.points:
++            if model.delete_payload.points is not None:
+                 points_selector = rest.PointIdsList(points=model.delete_payload.points)
+-            elif model.delete_payload.filter:
++            elif model.delete_payload.filter is not None:
+                 points_selector = rest.FilterSelector(filter=model.delete_payload.filter)
+             else:
+-                raise ValueError(
+-                    f"invalid DeletePayloadOperation model: {model}"
+-                )  # pragma: no cover
++                raise ValueError(f"invalid DeletePayloadOperation model: {model}")
+ 
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.delete_payload.shard_key)
+@@ -4934,14 +4975,12 @@ class RestToGrpc:
+                 )
+             )
+         elif isinstance(model, rest.DeleteVectorsOperation):
+-            if model.delete_vectors.points:
++            if model.delete_vectors.points is not None:
+                 points_selector = rest.PointIdsList(points=model.delete_vectors.points)
+-            elif model.delete_vectors.filter:
++            elif model.delete_vectors.filter is not None:
+                 points_selector = rest.FilterSelector(filter=model.delete_vectors.filter)
+             else:
+-                raise ValueError(
+-                    f"invalid DeletePayloadOperation model: {model}"
+-                )  # pragma: no cover
++                raise ValueError(f"invalid DeleteVectorsOperation model: {model}")
+ 
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.delete_vectors.shard_key)
+diff --git a/qdrant_client/embed/type_inspector.py b/qdrant_client/embed/type_inspector.py
+index 0a8cf67d56d1bf718e5cce143e751675c2a2364f..3ccf1f81cae7115dba2d10d7933b735ab0934e77 100644
+--- a/qdrant_client/embed/type_inspector.py
++++ b/qdrant_client/embed/type_inspector.py
+@@ -1,4 +1,4 @@
+-from typing import Iterable, get_args
++from typing import Any, Iterable, get_args
+ 
+ from pydantic import BaseModel
+ 
+@@ -8,6 +8,19 @@ from qdrant_client.embed.common import INFERENCE_OBJECT_TYPES
+ from qdrant_client.embed.schema_parser import ModelSchemaParser
+ from qdrant_client.embed.utils import FieldPath
+ 
++_INFERENCE_OBJECT_TYPES = get_args(INFERENCE_OBJECT_TYPES)
++
++# the inspection finds nothing in numbers, and doesn't look into lists inside lists
++_NUMBER_OR_LIST_TYPES = {int, float, list}
++
++
++def _numbers_or_lists(values: list[Any]) -> bool:
++    """Whether the values are all numbers or lists, like those of a vector or a multivector
++
++    Comparing the set of their types is much cheaper than inspecting each of thousands of floats.
++    """
++    return set(map(type, values)) <= _NUMBER_OR_LIST_TYPES
++
+ 
+ class Inspector:
+     """Inspector which tries to find at least one occurrence of an object requiring inference
+@@ -50,7 +63,7 @@ class Inspector:
+         return False
+ 
+     def _inspect_model(self, model: BaseModel, paths: list[FieldPath] | None = None) -> bool:
+-        if isinstance(model, get_args(INFERENCE_OBJECT_TYPES)):
++        if isinstance(model, _INFERENCE_OBJECT_TYPES):
+             return True
+ 
+         paths = (
+@@ -86,7 +99,7 @@ class Inspector:
+         if model is None:
+             return False
+ 
+-        if isinstance(model, get_args(INFERENCE_OBJECT_TYPES)):
++        if isinstance(model, _INFERENCE_OBJECT_TYPES):
+             return True
+ 
+         if isinstance(model, BaseModel):
+@@ -103,8 +116,11 @@ class Inspector:
+             return False
+ 
+         elif isinstance(model, list):
++            if _numbers_or_lists(model):
++                return False
++
+             for current_model in model:
+-                if isinstance(current_model, get_args(INFERENCE_OBJECT_TYPES)):
++                if isinstance(current_model, _INFERENCE_OBJECT_TYPES):
+                     return True
+ 
+                 if not isinstance(current_model, BaseModel):
+@@ -126,8 +142,11 @@ class Inspector:
+         elif isinstance(model, dict):
+             for key, values in model.items():
+                 values = [values] if not isinstance(values, list) else values
++                if _numbers_or_lists(values):
++                    continue
++
+                 for current_model in values:
+-                    if isinstance(current_model, get_args(INFERENCE_OBJECT_TYPES)):
++                    if isinstance(current_model, _INFERENCE_OBJECT_TYPES):
+                         return True
+ 
+                     if not isinstance(current_model, BaseModel):
+diff --git a/qdrant_client/uploader/grpc_uploader.py b/qdrant_client/uploader/grpc_uploader.py
+index 55451090fb3d40280cbd7f9e17a5b6fc04f0b692..fe96bc9d7e1c7d9953a28dee42cdba5ab8804359 100644
+--- a/qdrant_client/uploader/grpc_uploader.py
++++ b/qdrant_client/uploader/grpc_uploader.py
+@@ -1,8 +1,11 @@
++from functools import lru_cache
+ from itertools import count
+ from time import sleep
+ from typing import Any, Generator, Iterable
+ from uuid import uuid4
+ 
++import numpy as np
++from google.protobuf.internal import api_implementation
+ 
+ from qdrant_client import grpc as grpc
+ from qdrant_client import models as rest
+@@ -14,6 +17,76 @@ from qdrant_client.common.client_warnings import show_warning
+ from qdrant_client.conversions import common_types as types
+ 
+ 
++# only upb parses the bytes fast and to the floats it makes of python floats: pure python protobuf
++# is slower at it and loses NaN payloads, the cpp one of protobuf 3 rounds differently near FLT_MAX
++_UPB = api_implementation.Type() == "upb"
++
++
++@lru_cache(maxsize=64)
++def _dense_vector_prefix(dim: int, multi: bool) -> bytes:
++    """What protobuf writes before the floats of a `DenseVector` of `dim` floats
++
++    With `multi`, of a `DenseVector` in a `MultiDenseVector`. Cut from a serialized vector of
++    zeros, which ends with its floats.
++    """
++    message: Any = grpc.DenseVector(data=[0.0] * dim)
++    if multi:
++        message = grpc.MultiDenseVector(vectors=[message])
++    serialized = message.SerializeToString()
++    return serialized[: len(serialized) - 4 * dim]
++
++
++def _is_numpy_vector(vector: Any) -> bool:
++    # other arrays: empty ones, of long doubles or not of numbers, and subclasses like matrices
++    # (their rows are 2-d) or masked arrays, take the path of lists as before
++    return (
++        _UPB
++        and type(vector) in (np.ndarray, np.memmap)
++        and vector.ndim in (1, 2)
++        and vector.size > 0
++        and vector.dtype.kind in "fiub"
++        and vector.dtype.itemsize <= 8
++    )
++
++
++def _set_numpy_vector(target: grpc.Vector, vector: np.ndarray) -> None:
++    # through doubles to floats, as tolist() and protobuf convert numbers, e.g. signaling NaNs
++    # become quiet and values out of the float range inf, without warnings
++    with np.errstate(all="ignore"):
++        vector = vector.astype(np.float64, copy=False).astype("<f4")
++    if vector.ndim == 1:
++        target.dense.MergeFromString(_dense_vector_prefix(len(vector), False) + vector.tobytes())
++    else:
++        prefix = _dense_vector_prefix(vector.shape[1], True)
++        target.multi_dense.MergeFromString(b"".join([prefix + row.tobytes() for row in vector]))
++
++
++def convert_vector_struct(vector: Any) -> grpc.Vectors:
++    """`RestToGrpc.convert_vector_struct`, which also takes numpy arrays and dicts of them
++
++    Reading the bytes of an array is many times faster than turning it into python floats which
++    protobuf then converts to C floats one by one.
++    """
++    if _is_numpy_vector(vector):
++        vectors = grpc.Vectors()
++        _set_numpy_vector(vectors.vector, vector)
++        return vectors
++    if isinstance(vector, dict) and vector and all(map(_is_numpy_vector, vector.values())):
++        vectors = grpc.Vectors()
++        for name, value in vector.items():
++            _set_numpy_vector(vectors.vectors.vectors[name], value)
++        return vectors
++
++    if isinstance(vector, np.ndarray):
++        vector = vector.tolist()
++    elif isinstance(vector, dict):
++        vector = {
++            name: value.tolist() if isinstance(value, np.ndarray) else value
++            for name, value in vector.items()
++        }
++    return RestToGrpc.convert_vector_struct(vector)
++
++
+ def upload_batch_grpc(
+     points_client: grpc.PointsStub,
+     collection_name: str,
+@@ -37,7 +110,7 @@ def upload_batch_grpc(
+             id=RestToGrpc.convert_extended_point_id(idx)
+             if not isinstance(idx, grpc.PointId)
+             else idx,
+-            vectors=RestToGrpc.convert_vector_struct(vector),
++            vectors=convert_vector_struct(vector),
+             payload=payload_to_grpc(payload or {}),
+         )
+         for idx, vector, payload in zip(ids_batch, vectors_batch, payload_batch)
+@@ -116,6 +189,12 @@ class GrpcBatchUploader(BaseUploader):
+             else update_mode
+         )
+ 
++    @staticmethod
++    def _from_numpy(vectors: types.NumpyArray) -> Any:
++        # convert_vector_struct reads plain arrays, others become lists as before: the rows of a
++        # matrix are 2-d, a masked array hides values, an array of objects may hold anything
++        return vectors if type(vectors) in (np.ndarray, np.memmap) else vectors.tolist()
++
+     @classmethod
+     def start(
+         cls,
+diff --git a/qdrant_client/uploader/uploader.py b/qdrant_client/uploader/uploader.py
+index c23bfb9a6f468b951e471618ff4c9f960b6b80a0..24e98214f06f0f5de19c7c45d2ffb6a50350814a 100644
+--- a/qdrant_client/uploader/uploader.py
++++ b/qdrant_client/uploader/uploader.py
+@@ -71,21 +71,28 @@ class BaseUploader(Worker, ABC):
+         yield from zip(ids_batches, vector_batches, payload_batches)
+ 
+     @staticmethod
+-    def _vector_batches_from_numpy(vectors: types.NumpyArray, batch_size: int) -> Iterable[float]:
++    def _from_numpy(vectors: types.NumpyArray) -> Any:
++        """Converts a part of a numpy array before it is passed to `process`."""
++        return vectors.tolist()
++
++    @classmethod
++    def _vector_batches_from_numpy(
++        cls, vectors: types.NumpyArray, batch_size: int
++    ) -> Iterable[Any]:
+         for i in range(0, vectors.shape[0], batch_size):
+-            yield vectors[i : i + batch_size].tolist()
++            yield cls._from_numpy(vectors[i : i + batch_size])
+ 
+-    @staticmethod
++    @classmethod
+     def _vector_batches_from_numpy_named_vectors(
+-        vectors: dict[str, types.NumpyArray], batch_size: int
+-    ) -> Iterable[dict[str, list[float]]]:
++        cls, vectors: dict[str, types.NumpyArray], batch_size: int
++    ) -> Iterable[dict[str, Any]]:
+         if len(set([arr.shape[0] for arr in vectors.values()])) != 1:
+             raise ValueError("Each named vector should have the same number of vectors")
+ 
+         num_vectors = next(iter(vectors.values())).shape[0]
+-        # Convert dict[str, np.ndarray] to Generator(dict[str, list[float]])
++        # Convert dict[str, np.ndarray] to Generator(dict[str, vector]), a vector per name
+         vector_batches = (
+-            {name: vectors[name][i].tolist() for name in vectors.keys()}
++            {name: cls._from_numpy(vectors[name][i]) for name in vectors.keys()}
+             for i in range(num_vectors)
+         )
+         yield from iter_batch(vector_batches, batch_size)

@@ -1,0 +1,44 @@
+{
+  "contract_only": {
+    "qdrant": {
+      "contract_paths": [
+        "lib/api/src/grpc/proto/**/*.proto"
+      ],
+      "mode": "contract-only"
+    }
+  },
+  "suites": [
+    {
+      "framework": "cargo test",
+      "language": "rust",
+      "parser": "cargo",
+      "repo": "rust-client",
+      "run_cmd": "cargo test --no-fail-fast --offline",
+      "test_excludes": [
+        "tests/*"
+      ],
+      "workdir": ".",
+      "whole_suite": true,
+      "all_tests": "tests"
+    },
+    {
+      "framework": "pytest",
+      "language": "python",
+      "parser": "pytest",
+      "repo": "qdrant-client",
+      "run_cmd": "python -m pytest -rA -p no:cacheprovider -q --continue-on-collection-errors --timeout=120 --reruns 2 {tests}",
+      "test_excludes": [
+        "tests/*"
+      ],
+      "workdir": ".",
+      "all_tests": "tests"
+    }
+  ],
+  "services": [
+    {
+      "name": "qdrant",
+      "start": "mkdir -p /tmp/qd && cd /tmp/qd && QDRANT__STORAGE__STORAGE_PATH=/tmp/qd/storage exec qdrant --disable-telemetry",
+      "health": "curl -fs localhost:6333/healthz"
+    }
+  ]
+}

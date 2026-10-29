@@ -1,0 +1,2516 @@
+diff --git a/proto/collections.proto b/proto/collections.proto
+index 1d52f4cc09469ea8423f1ab035461786c20ffa6b..fd067ab66dfadc8d7b5488349f903c6baab039f1 100644
+--- a/proto/collections.proto
++++ b/proto/collections.proto
+@@ -11,6 +11,20 @@ enum Datatype {
+   Float32 = 1;
+   Uint8 = 2;
+   Float16 = 3;
++  Turbo4 = 4;
++}
++
++// Memory placement of a component's data.
++// Data is always persisted on disk regardless of this setting;
++// it only controls how the data is held in RAM.
++enum Memory {
++  MemoryUnknown = 0;
++  // Data is not pre-loaded from disk to RAM; cached with usage.
++  Cold = 1;
++  // Data is pre-loaded into disk-cache RAM on start, but may be evicted under memory pressure.
++  Cached = 2;
++  // Data is loaded in RAM and never evicted.
++  Pinned = 3;
+ }
+ 
+ // ---------------------------------------------
+@@ -28,13 +42,18 @@ message VectorParams {
+   // Configuration of vector quantization config.
+   // If omitted - the collection configuration will be used
+   optional QuantizationConfig quantization_config = 4;
++  // Deprecated: use `memory` instead.
+   // If true - serve vectors from disk.
+   // If set to false, the vectors will be loaded in RAM.
+-  optional bool on_disk = 5;
++  optional bool on_disk = 5 [deprecated = true];
+   // Data type of the vectors
+   optional Datatype datatype = 6;
+   // Configuration for multi-vector search
+   optional MultiVectorConfig multivector_config = 7;
++  // Memory placement of the original vector storage.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  // `Pinned` is not supported for dense vector storage.
++  optional Memory memory = 8;
+ }
+ 
+ message VectorParamsDiff {
+@@ -43,9 +62,14 @@ message VectorParamsDiff {
+   optional HnswConfigDiff hnsw_config = 1;
+   // Update quantization params. If none - it is left unchanged.
+   optional QuantizationConfigDiff quantization_config = 2;
++  // Deprecated: use `memory` instead.
+   // If true - serve vectors from disk.
+   // If set to false, the vectors will be loaded in RAM.
+-  optional bool on_disk = 3;
++  optional bool on_disk = 3 [deprecated = true];
++  // Memory placement of the original vector storage.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  // `Pinned` is not supported for dense vector storage.
++  optional Memory memory = 4;
+ }
+ 
+ message VectorParamsMap {
+@@ -218,8 +242,9 @@ message HnswConfigDiff {
+   // Best to keep between 8 and 16 to prevent likelihood of building broken/inefficient HNSW graphs.
+   // On small CPUs, less threads are used.
+   optional uint64 max_indexing_threads = 4;
++  // Deprecated: use `memory` instead.
+   // Store HNSW index on disk. If set to false, the index will be stored in RAM.
+-  optional bool on_disk = 5;
++  optional bool on_disk = 5 [deprecated = true];
+   // Number of additional payload-aware links per node in the index graph.
+   // If not set - regular M parameter will be used.
+   optional uint64 payload_m = 6;
+@@ -228,16 +253,23 @@ message HnswConfigDiff {
+   // random seeks during the search.
+   // Requires quantized vectors to be enabled. Multi-vectors are not supported.
+   optional bool inline_storage = 7;
++  // Memory placement of the HNSW graph.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 8;
+ }
+ 
+ message SparseIndexConfig {
+   // Prefer a full scan search upto (excluding) this number of vectors.
+   // Note: this is number of vectors, not KiloBytes.
+   optional uint64 full_scan_threshold = 1;
++  // Deprecated: use `memory` instead.
+   // Store inverted index on disk. If set to false, the index will be stored in RAM.
+-  optional bool on_disk = 2;
++  optional bool on_disk = 2 [deprecated = true];
+   // Datatype used to store weights in the index.
+   optional Datatype datatype = 3;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 4;
+ }
+ 
+ message WalConfigDiff {
+@@ -307,10 +339,14 @@ message OptimizersConfigDiff {
+   // If 0 - no optimization threads, optimizations will be disabled.
+   optional MaxOptimizationThreads max_optimization_threads = 9;
+ 
+-  // If this option is set, service will try to prevent creation of large unoptimized segments.
+-  // When enabled, updates may be blocked at request level if there are unoptimized segments larger than indexing threshold.
+-  // Updates will be resumed when optimization is completed and segments are optimized below the threshold.
+-  // Using this option may lead to increased delay between submitting an update and its application.
++  // If enabled, the service will try to prevent the creation of large unoptimized segments.
++  // When enabled, new points written to segments larger than the indexing threshold are stored
++  // as "deferred points": they are persisted in the WAL and segments, but excluded from
++  // read/search results until the corresponding segments are optimized (e.g. indexed,
++  // quantized, or moved to mmap storage).
++  // Update requests with wait=true will only return after the deferred points become visible,
++  // which may significantly increase the perceived latency between submitting an update and its
++  // completion. Update requests with wait=false are not affected.
+   // Default is disabled.
+   optional bool prevent_unoptimized = 10;
+ }
+@@ -320,15 +356,23 @@ message ScalarQuantization {
+   QuantizationType type = 1;
+   // Number of bits to use for quantization
+   optional float quantile = 2;
++  // Deprecated: use `memory` instead.
+   // If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
+-  optional bool always_ram = 3;
++  optional bool always_ram = 3 [deprecated = true];
++  // Memory placement of quantized vectors.
++  // Overrides the deprecated `always_ram` flag if both are set.
++  optional Memory memory = 4;
+ }
+ 
+ message ProductQuantization {
+   // Compression ratio
+   CompressionRatio compression = 1;
++  // Deprecated: use `memory` instead.
+   // If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
+-  optional bool always_ram = 2;
++  optional bool always_ram = 2 [deprecated = true];
++  // Memory placement of quantized vectors.
++  // Overrides the deprecated `always_ram` flag if both are set.
++  optional Memory memory = 3;
+ }
+ 
+ enum BinaryQuantizationEncoding {
+@@ -351,19 +395,27 @@ message BinaryQuantizationQueryEncoding {
+ }
+ 
+ message BinaryQuantization {
++  // Deprecated: use `memory` instead.
+   // If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
+-  optional bool always_ram = 1;
++  optional bool always_ram = 1 [deprecated = true];
+   // Binary quantization encoding method
+   optional BinaryQuantizationEncoding encoding = 2;
+   // Asymmetric quantization configuration allows a query to have different
+   // quantization than stored vectors.
+   // It can increase the accuracy of search at the cost of performance.
+   optional BinaryQuantizationQueryEncoding query_encoding = 3;
++  // Memory placement of quantized vectors.
++  // Overrides the deprecated `always_ram` flag if both are set.
++  optional Memory memory = 4;
+ }
+ 
+ message TurboQuantization{
+-  optional bool always_ram = 1;
++  // Deprecated: use `memory` instead.
++  optional bool always_ram = 1 [deprecated = true];
+   optional TurboQuantBitSize bits = 2;
++  // Memory placement of quantized vectors.
++  // Overrides the deprecated `always_ram` flag if both are set.
++  optional Memory memory = 3;
+ }
+ 
+ enum TurboQuantBitSize{
+@@ -445,6 +497,9 @@ message StrictModeConfig {
+   // Reject memory-consuming update operations when process resident memory exceeds this percentage of total RAM (cgroup-aware, 1-100).
+   // Delete-style operations are still allowed so memory can be freed.
+   optional uint32 max_resident_memory_percent = 21;
++  // Reject disk-consuming update operations when the filesystem hosting Qdrant storage exceeds this percentage of total capacity (1-100).
++  // Free space is sampled with a small TTL cache so the gate may take a few seconds to react. Delete-style operations are still allowed so disk can be freed.
++  optional uint32 max_disk_usage_percent = 22;
+ }
+ 
+ message StrictModeSparseConfig {
+@@ -465,6 +520,14 @@ message StrictModeMultivector {
+   optional uint64 max_vectors = 1;
+ }
+ 
++// Params of the payload storage
++message PayloadStorageParams {
++  // Memory placement of the payload storage.
++  // Overrides the deprecated `on_disk_payload` flag if both are set.
++  // `Pinned` is not supported for payload storage.
++  optional Memory memory = 1;
++}
++
+ message CreateCollection {
+   // Name of the collection
+   string collection_name = 1;
+@@ -481,8 +544,9 @@ message CreateCollection {
+   // Number of shards in the collection, default is 1 for standalone, otherwise
+   // equal to the number of nodes. Minimum is 1
+   optional uint32 shard_number = 7;
++  // Deprecated: use `payload.memory` instead.
+   // If true - point's payload will not be stored in memory
+-  optional bool on_disk_payload = 8;
++  optional bool on_disk_payload = 8 [deprecated = true];
+   // Wait timeout for operation commit in seconds, if not specified - default
+   // value will be supplied
+   optional uint64 timeout = 9;
+@@ -504,6 +568,8 @@ message CreateCollection {
+   optional StrictModeConfig strict_mode_config = 17;
+   // Arbitrary JSON metadata for the collection
+   map<string, Value> metadata = 18;
++  // Configuration of the payload storage
++  optional PayloadStorageParams payload = 19;
+ }
+ 
+ message UpdateCollection {
+@@ -555,8 +621,9 @@ message CollectionParams {
+   reserved 2;
+   // Number of shards in collection
+   uint32 shard_number = 3;
++  // Deprecated: use `payload.memory` instead.
+   // If true - point's payload will not be stored in memory
+-  bool on_disk_payload = 4;
++  bool on_disk_payload = 4 [deprecated = true];
+   // Configuration for vectors
+   optional VectorsConfig vectors_config = 5;
+   // Number of replicas of each shard that network tries to maintain
+@@ -571,6 +638,8 @@ message CollectionParams {
+   optional SparseVectorConfig sparse_vectors_config = 10;
+   // Define number of milliseconds to wait before attempting to read from another replica.
+   optional uint64 read_fan_out_delay_ms = 11;
++  // Configuration of the payload storage
++  optional PayloadStorageParams payload = 12;
+ }
+ 
+ message CollectionParamsDiff {
+@@ -578,12 +647,15 @@ message CollectionParamsDiff {
+   optional uint32 replication_factor = 1;
+   // How many replicas should apply the operation for us to consider it successful
+   optional uint32 write_consistency_factor = 2;
++  // Deprecated: use `payload.memory` instead.
+   // If true - point's payload will not be stored in memory
+-  optional bool on_disk_payload = 3;
++  optional bool on_disk_payload = 3 [deprecated = true];
+   // Fan-out every read request to these many additional remote nodes (and return first available response)
+   optional uint32 read_fan_out_factor = 4;
+   // Define number of milliseconds to wait before attempting to read from another replica.
+   optional uint64 read_fan_out_delay_ms = 5;
++  // Update params of the payload storage
++  optional PayloadStorageParams payload = 6;
+ }
+ 
+ message CollectionConfig {
+@@ -614,12 +686,23 @@ enum TokenizerType {
+ message KeywordIndexParams {
+   // If true - used for tenant optimization.
+   optional bool is_tenant = 1;
++  // Deprecated: use `memory` instead.
+   // If true - store index on disk.
+-  optional bool on_disk = 2;
++  optional bool on_disk = 2 [deprecated = true];
+   // Enable HNSW graph building for this payload field.
+   // If true, builds additional HNSW links (Need payload_m > 0).
+   // Default: true.
+   optional bool enable_hnsw = 3;
++  // If set, enable prefix matching (`match: { "prefix": ... }`) on this field.
++  optional KeywordPrefixParams prefix = 4;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 5;
++}
++
++// Prefix matching options for the keyword index. Has no options yet:
++// presence of this message enables prefix matching.
++message KeywordPrefixParams {
+ }
+ 
+ message IntegerIndexParams {
+@@ -631,17 +714,22 @@ message IntegerIndexParams {
+   // This option assumes that this key will be used in majority of filtered requests.
+   // Default is false.
+   optional bool is_principal = 3;
++  // Deprecated: use `memory` instead.
+   // If true - store index on disk. Default is false.
+-  optional bool on_disk = 4;
++  optional bool on_disk = 4 [deprecated = true];
+   // Enable HNSW graph building for this payload field.
+   // If true, builds additional HNSW links (Need payload_m > 0).
+   // Default: true.
+   optional bool enable_hnsw = 5;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 6;
+ }
+ 
+ message FloatIndexParams {
++  // Deprecated: use `memory` instead.
+   // If true - store index on disk.
+-  optional bool on_disk = 1;
++  optional bool on_disk = 1 [deprecated = true];
+   // If true - use this key to organize storage of the collection data.
+   // This option assumes that this key will be used in majority of filtered requests.
+   optional bool is_principal = 2;
+@@ -649,15 +737,22 @@ message FloatIndexParams {
+   // If true, builds additional HNSW links (Need payload_m > 0).
+   // Default: true.
+   optional bool enable_hnsw = 3;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 4;
+ }
+ 
+ message GeoIndexParams {
++  // Deprecated: use `memory` instead.
+   // If true - store index on disk.
+-  optional bool on_disk = 1;
++  optional bool on_disk = 1 [deprecated = true];
+   // Enable HNSW graph building for this payload field.
+   // If true, builds additional HNSW links (Need payload_m > 0).
+   // Default: true.
+   optional bool enable_hnsw = 2;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 3;
+ }
+ 
+ message StopwordsSet {
+@@ -676,8 +771,9 @@ message TextIndexParams {
+   optional uint64 min_token_len = 3;
+   // Maximal token length
+   optional uint64 max_token_len = 4;
++  // Deprecated: use `memory` instead.
+   // If true - store index on disk.
+-  optional bool on_disk = 5;
++  optional bool on_disk = 5 [deprecated = true];
+   // Stopwords for the text index
+   optional StopwordsSet stopwords = 6;
+   // If true - support phrase matching.
+@@ -691,12 +787,17 @@ message TextIndexParams {
+   // If true, builds additional HNSW links (Need payload_m > 0).
+   // Default: true.
+   optional bool enable_hnsw = 10;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 11;
+ }
+ 
+ message StemmingAlgorithm {
+   oneof stemming_params {
+     // Parameters for snowball stemming
+     SnowballParams snowball = 1;
++    // Explicitly disable stemming (overrides the language default)
++    DisabledStemmer disabled = 2;
+   }
+ }
+ 
+@@ -705,18 +806,26 @@ message SnowballParams {
+   string language = 1;
+ }
+ 
++// Marker selecting the "no stemming" algorithm.
++message DisabledStemmer {}
++
+ message BoolIndexParams {
++  // Deprecated: use `memory` instead.
+   // If true - store index on disk.
+-  optional bool on_disk = 1;
++  optional bool on_disk = 1 [deprecated = true];
+   // Enable HNSW graph building for this payload field.
+   // If true, builds additional HNSW links (Need payload_m > 0).
+   // Default: true.
+   optional bool enable_hnsw = 2;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 3;
+ }
+ 
+ message DatetimeIndexParams {
++  // Deprecated: use `memory` instead.
+   // If true - store index on disk.
+-  optional bool on_disk = 1;
++  optional bool on_disk = 1 [deprecated = true];
+   // If true - use this key to organize storage of the collection data.
+   // This option assumes that this key will be used in majority of filtered requests.
+   optional bool is_principal = 2;
+@@ -724,17 +833,24 @@ message DatetimeIndexParams {
+   // If true, builds additional HNSW links (Need payload_m > 0).
+   // Default: true.
+   optional bool enable_hnsw = 3;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 4;
+ }
+ 
+ message UuidIndexParams {
+   // If true - used for tenant optimization.
+   optional bool is_tenant = 1;
++  // Deprecated: use `memory` instead.
+   // If true - store index on disk.
+-  optional bool on_disk = 2;
++  optional bool on_disk = 2 [deprecated = true];
+   // Enable HNSW graph building for this payload field.
+   // If true, builds additional HNSW links (Need payload_m > 0).
+   // Default: true.
+   optional bool enable_hnsw = 3;
++  // Memory placement of the index.
++  // Overrides the deprecated `on_disk` flag if both are set.
++  optional Memory memory = 4;
+ }
+ 
+ message PayloadIndexParams {
+@@ -964,6 +1080,8 @@ message CollectionClusterInfoResponse {
+   repeated ShardTransferInfo shard_transfers = 5;
+   // Resharding operations
+   repeated ReshardingInfo resharding_operations = 6;
++  // Time spent to process
++  double time = 7;
+ }
+ 
+ message MoveShard {
+@@ -1064,6 +1182,8 @@ message UpdateCollectionClusterSetupRequest {
+ 
+ message UpdateCollectionClusterSetupResponse {
+   bool result = 1;
++  // Time spent to process
++  double time = 2;
+ }
+ 
+ message CreateShardKeyRequest {
+@@ -1093,10 +1213,14 @@ message ListShardKeysRequest {
+ 
+ message CreateShardKeyResponse {
+   bool result = 1;
++  // Time spent to process
++  double time = 2;
+ }
+ 
+ message DeleteShardKeyResponse {
+   bool result = 1;
++  // Time spent to process
++  double time = 2;
+ }
+ 
+ message ShardKeyDescription {
+diff --git a/proto/points.proto b/proto/points.proto
+index 767d4cb348892127dfab6b88303743947521f543..0af10e98bb5b6207a0fb1a178451c35179e5cf53 100644
+--- a/proto/points.proto
++++ b/proto/points.proto
+@@ -362,7 +362,7 @@ message DenseVectorCreationConfig {
+   Distance distance = 2;
+   // Configuration for multi-vector search (e.g., ColBERT)
+   optional MultiVectorConfig multivector_config = 3;
+-  // Data type of the vectors (Float32, Float16, Uint8)
++  // Data type of the vectors (Float32, Float16, Uint8, Turbo4)
+   optional Datatype datatype = 4;
+ }
+ 
+@@ -500,6 +500,14 @@ message AcornSearchParams {
+   optional double max_selectivity = 2;
+ }
+ 
++// Population over which sparse vector IDF statistics are computed for scoring - the IDF corpus.
++// Only applicable to sparse vectors with the IDF modifier enabled.
++message IdfParams {
++  // Filter defining the corpus: IDF statistics are computed over the points matching this filter.
++  // If unset, statistics are collection-wide (global) - same as omitting `idf` entirely.
++  optional Filter corpus = 1;
++}
++
+ message SearchParams {
+   // Params relevant to HNSW index. Size of the beam in a beam-search.
+   // Larger the value - more accurate the result, more time required for search.
+@@ -517,6 +525,10 @@ message SearchParams {
+ 
+   // ACORN search params
+   optional AcornSearchParams acorn = 5;
++
++  // Which population sparse vector IDF statistics are computed over.
++  // If unset, statistics are collection-wide (global).
++  optional IdfParams idf = 6;
+ }
+ 
+ message SearchPoints {
+diff --git a/proto/qdrant_common.proto b/proto/qdrant_common.proto
+index 770fec247a487d390f47abd6309d0305e2524c4d..71a72469acbfc55b41fd7e084f5974b42496bcf6 100644
+--- a/proto/qdrant_common.proto
++++ b/proto/qdrant_common.proto
+@@ -45,6 +45,7 @@ message Condition {
+     IsNullCondition is_null = 5;
+     NestedCondition nested = 6;
+     HasVectorCondition has_vector = 7;
++    SliceCondition slice = 8;
+   }
+ }
+ 
+@@ -64,6 +65,13 @@ message HasVectorCondition {
+   string has_vector = 1;
+ }
+ 
++message SliceCondition {
++  // Total number of disjoint deterministic slices the id space is split into, must be >= 1
++  uint32 total = 1;
++  // Which slice to select, must be less than `total`
++  uint32 index = 2;
++}
++
+ message NestedCondition {
+   // Path to nested object
+   string key = 1;
+@@ -115,6 +123,8 @@ message Match {
+     string phrase = 9;
+     // Match any word in the text
+     string text_any = 10;
++    // Match keywords starting with the given prefix
++    string prefix = 11;
+   }
+ }
+ 
+diff --git a/src/builders/binary_quantization_builder.rs b/src/builders/binary_quantization_builder.rs
+index d8a3f206e1ca83d6c405e71c20375d80ade7df10..4c43b52bf11961548661c59e84f295f5ed28e723 100644
+--- a/src/builders/binary_quantization_builder.rs
++++ b/src/builders/binary_quantization_builder.rs
+@@ -7,10 +7,14 @@ pub struct BinaryQuantizationBuilder {
+     pub(crate) always_ram: Option<Option<bool>>,
+     pub(crate) encoding: Option<Option<i32>>,
+     pub(crate) query_encoding: Option<Option<BinaryQuantizationQueryEncoding>>,
++    /// Memory placement of quantized vectors.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl BinaryQuantizationBuilder {
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn always_ram(self, value: bool) -> Self {
+         let mut new = self;
+         new.always_ram = Some(Some(value));
+@@ -33,11 +37,21 @@ impl BinaryQuantizationBuilder {
+         new
+     }
+ 
++    /// Memory placement of quantized vectors.
++    /// Overrides the deprecated `always_ram` flag if both are set.
++    pub fn memory(self, value: impl Into<i32>) -> Self {
++        let mut new = self;
++        new.memory = Some(Some(value.into()));
++        new
++    }
++
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<BinaryQuantization, BinaryQuantizationBuilderError> {
+         Ok(BinaryQuantization {
+             always_ram: self.always_ram.unwrap_or_default(),
+             encoding: self.encoding.unwrap_or_default(),
+             query_encoding: self.query_encoding.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -46,6 +60,7 @@ impl BinaryQuantizationBuilder {
+             always_ram: Default::default(),
+             encoding: Default::default(),
+             query_encoding: Default::default(),
++            memory: Default::default(),
+         }
+     }
+ }
+@@ -79,6 +94,12 @@ impl BinaryQuantizationBuilder {
+     }
+ }
+ 
++impl Default for BinaryQuantizationBuilder {
++    fn default() -> Self {
++        Self::create_empty()
++    }
++}
++
+ #[non_exhaustive]
+ #[derive(Debug)]
+ pub enum BinaryQuantizationBuilderError {
+diff --git a/src/builders/bool_index_params_builder.rs b/src/builders/bool_index_params_builder.rs
+index d0e23468a3ec09df3f733ab6c63f4aca41e04278..2fc715f71fb1d1c4db0a1422e6f9812b9cd2bd55 100644
+--- a/src/builders/bool_index_params_builder.rs
++++ b/src/builders/bool_index_params_builder.rs
+@@ -7,6 +7,8 @@ pub struct BoolIndexParamsBuilder {
+     pub(crate) on_disk: Option<Option<bool>>,
+     /// If true - enable HNSW index for this field.
+     pub(crate) enable_hnsw: Option<Option<bool>>,
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl Default for BoolIndexParamsBuilder {
+@@ -21,6 +23,8 @@ impl BoolIndexParamsBuilder {
+     }
+ 
+     /// If true - store index on disk.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -32,11 +36,20 @@ impl BoolIndexParamsBuilder {
+         new.enable_hnsw = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<BoolIndexParams, std::convert::Infallible> {
+         Ok(BoolIndexParams {
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -44,6 +57,7 @@ impl BoolIndexParamsBuilder {
+         Self {
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/collection_params_diff_builder.rs b/src/builders/collection_params_diff_builder.rs
+index d23fd413d7449a3c1c9c6352c80ceff4420828e6..3c16d59f10e7a0b99001816f36ecc7fc6e9a9148 100644
+--- a/src/builders/collection_params_diff_builder.rs
++++ b/src/builders/collection_params_diff_builder.rs
+@@ -13,6 +13,8 @@ pub struct CollectionParamsDiffBuilder {
+     pub(crate) read_fan_out_factor: Option<Option<u32>>,
+     /// Fan-out delay in milliseconds. If set, the fan-out request will be delayed by this amount.
+     pub(crate) read_fan_out_delay_ms: Option<Option<u64>>,
++    /// Update params of the payload storage
++    pub(crate) payload: Option<Option<PayloadStorageParams>>,
+ }
+ #[allow(clippy::all)]
+ #[allow(clippy::derive_partial_eq_without_eq)]
+@@ -30,6 +32,8 @@ impl CollectionParamsDiffBuilder {
+         new
+     }
+     /// If true - point's payload will not be stored in memory
++    ///
++    /// Deprecated since 1.19.0, use [`payload`](Self::payload) instead.
+     pub fn on_disk_payload(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk_payload = Option::Some(Option::Some(value));
+@@ -47,7 +51,15 @@ impl CollectionParamsDiffBuilder {
+         new.read_fan_out_delay_ms = Option::Some(Option::Some(value));
+         new
+     }
++    /// Update params of the payload storage.
++    /// Overrides the deprecated `on_disk_payload` flag if both are set.
++    pub fn payload<VALUE: core::convert::Into<PayloadStorageParams>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.payload = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<CollectionParamsDiff, std::convert::Infallible> {
+         Ok(CollectionParamsDiff {
+             replication_factor: match self.replication_factor {
+@@ -70,6 +82,10 @@ impl CollectionParamsDiffBuilder {
+                 Some(value) => value,
+                 None => core::default::Default::default(),
+             },
++            payload: match self.payload {
++                Some(value) => value,
++                None => core::default::Default::default(),
++            },
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -80,6 +96,7 @@ impl CollectionParamsDiffBuilder {
+             on_disk_payload: core::default::Default::default(),
+             read_fan_out_factor: core::default::Default::default(),
+             read_fan_out_delay_ms: core::default::Default::default(),
++            payload: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/create_collection_builder.rs b/src/builders/create_collection_builder.rs
+index 3dd110d5535df1795577ab35e48e705eeac581f9..1780372a7233a89cc059c706cb2c0e2e528b5c7a 100644
+--- a/src/builders/create_collection_builder.rs
++++ b/src/builders/create_collection_builder.rs
+@@ -37,6 +37,8 @@ pub struct CreateCollectionBuilder {
+     pub(crate) strict_mode_config: Option<Option<StrictModeConfig>>,
+     /// Arbitrary JSON metadata for the collection
+     pub(crate) metadata: Option<HashMap<String, Value>>,
++    /// Configuration of the payload storage
++    pub(crate) payload: Option<Option<PayloadStorageParams>>,
+ }
+ 
+ #[allow(clippy::all)]
+@@ -76,6 +78,8 @@ impl CreateCollectionBuilder {
+         new
+     }
+     /// If true - point's payload will not be stored in memory
++    ///
++    /// Deprecated since 1.19.0, use [`payload`](Self::payload) instead.
+     pub fn on_disk_payload(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk_payload = Option::Some(Option::Some(value));
+@@ -144,7 +148,15 @@ impl CreateCollectionBuilder {
+         new.metadata = Option::Some(value.into().0);
+         new
+     }
++    /// Configuration of the payload storage.
++    /// Overrides the deprecated `on_disk_payload` flag if both are set.
++    pub fn payload<VALUE: core::convert::Into<PayloadStorageParams>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.payload = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<CreateCollection, std::convert::Infallible> {
+         Ok(CreateCollection {
+             collection_name: match self.collection_name {
+@@ -204,6 +216,10 @@ impl CreateCollectionBuilder {
+                 Some(value) => value,
+                 None => core::default::Default::default(),
+             },
++            payload: match self.payload {
++                Some(value) => value,
++                None => core::default::Default::default(),
++            },
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -224,6 +240,7 @@ impl CreateCollectionBuilder {
+             sparse_vectors_config: core::default::Default::default(),
+             strict_mode_config: core::default::Default::default(),
+             metadata: core::default::Default::default(),
++            payload: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/datetime_index_params_builder.rs b/src/builders/datetime_index_params_builder.rs
+index eae307167908b07048e49158159d3c898ca18eae..8a38fb39f29a732e8fd60a61082f478fe6c9dd0d 100644
+--- a/src/builders/datetime_index_params_builder.rs
++++ b/src/builders/datetime_index_params_builder.rs
+@@ -9,10 +9,14 @@ pub struct DatetimeIndexParamsBuilder {
+     pub(crate) is_principal: Option<Option<bool>>,
+     /// If true - enable HNSW index for this field.
+     pub(crate) enable_hnsw: Option<Option<bool>>,
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl DatetimeIndexParamsBuilder {
+     /// If true - store index on disk.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -30,12 +34,21 @@ impl DatetimeIndexParamsBuilder {
+         new.enable_hnsw = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<DatetimeIndexParams, std::convert::Infallible> {
+         Ok(DatetimeIndexParams {
+             on_disk: self.on_disk.unwrap_or_default(),
+             is_principal: self.is_principal.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -44,6 +57,7 @@ impl DatetimeIndexParamsBuilder {
+             on_disk: core::default::Default::default(),
+             is_principal: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/float_index_params_builder.rs b/src/builders/float_index_params_builder.rs
+index 82a5e5cc439763655ed493b514e262a5a04e82ff..4b0a60382c47f58ee4e0c403d8019cd17abf01d3 100644
+--- a/src/builders/float_index_params_builder.rs
++++ b/src/builders/float_index_params_builder.rs
+@@ -9,6 +9,8 @@ pub struct FloatIndexParamsBuilder {
+     pub(crate) is_principal: Option<Option<bool>>,
+     /// If true - enable HNSW index for this field.
+     pub(crate) enable_hnsw: Option<Option<bool>>,
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl Default for FloatIndexParamsBuilder {
+@@ -23,6 +25,8 @@ impl FloatIndexParamsBuilder {
+     }
+ 
+     /// If true - store index on disk.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -40,12 +44,21 @@ impl FloatIndexParamsBuilder {
+         new.enable_hnsw = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<FloatIndexParams, std::convert::Infallible> {
+         Ok(FloatIndexParams {
+             on_disk: self.on_disk.unwrap_or_default(),
+             is_principal: self.is_principal.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -54,6 +67,7 @@ impl FloatIndexParamsBuilder {
+             on_disk: core::default::Default::default(),
+             is_principal: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/geo_index_params_builder.rs b/src/builders/geo_index_params_builder.rs
+index 93c8242f7ca401660ba8fa66662ca4604623c962..aaf50394e4f6eb3ef198e6221a5890326f399a95 100644
+--- a/src/builders/geo_index_params_builder.rs
++++ b/src/builders/geo_index_params_builder.rs
+@@ -7,6 +7,8 @@ pub struct GeoIndexParamsBuilder {
+     pub(crate) on_disk: Option<Option<bool>>,
+     /// If true - enable HNSW index for this field.
+     pub(crate) enable_hnsw: Option<Option<bool>>,
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl Default for GeoIndexParamsBuilder {
+@@ -21,6 +23,8 @@ impl GeoIndexParamsBuilder {
+     }
+ 
+     /// If true - store index on disk.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -32,11 +36,20 @@ impl GeoIndexParamsBuilder {
+         new.enable_hnsw = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<GeoIndexParams, std::convert::Infallible> {
+         Ok(GeoIndexParams {
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -44,6 +57,7 @@ impl GeoIndexParamsBuilder {
+         Self {
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/hnsw_config_diff_builder.rs b/src/builders/hnsw_config_diff_builder.rs
+index a3098ec80b116a7eddd67532a433e6137cf3e0a9..58057cc5fe411862cb031f17cd2ab9851cc376a5 100644
+--- a/src/builders/hnsw_config_diff_builder.rs
++++ b/src/builders/hnsw_config_diff_builder.rs
+@@ -33,6 +33,9 @@ pub struct HnswConfigDiffBuilder {
+     /// random seeks during the search.
+     /// Requires quantized vectors to be enabled. Multi-vectors are not supported.
+     pub(crate) inline_storage: Option<Option<bool>>,
++    ///
++    /// Memory placement of the HNSW graph.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ #[allow(clippy::all)]
+ #[allow(clippy::derive_partial_eq_without_eq)]
+@@ -73,6 +76,8 @@ impl HnswConfigDiffBuilder {
+     }
+     ///
+     /// Store HNSW index on disk. If set to false, the index will be stored in RAM.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -95,7 +100,16 @@ impl HnswConfigDiffBuilder {
+         new.inline_storage = Option::Some(Option::Some(value));
+         new
+     }
++    ///
++    /// Memory placement of the HNSW graph.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<HnswConfigDiff, std::convert::Infallible> {
+         Ok(HnswConfigDiff {
+             m: match self.m {
+@@ -126,6 +140,10 @@ impl HnswConfigDiffBuilder {
+                 Some(value) => value,
+                 None => core::default::Default::default(),
+             },
++            memory: match self.memory {
++                Some(value) => value,
++                None => core::default::Default::default(),
++            },
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -138,6 +156,7 @@ impl HnswConfigDiffBuilder {
+             on_disk: core::default::Default::default(),
+             payload_m: core::default::Default::default(),
+             inline_storage: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/idf_params_builder.rs b/src/builders/idf_params_builder.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..6bd5dee274c598ea4cb60f47970cd095dbf0599d
+--- /dev/null
++++ b/src/builders/idf_params_builder.rs
+@@ -0,0 +1,63 @@
++use crate::qdrant::*;
++
++#[must_use]
++#[derive(Clone)]
++pub struct IdfParamsBuilder {
++    /// Filter defining the corpus IDF statistics are computed over.
++    pub(crate) corpus: Option<Option<Filter>>,
++}
++
++impl Default for IdfParamsBuilder {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++impl IdfParamsBuilder {
++    pub fn new() -> Self {
++        Self::create_empty()
++    }
++
++    /// Filter defining the corpus: IDF statistics are computed over the points matching
++    /// this filter. If unset, statistics are collection-wide (global).
++    pub fn corpus<VALUE: core::convert::Into<Filter>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.corpus = Option::Some(Option::Some(value.into()));
++        new
++    }
++
++    fn build_inner(self) -> Result<IdfParams, std::convert::Infallible> {
++        Ok(IdfParams {
++            corpus: self.corpus.unwrap_or_default(),
++        })
++    }
++    /// Create an empty builder, with all fields set to `None` or `PhantomData`.
++    fn create_empty() -> Self {
++        Self {
++            corpus: core::default::Default::default(),
++        }
++    }
++}
++
++impl From<IdfParamsBuilder> for IdfParams {
++    fn from(value: IdfParamsBuilder) -> Self {
++        value.build_inner().unwrap_or_else(|_| {
++            panic!(
++                "Failed to convert {0} to {1}",
++                "IdfParamsBuilder", "IdfParams"
++            )
++        })
++    }
++}
++
++impl IdfParamsBuilder {
++    /// Builds the desired type. Can often be omitted.
++    pub fn build(self) -> IdfParams {
++        self.build_inner().unwrap_or_else(|_| {
++            panic!(
++                "Failed to build {0} into {1}",
++                "IdfParamsBuilder", "IdfParams"
++            )
++        })
++    }
++}
+diff --git a/src/builders/integer_index_params_builder.rs b/src/builders/integer_index_params_builder.rs
+index d606c47e53c9ce208e7b00f18306e5cc94a834b0..df7a02d2cb83b34b70d406d89947aacdf9660900 100644
+--- a/src/builders/integer_index_params_builder.rs
++++ b/src/builders/integer_index_params_builder.rs
+@@ -13,6 +13,8 @@ pub struct IntegerIndexParamsBuilder {
+     pub(crate) on_disk: Option<Option<bool>>,
+     /// If true - enable HNSW index for this field.
+     pub(crate) enable_hnsw: Option<Option<bool>>,
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl IntegerIndexParamsBuilder {
+@@ -39,6 +41,8 @@ impl IntegerIndexParamsBuilder {
+         new
+     }
+     /// If true - store index on disk.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -50,7 +54,15 @@ impl IntegerIndexParamsBuilder {
+         new.enable_hnsw = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<IntegerIndexParams, IntegerIndexParamsBuilderError> {
+         Ok(IntegerIndexParams {
+             lookup: self.lookup.unwrap_or_default(),
+@@ -58,6 +70,7 @@ impl IntegerIndexParamsBuilder {
+             is_principal: self.is_principal.unwrap_or_default(),
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -68,6 +81,7 @@ impl IntegerIndexParamsBuilder {
+             is_principal: core::default::Default::default(),
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/keyword_index_params_builder.rs b/src/builders/keyword_index_params_builder.rs
+index 14e7c9d1daedd43a65b3b083175f8f765ea2c534..5778a83f20f59402bdb4fc867cf44e957f1f168e 100644
+--- a/src/builders/keyword_index_params_builder.rs
++++ b/src/builders/keyword_index_params_builder.rs
+@@ -9,6 +9,10 @@ pub struct KeywordIndexParamsBuilder {
+     pub(crate) on_disk: Option<Option<bool>>,
+     /// If true - enable HNSW index for this field.
+     pub(crate) enable_hnsw: Option<Option<bool>>,
++    /// If set - enable prefix matching on this field.
++    pub(crate) prefix: Option<Option<KeywordPrefixParams>>,
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl Default for KeywordIndexParamsBuilder {
+@@ -25,6 +29,8 @@ impl KeywordIndexParamsBuilder {
+         new
+     }
+     /// If true - store index on disk.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -36,12 +42,28 @@ impl KeywordIndexParamsBuilder {
+         new.enable_hnsw = Option::Some(Option::Some(value));
+         new
+     }
++    /// If true - enable prefix matching (`Condition::matches_prefix`) on this field.
++    pub fn prefix(self, value: bool) -> Self {
++        let mut new = self;
++        new.prefix = Option::Some(value.then(KeywordPrefixParams::default));
++        new
++    }
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<KeywordIndexParams, std::convert::Infallible> {
+         Ok(KeywordIndexParams {
+             is_tenant: self.is_tenant.unwrap_or_default(),
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
++            prefix: self.prefix.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -50,6 +72,8 @@ impl KeywordIndexParamsBuilder {
+             is_tenant: core::default::Default::default(),
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
++            prefix: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/mod.rs b/src/builders/mod.rs
+index e7703d61603a162ec6684b297ebf164c04dca34e..b1cc4df2b7ae8b7654fdd5709150029a55437a26 100644
+--- a/src/builders/mod.rs
++++ b/src/builders/mod.rs
+@@ -52,6 +52,12 @@ pub use delete_collection_builder::DeleteCollectionBuilder;
+ mod collection_params_diff_builder;
+ pub use collection_params_diff_builder::CollectionParamsDiffBuilder;
+ 
++mod payload_storage_params_builder;
++pub use payload_storage_params_builder::PayloadStorageParamsBuilder;
++
++mod idf_params_builder;
++pub use idf_params_builder::IdfParamsBuilder;
++
+ mod keyword_index_params_builder;
+ pub use keyword_index_params_builder::KeywordIndexParamsBuilder;
+ 
+diff --git a/src/builders/payload_storage_params_builder.rs b/src/builders/payload_storage_params_builder.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..ae9b5e8f5a2a8b52c35e741f76fa8f03bb10929a
+--- /dev/null
++++ b/src/builders/payload_storage_params_builder.rs
+@@ -0,0 +1,64 @@
++use crate::qdrant::*;
++
++#[must_use]
++#[derive(Clone)]
++pub struct PayloadStorageParamsBuilder {
++    /// Memory placement of the payload storage.
++    pub(crate) memory: Option<Option<i32>>,
++}
++
++impl Default for PayloadStorageParamsBuilder {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++impl PayloadStorageParamsBuilder {
++    pub fn new() -> Self {
++        Self::create_empty()
++    }
++
++    /// Memory placement of the payload storage.
++    /// Overrides the deprecated `on_disk_payload` flag if both are set.
++    /// [`Memory::Pinned`] is not supported for payload storage.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
++
++    fn build_inner(self) -> Result<PayloadStorageParams, std::convert::Infallible> {
++        Ok(PayloadStorageParams {
++            memory: self.memory.unwrap_or_default(),
++        })
++    }
++    /// Create an empty builder, with all fields set to `None` or `PhantomData`.
++    fn create_empty() -> Self {
++        Self {
++            memory: core::default::Default::default(),
++        }
++    }
++}
++
++impl From<PayloadStorageParamsBuilder> for PayloadStorageParams {
++    fn from(value: PayloadStorageParamsBuilder) -> Self {
++        value.build_inner().unwrap_or_else(|_| {
++            panic!(
++                "Failed to convert {0} to {1}",
++                "PayloadStorageParamsBuilder", "PayloadStorageParams"
++            )
++        })
++    }
++}
++
++impl PayloadStorageParamsBuilder {
++    /// Builds the desired type. Can often be omitted.
++    pub fn build(self) -> PayloadStorageParams {
++        self.build_inner().unwrap_or_else(|_| {
++            panic!(
++                "Failed to build {0} into {1}",
++                "PayloadStorageParamsBuilder", "PayloadStorageParams"
++            )
++        })
++    }
++}
+diff --git a/src/builders/product_quantization_builder.rs b/src/builders/product_quantization_builder.rs
+index 163406f995a800e39ed42afd278636314b6d51ce..1e38c4f7a43dd932797b6b535b3f2962359d761b 100644
+--- a/src/builders/product_quantization_builder.rs
++++ b/src/builders/product_quantization_builder.rs
+@@ -7,6 +7,8 @@ pub struct ProductQuantizationBuilder {
+     pub(crate) compression: Option<i32>,
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
+     pub(crate) always_ram: Option<Option<bool>>,
++    /// Memory placement of quantized vectors.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl ProductQuantizationBuilder {
+@@ -17,12 +19,22 @@ impl ProductQuantizationBuilder {
+         new
+     }
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn always_ram(self, value: bool) -> Self {
+         let mut new = self;
+         new.always_ram = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of quantized vectors.
++    /// Overrides the deprecated `always_ram` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<ProductQuantization, ProductQuantizationBuilderError> {
+         Ok(ProductQuantization {
+             compression: match self.compression {
+@@ -34,6 +46,7 @@ impl ProductQuantizationBuilder {
+                 }
+             },
+             always_ram: self.always_ram.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -41,6 +54,7 @@ impl ProductQuantizationBuilder {
+         Self {
+             compression: core::default::Default::default(),
+             always_ram: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/scalar_quantization_builder.rs b/src/builders/scalar_quantization_builder.rs
+index 193c84b9a349f702982460565c9bba2f191ae9e6..90bd5f5e9ae6a39d11d7436048064a2d89df5b65 100644
+--- a/src/builders/scalar_quantization_builder.rs
++++ b/src/builders/scalar_quantization_builder.rs
+@@ -9,6 +9,8 @@ pub struct ScalarQuantizationBuilder {
+     pub(crate) quantile: Option<Option<f32>>,
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
+     pub(crate) always_ram: Option<Option<bool>>,
++    /// Memory placement of quantized vectors.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl ScalarQuantizationBuilder {
+@@ -25,12 +27,22 @@ impl ScalarQuantizationBuilder {
+         new
+     }
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn always_ram(self, value: bool) -> Self {
+         let mut new = self;
+         new.always_ram = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of quantized vectors.
++    /// Overrides the deprecated `always_ram` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<ScalarQuantization, ScalarQuantizationBuilderError> {
+         Ok(ScalarQuantization {
+             r#type: match self.r#type {
+@@ -43,6 +55,7 @@ impl ScalarQuantizationBuilder {
+             },
+             quantile: self.quantile.unwrap_or_default(),
+             always_ram: self.always_ram.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -51,6 +64,7 @@ impl ScalarQuantizationBuilder {
+             r#type: core::default::Default::default(),
+             quantile: core::default::Default::default(),
+             always_ram: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/search_params_builder.rs b/src/builders/search_params_builder.rs
+index 46cbbcdad0f941bbf820183d8e51fe2f215bf67c..c28b644d29aec6d91aa268f935aafe9e2adeca0d 100644
+--- a/src/builders/search_params_builder.rs
++++ b/src/builders/search_params_builder.rs
+@@ -21,6 +21,9 @@ pub struct SearchParamsBuilder {
+     ///
+     /// Params relevant to ACORN index
+     pub(crate) acorn: Option<Option<AcornSearchParams>>,
++    ///
++    /// Which population sparse vector IDF statistics are computed over
++    pub(crate) idf: Option<Option<IdfParams>>,
+ }
+ 
+ impl SearchParamsBuilder {
+@@ -65,6 +68,14 @@ impl SearchParamsBuilder {
+         new.acorn = Option::Some(Option::Some(value.into()));
+         new
+     }
++    ///
++    /// Which population sparse vector IDF statistics are computed over.
++    /// If unset, statistics are collection-wide (global).
++    pub fn idf<VALUE: core::convert::Into<IdfParams>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.idf = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     fn build_inner(self) -> Result<SearchParams, std::convert::Infallible> {
+         Ok(SearchParams {
+@@ -73,6 +84,7 @@ impl SearchParamsBuilder {
+             quantization: self.quantization.unwrap_or_default(),
+             indexed_only: self.indexed_only.unwrap_or_default(),
+             acorn: self.acorn.unwrap_or_default(),
++            idf: self.idf.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -83,6 +95,7 @@ impl SearchParamsBuilder {
+             quantization: core::default::Default::default(),
+             indexed_only: core::default::Default::default(),
+             acorn: core::default::Default::default(),
++            idf: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/sparse_index_config_builder.rs b/src/builders/sparse_index_config_builder.rs
+index efd03b502760148c91a0d9bef5b153efd3326bb4..c5d0cdabd4fec9d67bfa2761463df351eb86abeb 100644
+--- a/src/builders/sparse_index_config_builder.rs
++++ b/src/builders/sparse_index_config_builder.rs
+@@ -13,6 +13,9 @@ pub struct SparseIndexConfigBuilder {
+     ///
+     /// Datatype used to store weights in the index.
+     pub(crate) datatype: Option<Option<i32>>,
++    ///
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl SparseIndexConfigBuilder {
+@@ -26,6 +29,8 @@ impl SparseIndexConfigBuilder {
+     }
+     ///
+     /// Store inverted index on disk. If set to false, the index will be stored in RAM.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -38,12 +43,22 @@ impl SparseIndexConfigBuilder {
+         new.datatype = Option::Some(Option::Some(value.into()));
+         new
+     }
++    ///
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<SparseIndexConfig, std::convert::Infallible> {
+         Ok(SparseIndexConfig {
+             full_scan_threshold: self.full_scan_threshold.unwrap_or_default(),
+             on_disk: self.on_disk.unwrap_or_default(),
+             datatype: self.datatype.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -52,6 +67,7 @@ impl SparseIndexConfigBuilder {
+             full_scan_threshold: core::default::Default::default(),
+             on_disk: core::default::Default::default(),
+             datatype: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/strict_mode_config_builder.rs b/src/builders/strict_mode_config_builder.rs
+index d6db77f64bd172fc227338f11fa6d4677eb55447..03a3f1e32bffcef8440c445f38f89b88f7715153 100644
+--- a/src/builders/strict_mode_config_builder.rs
++++ b/src/builders/strict_mode_config_builder.rs
+@@ -24,6 +24,7 @@ pub struct StrictModeConfigBuilder {
+     pub(crate) max_points_count: Option<Option<u64>>,
+     pub(crate) max_payload_index_count: Option<Option<u64>>,
+     pub(crate) max_resident_memory_percent: Option<Option<u32>>,
++    pub(crate) max_disk_usage_percent: Option<Option<u32>>,
+ }
+ 
+ impl StrictModeConfigBuilder {
+@@ -153,6 +154,14 @@ impl StrictModeConfigBuilder {
+         new
+     }
+ 
++    /// Reject disk-consuming update operations when the filesystem hosting Qdrant storage
++    /// exceeds this percentage of total capacity (1-100).
++    pub fn max_disk_usage_percent(self, value: u32) -> Self {
++        let mut new = self;
++        new.max_disk_usage_percent = Option::Some(Option::Some(value));
++        new
++    }
++
+     fn build_inner(self) -> Result<StrictModeConfig, std::convert::Infallible> {
+         Ok(StrictModeConfig {
+             enabled: self.enabled.unwrap_or_default(),
+@@ -180,6 +189,7 @@ impl StrictModeConfigBuilder {
+             max_points_count: self.max_points_count.unwrap_or_default(),
+             max_payload_index_count: self.max_payload_index_count.unwrap_or_default(),
+             max_resident_memory_percent: self.max_resident_memory_percent.unwrap_or_default(),
++            max_disk_usage_percent: self.max_disk_usage_percent.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -206,6 +216,7 @@ impl StrictModeConfigBuilder {
+             max_points_count: core::default::Default::default(),
+             max_payload_index_count: core::default::Default::default(),
+             max_resident_memory_percent: core::default::Default::default(),
++            max_disk_usage_percent: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/text_index_params_builder.rs b/src/builders/text_index_params_builder.rs
+index 47cd6c75a6b6bb66949028313caf9be9d7c5171a..f02894064fa640d8d188488d995461494086cc0d 100644
+--- a/src/builders/text_index_params_builder.rs
++++ b/src/builders/text_index_params_builder.rs
+@@ -22,6 +22,8 @@ pub struct TextIndexParamsBuilder {
+     pub(crate) ascii_folding: Option<Option<bool>>,
+     /// If true - enable HNSW index for this field.
+     pub(crate) enable_hnsw: Option<Option<bool>>,
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl TextIndexParamsBuilder {
+@@ -56,6 +58,8 @@ impl TextIndexParamsBuilder {
+         new
+     }
+     /// If true - store index on disk.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -99,6 +103,18 @@ impl TextIndexParamsBuilder {
+         new
+     }
+ 
++    /// Explicitly disable stemming, overriding the language default
++    pub fn disabled_stemmer(self) -> Self {
++        let mut new = self;
++        let stemmer = StemmingAlgorithm {
++            stemming_params: Some(stemming_algorithm::StemmingParams::Disabled(
++                DisabledStemmer {},
++            )),
++        };
++        new.stemmer = Some(Some(stemmer));
++        new
++    }
++
+     /// Set an algorithm for stemming.
+     pub fn stemmer(self, stemming_params: stemming_algorithm::StemmingParams) -> Self {
+         let mut new = self;
+@@ -123,6 +139,15 @@ impl TextIndexParamsBuilder {
+         new
+     }
+ 
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
++
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<TextIndexParams, TextIndexParamsBuilderError> {
+         Ok(TextIndexParams {
+             tokenizer: match self.tokenizer {
+@@ -142,6 +167,7 @@ impl TextIndexParamsBuilder {
+             stemmer: self.stemmer.unwrap_or_default(),
+             ascii_folding: self.ascii_folding.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+ 
+@@ -158,6 +184,7 @@ impl TextIndexParamsBuilder {
+             stemmer: Default::default(),
+             ascii_folding: Default::default(),
+             enable_hnsw: Default::default(),
++            memory: Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/turbo_quantization_builder.rs b/src/builders/turbo_quantization_builder.rs
+index 07738793ec9fdad5799c42adb19fdfaf35ec2817..d725d6aefe2717918bd7df08f2c7cf8f57b13e3d 100644
+--- a/src/builders/turbo_quantization_builder.rs
++++ b/src/builders/turbo_quantization_builder.rs
+@@ -6,10 +6,14 @@ pub struct TurboQuantizationBuilder {
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
+     pub(crate) always_ram: Option<Option<bool>>,
+     pub(crate) bits: Option<Option<i32>>,
++    /// Memory placement of quantized vectors.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl TurboQuantizationBuilder {
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn always_ram(self, value: bool) -> Self {
+         let mut new = self;
+         new.always_ram = Some(Some(value));
+@@ -24,10 +28,20 @@ impl TurboQuantizationBuilder {
+         new
+     }
+ 
++    /// Memory placement of quantized vectors.
++    /// Overrides the deprecated `always_ram` flag if both are set.
++    pub fn memory(self, value: impl Into<i32>) -> Self {
++        let mut new = self;
++        new.memory = Some(Some(value.into()));
++        new
++    }
++
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<TurboQuantization, TurboQuantizationBuilderError> {
+         Ok(TurboQuantization {
+             always_ram: self.always_ram.unwrap_or_default(),
+             bits: self.bits.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+ 
+@@ -36,6 +50,7 @@ impl TurboQuantizationBuilder {
+         Self {
+             always_ram: Default::default(),
+             bits: Default::default(),
++            memory: Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/uuid_index_params_builder.rs b/src/builders/uuid_index_params_builder.rs
+index 763e08359e354375325b37426497858bfe734a38..629cb46e338d4b0af0dd3e4da12d438a223df142 100644
+--- a/src/builders/uuid_index_params_builder.rs
++++ b/src/builders/uuid_index_params_builder.rs
+@@ -9,6 +9,8 @@ pub struct UuidIndexParamsBuilder {
+     pub(crate) on_disk: Option<Option<bool>>,
+     /// If true - enable HNSW index for this field.
+     pub(crate) enable_hnsw: Option<Option<bool>>,
++    /// Memory placement of the index.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl UuidIndexParamsBuilder {
+@@ -19,6 +21,8 @@ impl UuidIndexParamsBuilder {
+         new
+     }
+     /// If true - store index on disk.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -30,12 +34,21 @@ impl UuidIndexParamsBuilder {
+         new.enable_hnsw = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<UuidIndexParams, std::convert::Infallible> {
+         Ok(UuidIndexParams {
+             is_tenant: self.is_tenant.unwrap_or_default(),
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -44,6 +57,7 @@ impl UuidIndexParamsBuilder {
+             is_tenant: core::default::Default::default(),
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/vector_params_builder.rs b/src/builders/vector_params_builder.rs
+index 5401d1b9b04d9ad95b417a7831722357151ca32b..b7689de42670d809cf0b289893cf2beed1b44c6a 100644
+--- a/src/builders/vector_params_builder.rs
++++ b/src/builders/vector_params_builder.rs
+@@ -18,6 +18,8 @@ pub struct VectorParamsBuilder {
+     pub(crate) datatype: Option<Option<i32>>,
+     /// Configuration for multi-vector search
+     pub(crate) multivector_config: Option<Option<MultiVectorConfig>>,
++    /// Memory placement of the original vector storage.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl VectorParamsBuilder {
+@@ -49,6 +51,8 @@ impl VectorParamsBuilder {
+         new
+     }
+     /// If true - serve vectors from disk. If set to false, the vectors will be loaded in RAM.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+@@ -69,7 +73,16 @@ impl VectorParamsBuilder {
+         new.multivector_config = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Memory placement of the original vector storage.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    /// [`Memory::Pinned`] is not supported for dense vector storage.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<VectorParams, VectorParamsBuilderError> {
+         Ok(VectorParams {
+             size: self.size.unwrap_or_default(),
+@@ -79,6 +92,7 @@ impl VectorParamsBuilder {
+             on_disk: self.on_disk.unwrap_or_default(),
+             datatype: self.datatype.unwrap_or_default(),
+             multivector_config: self.multivector_config.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -91,6 +105,7 @@ impl VectorParamsBuilder {
+             on_disk: core::default::Default::default(),
+             datatype: core::default::Default::default(),
+             multivector_config: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/vector_params_diff_builder.rs b/src/builders/vector_params_diff_builder.rs
+index 970057a43b2f8da9debf430006442798aa94fdf2..3128dfd03111a6dfeadfa5b9c78c37bd7e1d770e 100644
+--- a/src/builders/vector_params_diff_builder.rs
++++ b/src/builders/vector_params_diff_builder.rs
+@@ -10,6 +10,8 @@ pub struct VectorParamsDiffBuilder {
+     quantization_config: Option<quantization_config_diff::Quantization>,
+     /// If true - serve vectors from disk. If set to false, the vectors will be loaded in RAM.
+     pub(crate) on_disk: Option<Option<bool>>,
++    /// Memory placement of the original vector storage.
++    pub(crate) memory: Option<Option<i32>>,
+ }
+ 
+ impl VectorParamsDiffBuilder {
+@@ -31,17 +33,29 @@ impl VectorParamsDiffBuilder {
+         new
+     }
+     /// If true - serve vectors from disk. If set to false, the vectors will be loaded in RAM.
++    ///
++    /// Deprecated since 1.19.0, use [`memory`](Self::memory) instead.
+     pub fn on_disk(self, value: bool) -> Self {
+         let mut new = self;
+         new.on_disk = Option::Some(Option::Some(value));
+         new
+     }
++    /// Memory placement of the original vector storage.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    /// [`Memory::Pinned`] is not supported for dense vector storage.
++    pub fn memory<VALUE: core::convert::Into<i32>>(self, value: VALUE) -> Self {
++        let mut new = self;
++        new.memory = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
++    #[allow(deprecated)]
+     fn build_inner(self) -> Result<VectorParamsDiff, std::convert::Infallible> {
+         Ok(VectorParamsDiff {
+             hnsw_config: self.hnsw_config.unwrap_or_default(),
+             quantization_config: { convert_option(&self.quantization_config) },
+             on_disk: self.on_disk.unwrap_or_default(),
++            memory: self.memory.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -50,6 +64,7 @@ impl VectorParamsDiffBuilder {
+             hnsw_config: core::default::Default::default(),
+             quantization_config: core::default::Default::default(),
+             on_disk: core::default::Default::default(),
++            memory: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/filters.rs b/src/filters.rs
+index c25e597190cc3b4515f7b4a21a8ad89a1835220c..8a9369ee6106ebf3de309eb86c1bc213d2f780a2 100644
+--- a/src/filters.rs
++++ b/src/filters.rs
+@@ -4,7 +4,7 @@ use crate::qdrant::r#match::MatchValue;
+ use crate::qdrant::{
+     self, Condition, DatetimeRange, FieldCondition, Filter, GeoBoundingBox, GeoPolygon, GeoRadius,
+     HasIdCondition, HasVectorCondition, IsEmptyCondition, IsNullCondition, MinShould,
+-    NestedCondition, PointId, PointsSelector, Range, ValuesCount,
++    NestedCondition, PointId, PointsSelector, Range, SliceCondition, ValuesCount,
+ };
+ 
+ impl From<Filter> for PointsSelector {
+@@ -55,6 +55,14 @@ impl From<HasVectorCondition> for Condition {
+     }
+ }
+ 
++impl From<SliceCondition> for Condition {
++    fn from(slice_condition: SliceCondition) -> Self {
++        Condition {
++            condition_one_of: Some(ConditionOneOf::Slice(slice_condition)),
++        }
++    }
++}
++
+ impl From<Filter> for Condition {
+     fn from(filter: Filter) -> Self {
+         Condition {
+@@ -273,6 +281,45 @@ impl qdrant::Condition {
+         }
+     }
+ 
++    /// Create a [`Condition`] to match keywords starting with the given prefix.
++    ///
++    /// Requires the keyword index of the field to be created with prefix matching enabled,
++    /// see [`KeywordIndexParamsBuilder::prefix`](qdrant::KeywordIndexParamsBuilder::prefix).
++    ///
++    /// # Examples:
++    /// ```
++    /// qdrant_client::qdrant::Condition::matches_prefix("city", "Ber");
++    /// ```
++    pub fn matches_prefix(field: impl Into<String>, prefix: impl Into<String>) -> Self {
++        Self {
++            condition_one_of: Some(ConditionOneOf::Field(qdrant::FieldCondition {
++                key: field.into(),
++                r#match: Some(qdrant::Match {
++                    match_value: Some(MatchValue::Prefix(prefix.into())),
++                }),
++                ..Default::default()
++            })),
++        }
++    }
++
++    /// Create a [`Condition`] selecting one of `total` disjoint deterministic slices of the id
++    /// space. Useful to split a collection into equally sized chunks, for example to scroll
++    /// through it in parallel.
++    ///
++    /// `index` must be less than `total`.
++    ///
++    /// # Examples:
++    /// ```
++    /// // Select the first of four slices of the collection
++    /// qdrant_client::qdrant::Condition::slice(4, 0);
++    /// ```
++    pub fn slice(total: u32, index: u32) -> Self {
++        debug_assert!(total >= 1, "`total` must be at least 1");
++        debug_assert!(index < total, "`index` must be less than `total`");
++
++        Self::from(SliceCondition { total, index })
++    }
++
+     /// Create a [`Condition`] that checks numeric fields against a range.
+     ///
+     /// # Examples:
+@@ -490,6 +537,9 @@ impl std::ops::Not for MatchValue {
+             Self::TextAny(_) => {
+                 panic!("cannot negate a MatchValue::TextAny, use within must_not clause instead")
+             }
++            Self::Prefix(_) => {
++                panic!("cannot negate a MatchValue::Prefix, use within must_not clause instead")
++            }
+         }
+     }
+ }
+diff --git a/src/grpc_conversions/mod.rs b/src/grpc_conversions/mod.rs
+index 8191e3a01f0dd64fd0077bdca8812dd01f61d4f3..7d74f7ee772ee837458758c04074021d7a2f9fe2 100644
+--- a/src/grpc_conversions/mod.rs
++++ b/src/grpc_conversions/mod.rs
+@@ -20,12 +20,12 @@ use crate::qdrant::{
+     PayloadIncludeSelector, PointId, PointsIdsList, PointsSelector, PointsUpdateOperation,
+     ProductQuantization, ProductQuantizationBuilder, QuantizationConfig, QuantizationConfigDiff,
+     ReadConsistency, RenameAlias, Replica, ReplicateShard, ReplicateShardBuilder, RestartTransfer,
+-    ScalarQuantization, ScalarQuantizationBuilder, ShardKey, ShardKeySelector, SparseIndexConfig,
+-    SparseVectorCreationConfig, SparseVectorCreationConfigBuilder, SparseVectorParams, StartFrom,
+-    Struct, TargetVector, TurboQuantization, TurboQuantizationBuilder, Value, Vector,
+-    VectorExample, VectorParams, VectorParamsBuilder, VectorParamsDiff, VectorParamsDiffBuilder,
+-    VectorParamsDiffMap, VectorParamsMap, VectorsConfig, VectorsConfigDiff, VectorsSelector,
+-    WithPayloadSelector, WithVectorsSelector,
++    ScalarQuantization, ScalarQuantizationBuilder, ShardKey, ShardKeySelector, SliceCondition,
++    SparseIndexConfig, SparseVectorCreationConfig, SparseVectorCreationConfigBuilder,
++    SparseVectorParams, StartFrom, Struct, TargetVector, TurboQuantization,
++    TurboQuantizationBuilder, Value, Vector, VectorExample, VectorParams, VectorParamsBuilder,
++    VectorParamsDiff, VectorParamsDiffBuilder, VectorParamsDiffMap, VectorParamsMap, VectorsConfig,
++    VectorsConfigDiff, VectorsSelector, WithPayloadSelector, WithVectorsSelector,
+ };
+ 
+ impl From<Vec<PointId>> for PointsSelector {
+@@ -410,6 +410,12 @@ impl From<NestedCondition> for condition::ConditionOneOf {
+     }
+ }
+ 
++impl From<SliceCondition> for condition::ConditionOneOf {
++    fn from(value: SliceCondition) -> Self {
++        Self::Slice(value)
++    }
++}
++
+ impl From<Vec<PointId>> for HasIdCondition {
+     fn from(value: Vec<PointId>) -> Self {
+         Self { has_id: value }
+diff --git a/src/qdrant.rs b/src/qdrant.rs
+index 108d918418755be22567ab8bd87fc38684f4f66c..bafb445000bb2167eefca6f86fa8c23f09577990 100644
+--- a/src/qdrant.rs
++++ b/src/qdrant.rs
+@@ -138,7 +138,7 @@ pub struct MinShould {
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct Condition {
+-    #[prost(oneof = "condition::ConditionOneOf", tags = "1, 2, 3, 4, 5, 6, 7")]
++    #[prost(oneof = "condition::ConditionOneOf", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
+     pub condition_one_of: ::core::option::Option<condition::ConditionOneOf>,
+ }
+ /// Nested message and enum types in `Condition`.
+@@ -159,6 +159,8 @@ pub mod condition {
+         Nested(super::NestedCondition),
+         #[prost(message, tag = "7")]
+         HasVector(super::HasVectorCondition),
++        #[prost(message, tag = "8")]
++        Slice(super::SliceCondition),
+     }
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+@@ -181,6 +183,15 @@ pub struct HasVectorCondition {
+     #[prost(string, tag = "1")]
+     pub has_vector: ::prost::alloc::string::String,
+ }
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct SliceCondition {
++    /// Total number of disjoint deterministic slices the id space is split into, must be >= 1
++    #[prost(uint32, tag = "1")]
++    pub total: u32,
++    /// Which slice to select, must be less than `total`
++    #[prost(uint32, tag = "2")]
++    pub index: u32,
++}
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct NestedCondition {
+     /// Path to nested object
+@@ -224,7 +235,7 @@ pub struct FieldCondition {
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct Match {
+-    #[prost(oneof = "r#match::MatchValue", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
++    #[prost(oneof = "r#match::MatchValue", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+     pub match_value: ::core::option::Option<r#match::MatchValue>,
+ }
+ /// Nested message and enum types in `Match`.
+@@ -261,6 +272,9 @@ pub mod r#match {
+         /// Match any word in the text
+         #[prost(string, tag = "10")]
+         TextAny(::prost::alloc::string::String),
++        /// Match keywords starting with the given prefix
++        #[prost(string, tag = "11")]
++        Prefix(::prost::alloc::string::String),
+     }
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+@@ -358,8 +372,10 @@ pub struct VectorParams {
+     /// If omitted - the collection configuration will be used
+     #[prost(message, optional, tag = "4")]
+     pub quantization_config: ::core::option::Option<QuantizationConfig>,
++    /// Deprecated: use `memory` instead.
+     /// If true - serve vectors from disk.
+     /// If set to false, the vectors will be loaded in RAM.
++    #[deprecated]
+     #[prost(bool, optional, tag = "5")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Data type of the vectors
+@@ -368,6 +384,11 @@ pub struct VectorParams {
+     /// Configuration for multi-vector search
+     #[prost(message, optional, tag = "7")]
+     pub multivector_config: ::core::option::Option<MultiVectorConfig>,
++    /// Memory placement of the original vector storage.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    /// `Pinned` is not supported for dense vector storage.
++    #[prost(enumeration = "Memory", optional, tag = "8")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+ pub struct VectorParamsDiff {
+@@ -378,10 +399,17 @@ pub struct VectorParamsDiff {
+     /// Update quantization params. If none - it is left unchanged.
+     #[prost(message, optional, tag = "2")]
+     pub quantization_config: ::core::option::Option<QuantizationConfigDiff>,
++    /// Deprecated: use `memory` instead.
+     /// If true - serve vectors from disk.
+     /// If set to false, the vectors will be loaded in RAM.
++    #[deprecated]
+     #[prost(bool, optional, tag = "3")]
+     pub on_disk: ::core::option::Option<bool>,
++    /// Memory placement of the original vector storage.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    /// `Pinned` is not supported for dense vector storage.
++    #[prost(enumeration = "Memory", optional, tag = "4")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct VectorParamsMap {
+@@ -581,7 +609,9 @@ pub struct HnswConfigDiff {
+     /// On small CPUs, less threads are used.
+     #[prost(uint64, optional, tag = "4")]
+     pub max_indexing_threads: ::core::option::Option<u64>,
++    /// Deprecated: use `memory` instead.
+     /// Store HNSW index on disk. If set to false, the index will be stored in RAM.
++    #[deprecated]
+     #[prost(bool, optional, tag = "5")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Number of additional payload-aware links per node in the index graph.
+@@ -594,6 +624,10 @@ pub struct HnswConfigDiff {
+     /// Requires quantized vectors to be enabled. Multi-vectors are not supported.
+     #[prost(bool, optional, tag = "7")]
+     pub inline_storage: ::core::option::Option<bool>,
++    /// Memory placement of the HNSW graph.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "8")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct SparseIndexConfig {
+@@ -601,12 +635,18 @@ pub struct SparseIndexConfig {
+     /// Note: this is number of vectors, not KiloBytes.
+     #[prost(uint64, optional, tag = "1")]
+     pub full_scan_threshold: ::core::option::Option<u64>,
++    /// Deprecated: use `memory` instead.
+     /// Store inverted index on disk. If set to false, the index will be stored in RAM.
++    #[deprecated]
+     #[prost(bool, optional, tag = "2")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Datatype used to store weights in the index.
+     #[prost(enumeration = "Datatype", optional, tag = "3")]
+     pub datatype: ::core::option::Option<i32>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "4")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct WalConfigDiff {
+@@ -685,10 +725,14 @@ pub struct OptimizersConfigDiff {
+     /// If 0 - no optimization threads, optimizations will be disabled.
+     #[prost(message, optional, tag = "9")]
+     pub max_optimization_threads: ::core::option::Option<MaxOptimizationThreads>,
+-    /// If this option is set, service will try to prevent creation of large unoptimized segments.
+-    /// When enabled, updates may be blocked at request level if there are unoptimized segments larger than indexing threshold.
+-    /// Updates will be resumed when optimization is completed and segments are optimized below the threshold.
+-    /// Using this option may lead to increased delay between submitting an update and its application.
++    /// If enabled, the service will try to prevent the creation of large unoptimized segments.
++    /// When enabled, new points written to segments larger than the indexing threshold are stored
++    /// as "deferred points": they are persisted in the WAL and segments, but excluded from
++    /// read/search results until the corresponding segments are optimized (e.g. indexed,
++    /// quantized, or moved to mmap storage).
++    /// Update requests with wait=true will only return after the deferred points become visible,
++    /// which may significantly increase the perceived latency between submitting an update and its
++    /// completion. Update requests with wait=false are not affected.
+     /// Default is disabled.
+     #[prost(bool, optional, tag = "10")]
+     pub prevent_unoptimized: ::core::option::Option<bool>,
+@@ -701,18 +745,30 @@ pub struct ScalarQuantization {
+     /// Number of bits to use for quantization
+     #[prost(float, optional, tag = "2")]
+     pub quantile: ::core::option::Option<f32>,
++    /// Deprecated: use `memory` instead.
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
++    #[deprecated]
+     #[prost(bool, optional, tag = "3")]
+     pub always_ram: ::core::option::Option<bool>,
++    /// Memory placement of quantized vectors.
++    /// Overrides the deprecated `always_ram` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "4")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct ProductQuantization {
+     /// Compression ratio
+     #[prost(enumeration = "CompressionRatio", tag = "1")]
+     pub compression: i32,
++    /// Deprecated: use `memory` instead.
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
++    #[deprecated]
+     #[prost(bool, optional, tag = "2")]
+     pub always_ram: ::core::option::Option<bool>,
++    /// Memory placement of quantized vectors.
++    /// Overrides the deprecated `always_ram` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "3")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct BinaryQuantizationQueryEncoding {
+@@ -771,7 +827,9 @@ pub mod binary_quantization_query_encoding {
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct BinaryQuantization {
++    /// Deprecated: use `memory` instead.
+     /// If true - quantized vectors always will be stored in RAM, ignoring the config of main storage
++    #[deprecated]
+     #[prost(bool, optional, tag = "1")]
+     pub always_ram: ::core::option::Option<bool>,
+     /// Binary quantization encoding method
+@@ -782,13 +840,23 @@ pub struct BinaryQuantization {
+     /// It can increase the accuracy of search at the cost of performance.
+     #[prost(message, optional, tag = "3")]
+     pub query_encoding: ::core::option::Option<BinaryQuantizationQueryEncoding>,
++    /// Memory placement of quantized vectors.
++    /// Overrides the deprecated `always_ram` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "4")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct TurboQuantization {
++    /// Deprecated: use `memory` instead.
++    #[deprecated]
+     #[prost(bool, optional, tag = "1")]
+     pub always_ram: ::core::option::Option<bool>,
+     #[prost(enumeration = "TurboQuantBitSize", optional, tag = "2")]
+     pub bits: ::core::option::Option<i32>,
++    /// Memory placement of quantized vectors.
++    /// Overrides the deprecated `always_ram` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "3")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+ pub struct QuantizationConfig {
+@@ -898,6 +966,10 @@ pub struct StrictModeConfig {
+     /// Delete-style operations are still allowed so memory can be freed.
+     #[prost(uint32, optional, tag = "21")]
+     pub max_resident_memory_percent: ::core::option::Option<u32>,
++    /// Reject disk-consuming update operations when the filesystem hosting Qdrant storage exceeds this percentage of total capacity (1-100).
++    /// Free space is sampled with a small TTL cache so the gate may take a few seconds to react. Delete-style operations are still allowed so disk can be freed.
++    #[prost(uint32, optional, tag = "22")]
++    pub max_disk_usage_percent: ::core::option::Option<u32>,
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct StrictModeSparseConfig {
+@@ -927,6 +999,15 @@ pub struct StrictModeMultivector {
+     #[prost(uint64, optional, tag = "1")]
+     pub max_vectors: ::core::option::Option<u64>,
+ }
++/// Params of the payload storage
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct PayloadStorageParams {
++    /// Memory placement of the payload storage.
++    /// Overrides the deprecated `on_disk_payload` flag if both are set.
++    /// `Pinned` is not supported for payload storage.
++    #[prost(enumeration = "Memory", optional, tag = "1")]
++    pub memory: ::core::option::Option<i32>,
++}
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct CreateCollection {
+     /// Name of the collection
+@@ -945,7 +1026,9 @@ pub struct CreateCollection {
+     /// equal to the number of nodes. Minimum is 1
+     #[prost(uint32, optional, tag = "7")]
+     pub shard_number: ::core::option::Option<u32>,
++    /// Deprecated: use `payload.memory` instead.
+     /// If true - point's payload will not be stored in memory
++    #[deprecated]
+     #[prost(bool, optional, tag = "8")]
+     pub on_disk_payload: ::core::option::Option<bool>,
+     /// Wait timeout for operation commit in seconds, if not specified - default
+@@ -976,6 +1059,9 @@ pub struct CreateCollection {
+     /// Arbitrary JSON metadata for the collection
+     #[prost(map = "string, message", tag = "18")]
+     pub metadata: ::std::collections::HashMap<::prost::alloc::string::String, Value>,
++    /// Configuration of the payload storage
++    #[prost(message, optional, tag = "19")]
++    pub payload: ::core::option::Option<PayloadStorageParams>,
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct UpdateCollection {
+@@ -1038,7 +1124,9 @@ pub struct CollectionParams {
+     /// Number of shards in collection
+     #[prost(uint32, tag = "3")]
+     pub shard_number: u32,
++    /// Deprecated: use `payload.memory` instead.
+     /// If true - point's payload will not be stored in memory
++    #[deprecated]
+     #[prost(bool, tag = "4")]
+     pub on_disk_payload: bool,
+     /// Configuration for vectors
+@@ -1062,6 +1150,9 @@ pub struct CollectionParams {
+     /// Define number of milliseconds to wait before attempting to read from another replica.
+     #[prost(uint64, optional, tag = "11")]
+     pub read_fan_out_delay_ms: ::core::option::Option<u64>,
++    /// Configuration of the payload storage
++    #[prost(message, optional, tag = "12")]
++    pub payload: ::core::option::Option<PayloadStorageParams>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct CollectionParamsDiff {
+@@ -1071,7 +1162,9 @@ pub struct CollectionParamsDiff {
+     /// How many replicas should apply the operation for us to consider it successful
+     #[prost(uint32, optional, tag = "2")]
+     pub write_consistency_factor: ::core::option::Option<u32>,
++    /// Deprecated: use `payload.memory` instead.
+     /// If true - point's payload will not be stored in memory
++    #[deprecated]
+     #[prost(bool, optional, tag = "3")]
+     pub on_disk_payload: ::core::option::Option<bool>,
+     /// Fan-out every read request to these many additional remote nodes (and return first available response)
+@@ -1080,6 +1173,9 @@ pub struct CollectionParamsDiff {
+     /// Define number of milliseconds to wait before attempting to read from another replica.
+     #[prost(uint64, optional, tag = "5")]
+     pub read_fan_out_delay_ms: ::core::option::Option<u64>,
++    /// Update params of the payload storage
++    #[prost(message, optional, tag = "6")]
++    pub payload: ::core::option::Option<PayloadStorageParams>,
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct CollectionConfig {
+@@ -1110,7 +1206,9 @@ pub struct KeywordIndexParams {
+     /// If true - used for tenant optimization.
+     #[prost(bool, optional, tag = "1")]
+     pub is_tenant: ::core::option::Option<bool>,
++    /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
++    #[deprecated]
+     #[prost(bool, optional, tag = "2")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Enable HNSW graph building for this payload field.
+@@ -1118,7 +1216,18 @@ pub struct KeywordIndexParams {
+     /// Default: true.
+     #[prost(bool, optional, tag = "3")]
+     pub enable_hnsw: ::core::option::Option<bool>,
+-}
++    /// If set, enable prefix matching (`match: { "prefix": ... }`) on this field.
++    #[prost(message, optional, tag = "4")]
++    pub prefix: ::core::option::Option<KeywordPrefixParams>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "5")]
++    pub memory: ::core::option::Option<i32>,
++}
++/// Prefix matching options for the keyword index. Has no options yet:
++/// presence of this message enables prefix matching.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct KeywordPrefixParams {}
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct IntegerIndexParams {
+     /// If true - support direct lookups. Default is true.
+@@ -1132,7 +1241,9 @@ pub struct IntegerIndexParams {
+     /// Default is false.
+     #[prost(bool, optional, tag = "3")]
+     pub is_principal: ::core::option::Option<bool>,
++    /// Deprecated: use `memory` instead.
+     /// If true - store index on disk. Default is false.
++    #[deprecated]
+     #[prost(bool, optional, tag = "4")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Enable HNSW graph building for this payload field.
+@@ -1140,10 +1251,16 @@ pub struct IntegerIndexParams {
+     /// Default: true.
+     #[prost(bool, optional, tag = "5")]
+     pub enable_hnsw: ::core::option::Option<bool>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "6")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct FloatIndexParams {
++    /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
++    #[deprecated]
+     #[prost(bool, optional, tag = "1")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// If true - use this key to organize storage of the collection data.
+@@ -1155,10 +1272,16 @@ pub struct FloatIndexParams {
+     /// Default: true.
+     #[prost(bool, optional, tag = "3")]
+     pub enable_hnsw: ::core::option::Option<bool>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "4")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct GeoIndexParams {
++    /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
++    #[deprecated]
+     #[prost(bool, optional, tag = "1")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Enable HNSW graph building for this payload field.
+@@ -1166,6 +1289,10 @@ pub struct GeoIndexParams {
+     /// Default: true.
+     #[prost(bool, optional, tag = "2")]
+     pub enable_hnsw: ::core::option::Option<bool>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "3")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct StopwordsSet {
+@@ -1190,7 +1317,9 @@ pub struct TextIndexParams {
+     /// Maximal token length
+     #[prost(uint64, optional, tag = "4")]
+     pub max_token_len: ::core::option::Option<u64>,
++    /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
++    #[deprecated]
+     #[prost(bool, optional, tag = "5")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Stopwords for the text index
+@@ -1211,10 +1340,14 @@ pub struct TextIndexParams {
+     /// Default: true.
+     #[prost(bool, optional, tag = "10")]
+     pub enable_hnsw: ::core::option::Option<bool>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "11")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct StemmingAlgorithm {
+-    #[prost(oneof = "stemming_algorithm::StemmingParams", tags = "1")]
++    #[prost(oneof = "stemming_algorithm::StemmingParams", tags = "1, 2")]
+     pub stemming_params: ::core::option::Option<stemming_algorithm::StemmingParams>,
+ }
+ /// Nested message and enum types in `StemmingAlgorithm`.
+@@ -1224,6 +1357,9 @@ pub mod stemming_algorithm {
+         /// Parameters for snowball stemming
+         #[prost(message, tag = "1")]
+         Snowball(super::SnowballParams),
++        /// Explicitly disable stemming (overrides the language default)
++        #[prost(message, tag = "2")]
++        Disabled(super::DisabledStemmer),
+     }
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+@@ -1232,9 +1368,14 @@ pub struct SnowballParams {
+     #[prost(string, tag = "1")]
+     pub language: ::prost::alloc::string::String,
+ }
++/// Marker selecting the "no stemming" algorithm.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct DisabledStemmer {}
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct BoolIndexParams {
++    /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
++    #[deprecated]
+     #[prost(bool, optional, tag = "1")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Enable HNSW graph building for this payload field.
+@@ -1242,10 +1383,16 @@ pub struct BoolIndexParams {
+     /// Default: true.
+     #[prost(bool, optional, tag = "2")]
+     pub enable_hnsw: ::core::option::Option<bool>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "3")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct DatetimeIndexParams {
++    /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
++    #[deprecated]
+     #[prost(bool, optional, tag = "1")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// If true - use this key to organize storage of the collection data.
+@@ -1257,13 +1404,19 @@ pub struct DatetimeIndexParams {
+     /// Default: true.
+     #[prost(bool, optional, tag = "3")]
+     pub enable_hnsw: ::core::option::Option<bool>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "4")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct UuidIndexParams {
+     /// If true - used for tenant optimization.
+     #[prost(bool, optional, tag = "1")]
+     pub is_tenant: ::core::option::Option<bool>,
++    /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
++    #[deprecated]
+     #[prost(bool, optional, tag = "2")]
+     pub on_disk: ::core::option::Option<bool>,
+     /// Enable HNSW graph building for this payload field.
+@@ -1271,6 +1424,10 @@ pub struct UuidIndexParams {
+     /// Default: true.
+     #[prost(bool, optional, tag = "3")]
+     pub enable_hnsw: ::core::option::Option<bool>,
++    /// Memory placement of the index.
++    /// Overrides the deprecated `on_disk` flag if both are set.
++    #[prost(enumeration = "Memory", optional, tag = "4")]
++    pub memory: ::core::option::Option<i32>,
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct PayloadIndexParams {
+@@ -1540,6 +1697,9 @@ pub struct CollectionClusterInfoResponse {
+     /// Resharding operations
+     #[prost(message, repeated, tag = "6")]
+     pub resharding_operations: ::prost::alloc::vec::Vec<ReshardingInfo>,
++    /// Time spent to process
++    #[prost(double, tag = "7")]
++    pub time: f64,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct MoveShard {
+@@ -1677,10 +1837,13 @@ pub mod update_collection_cluster_setup_request {
+         ReplicatePoints(super::ReplicatePoints),
+     }
+ }
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+ pub struct UpdateCollectionClusterSetupResponse {
+     #[prost(bool, tag = "1")]
+     pub result: bool,
++    /// Time spent to process
++    #[prost(double, tag = "2")]
++    pub time: f64,
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct CreateShardKeyRequest {
+@@ -1714,15 +1877,21 @@ pub struct ListShardKeysRequest {
+     #[prost(string, tag = "1")]
+     pub collection_name: ::prost::alloc::string::String,
+ }
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+ pub struct CreateShardKeyResponse {
+     #[prost(bool, tag = "1")]
+     pub result: bool,
++    /// Time spent to process
++    #[prost(double, tag = "2")]
++    pub time: f64,
+ }
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+ pub struct DeleteShardKeyResponse {
+     #[prost(bool, tag = "1")]
+     pub result: bool,
++    /// Time spent to process
++    #[prost(double, tag = "2")]
++    pub time: f64,
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct ShardKeyDescription {
+@@ -1744,6 +1913,7 @@ pub enum Datatype {
+     Float32 = 1,
+     Uint8 = 2,
+     Float16 = 3,
++    Turbo4 = 4,
+ }
+ impl Datatype {
+     /// String value of the enum field names used in the ProtoBuf definition.
+@@ -1756,6 +1926,7 @@ impl Datatype {
+             Self::Float32 => "Float32",
+             Self::Uint8 => "Uint8",
+             Self::Float16 => "Float16",
++            Self::Turbo4 => "Turbo4",
+         }
+     }
+     /// Creates an enum from field names used in the ProtoBuf definition.
+@@ -1765,6 +1936,45 @@ impl Datatype {
+             "Float32" => Some(Self::Float32),
+             "Uint8" => Some(Self::Uint8),
+             "Float16" => Some(Self::Float16),
++            "Turbo4" => Some(Self::Turbo4),
++            _ => None,
++        }
++    }
++}
++/// Memory placement of a component's data.
++/// Data is always persisted on disk regardless of this setting;
++/// it only controls how the data is held in RAM.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
++#[repr(i32)]
++pub enum Memory {
++    Unknown = 0,
++    /// Data is not pre-loaded from disk to RAM; cached with usage.
++    Cold = 1,
++    /// Data is pre-loaded into disk-cache RAM on start, but may be evicted under memory pressure.
++    Cached = 2,
++    /// Data is loaded in RAM and never evicted.
++    Pinned = 3,
++}
++impl Memory {
++    /// String value of the enum field names used in the ProtoBuf definition.
++    ///
++    /// The values are not transformed in any way and thus are considered stable
++    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
++    pub fn as_str_name(&self) -> &'static str {
++        match self {
++            Self::Unknown => "MemoryUnknown",
++            Self::Cold => "Cold",
++            Self::Cached => "Cached",
++            Self::Pinned => "Pinned",
++        }
++    }
++    /// Creates an enum from field names used in the ProtoBuf definition.
++    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
++        match value {
++            "MemoryUnknown" => Some(Self::Unknown),
++            "Cold" => Some(Self::Cold),
++            "Cached" => Some(Self::Cached),
++            "Pinned" => Some(Self::Pinned),
+             _ => None,
+         }
+     }
+@@ -4042,7 +4252,7 @@ pub struct DenseVectorCreationConfig {
+     /// Configuration for multi-vector search (e.g., ColBERT)
+     #[prost(message, optional, tag = "3")]
+     pub multivector_config: ::core::option::Option<MultiVectorConfig>,
+-    /// Data type of the vectors (Float32, Float16, Uint8)
++    /// Data type of the vectors (Float32, Float16, Uint8, Turbo4)
+     #[prost(enumeration = "Datatype", optional, tag = "4")]
+     pub datatype: ::core::option::Option<i32>,
+ }
+@@ -4244,7 +4454,16 @@ pub struct AcornSearchParams {
+     #[prost(double, optional, tag = "2")]
+     pub max_selectivity: ::core::option::Option<f64>,
+ }
+-#[derive(Clone, Copy, PartialEq, ::prost::Message)]
++/// Population over which sparse vector IDF statistics are computed for scoring - the IDF corpus.
++/// Only applicable to sparse vectors with the IDF modifier enabled.
++#[derive(Clone, PartialEq, ::prost::Message)]
++pub struct IdfParams {
++    /// Filter defining the corpus: IDF statistics are computed over the points matching this filter.
++    /// If unset, statistics are collection-wide (global) - same as omitting `idf` entirely.
++    #[prost(message, optional, tag = "1")]
++    pub corpus: ::core::option::Option<Filter>,
++}
++#[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct SearchParams {
+     /// Params relevant to HNSW index. Size of the beam in a beam-search.
+     /// Larger the value - more accurate the result, more time required for search.
+@@ -4264,6 +4483,10 @@ pub struct SearchParams {
+     /// ACORN search params
+     #[prost(message, optional, tag = "5")]
+     pub acorn: ::core::option::Option<AcornSearchParams>,
++    /// Which population sparse vector IDF statistics are computed over.
++    /// If unset, statistics are collection-wide (global).
++    #[prost(message, optional, tag = "6")]
++    pub idf: ::core::option::Option<IdfParams>,
+ }
+ #[derive(Clone, PartialEq, ::prost::Message)]
+ pub struct SearchPoints {

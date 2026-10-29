@@ -1,0 +1,6 @@
+{
+ "f2p": [
+  "rust-client::protos::protos"
+ ],
+ "p2p": []
+}

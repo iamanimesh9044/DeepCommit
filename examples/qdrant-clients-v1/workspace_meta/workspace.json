@@ -1,0 +1,91 @@
+{
+  "workspace_id": "qdrant_clients_v1",
+  "repos": [
+    {
+      "name": "qdrant",
+      "owner": "qdrant",
+      "repo": "qdrant",
+      "role": "contract",
+      "start": "v1.18.0",
+      "end": "v1.20.0",
+      "since": "",
+      "until": "",
+      "main_branch": "master",
+      "repo_src_dirs": [
+        "lib/api/"
+      ],
+      "test_dirs": [
+        "tests/**",
+        "**/tests/**"
+      ],
+      "exclude": [],
+      "contract_paths": [
+        "lib/api/src/grpc/proto/**/*.proto",
+        "docs/redoc/master/openapi.json"
+      ],
+      "base_image_name": null,
+      "build_command": null
+    },
+    {
+      "name": "rust-client",
+      "owner": "qdrant",
+      "repo": "rust-client",
+      "role": "sdk",
+      "start": "v1.18.0",
+      "end": "v1.20.0",
+      "since": "",
+      "until": "",
+      "main_branch": "master",
+      "repo_src_dirs": [
+        "src/"
+      ],
+      "test_dirs": [
+        "tests/**"
+      ],
+      "exclude": [],
+      "contract_paths": [],
+      "base_image_name": null,
+      "build_command": null
+    },
+    {
+      "name": "qdrant-client",
+      "owner": "qdrant",
+      "repo": "qdrant-client",
+      "role": "sdk",
+      "start": "v1.18.0",
+      "end": "v1.20.0",
+      "since": "",
+      "until": "",
+      "main_branch": "master",
+      "repo_src_dirs": [
+        "qdrant_client/"
+      ],
+      "test_dirs": [
+        "tests/**"
+      ],
+      "exclude": [],
+      "contract_paths": [],
+      "base_image_name": null,
+      "build_command": null
+    }
+  ],
+  "xrepo": {
+    "pin_files": [
+      "Cargo.toml",
+      "pyproject.toml"
+    ],
+    "link_confidence_threshold": 0.7,
+    "time_window_days": 3.0,
+    "pin_lag_days": 90.0,
+    "generated_globs": [
+      "**/*.pb.rs",
+      "**/*_pb2.py",
+      "**/*_pb2_grpc.py",
+      "**/*_pb2.pyi",
+      "qdrant_client/grpc/**",
+      "qdrant_client/http/**",
+      "src/qdrant.rs"
+    ],
+    "emit_soft_edges": true
+  }
+}

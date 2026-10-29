@@ -1,0 +1,19 @@
+{
+ "agent": "nop",
+ "image": "built from environment/vendor",
+ "job": "nop_vendor",
+ "rewards": {
+  "m1-upgrade-tonic-prost-reqwest-dependencies": 0,
+  "m2-remove-deprecated-fastembed-methods": 0,
+  "m3-remove-max-disk-usage-percent-and-deprec": 0,
+  "m4-filter-and-prefix-sdk-consumption-in-pyt": 0,
+  "m5-grpc-payload-conversion-performance-qdra": 0,
+  "m6-qdrantserverless-rust-client": 0,
+  "m7-rust-client-v1-19-sdk-sync": 0,
+  "m8-deprecated-search-sdk-sync-in-rust-clien": 0,
+  "m9-bm25-and-formula-contract-with-rust-clie": 0,
+  "m10-sync-nested-payload-index-parameters-to": 0,
+  "m11-python-client-grpc-and-rest-conversion-f": 0
+ },
+ "mean": 0.0
+}

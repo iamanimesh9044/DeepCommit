@@ -1,0 +1,643 @@
+diff --git a/proto/collections.proto b/proto/collections.proto
+index 0bc05caeb37fb6c350b9c271ede521d971d24d4e..396aeaba1ddf18ddc6b6ff5c44546efc10f6b7de 100644
+--- a/proto/collections.proto
++++ b/proto/collections.proto
+@@ -229,6 +229,9 @@ message CollectionWarning {
+ message HnswConfigDiff {
+   // Number of edges per node in the index graph.
+   // Larger the value - more accurate the search, more space required.
++  // Set to 0 to disable the main HNSW graph. Additional payload-aware links
++  // may still be built when the effective payload M is positive (see payload_m).
++  // This setting alone does not guarantee exact search.
+   optional uint64 m = 1;
+   // Number of neighbours to consider during the index building.
+   // Larger the value - more accurate the search, more time required to build the index.
+@@ -248,8 +251,9 @@ message HnswConfigDiff {
+   // Deprecated: use `memory` instead.
+   // Store HNSW index on disk. If set to false, the index will be stored in RAM.
+   optional bool on_disk = 5 [deprecated = true];
+-  // Number of additional payload-aware links per node in the index graph.
+-  // If not set - regular M parameter will be used.
++  // Number of additional payload-aware links per node. If unset, the value of m is used.
++  // An effective value of 0 disables these additional links. A positive value allows
++  // them for indexed payload fields with HNSW enabled, even when m is 0.
+   optional uint64 payload_m = 6;
+   // Store copies of original and quantized vectors within the HNSW index file. Default: false.
+   // Enabling this option will trade the search speed for disk usage by reducing amount of
+@@ -715,6 +719,10 @@ message KeywordIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 5;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 6;
+ }
+ 
+ // Prefix matching options for the keyword index. Has no options yet:
+@@ -741,6 +749,10 @@ message IntegerIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 6;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 7;
+ }
+ 
+ message FloatIndexParams {
+@@ -757,6 +769,10 @@ message FloatIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 4;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 5;
+ }
+ 
+ message GeoIndexParams {
+@@ -770,6 +786,10 @@ message GeoIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 3;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 4;
+ }
+ 
+ message StopwordsSet {
+@@ -808,9 +828,15 @@ message TextIndexParams {
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 11;
+   // Enable ranking points by BM25 over this field.
+-  // Implies `phrase_matching: true`. Changing it rebuilds the index.
++  // Changing it rebuilds the index.
+   // Default: disabled.
+   optional TextScoringParams scoring = 12;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].title`.
++  // The field must be inside the array's elements. Every query on the field, not only nested filters,
++  // treats each element as its own document: a condition matches a point when a single element
++  // matches it, and BM25 scores elements separately. `is_empty` on the field matches a point when
++  // one of its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 13;
+ }
+ 
+ enum TextScoringType {
+@@ -850,6 +876,10 @@ message BoolIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 3;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 4;
+ }
+ 
+ message DatetimeIndexParams {
+@@ -866,6 +896,10 @@ message DatetimeIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 4;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 5;
+ }
+ 
+ message UuidIndexParams {
+@@ -881,6 +915,10 @@ message UuidIndexParams {
+   // Memory placement of the index.
+   // Overrides the deprecated `on_disk` flag if both are set.
+   optional Memory memory = 4;
++  // Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++  // The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++  // its elements lacks the field, and never a point without elements. Default: disabled.
++  optional string nested = 5;
+ }
+ 
+ message PayloadIndexParams {
+diff --git a/src/builders/bool_index_params_builder.rs b/src/builders/bool_index_params_builder.rs
+index 2fc715f71fb1d1c4db0a1422e6f9812b9cd2bd55..037c7bf006144a758f072487045bd78bd2bcb0e4 100644
+--- a/src/builders/bool_index_params_builder.rs
++++ b/src/builders/bool_index_params_builder.rs
+@@ -9,6 +9,8 @@ pub struct BoolIndexParamsBuilder {
+     pub(crate) enable_hnsw: Option<Option<bool>>,
+     /// Memory placement of the index.
+     pub(crate) memory: Option<Option<i32>>,
++    /// Index every object of this array as a separate entry.
++    pub(crate) nested: Option<Option<String>>,
+ }
+ 
+ impl Default for BoolIndexParamsBuilder {
+@@ -43,6 +45,13 @@ impl BoolIndexParamsBuilder {
+         new.memory = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++    /// The field must be inside the array's elements.
++    pub fn nested(self, value: impl Into<String>) -> Self {
++        let mut new = self;
++        new.nested = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     #[allow(deprecated)]
+     fn build_inner(self) -> Result<BoolIndexParams, std::convert::Infallible> {
+@@ -50,6 +59,7 @@ impl BoolIndexParamsBuilder {
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
+             memory: self.memory.unwrap_or_default(),
++            nested: self.nested.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -58,6 +68,7 @@ impl BoolIndexParamsBuilder {
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
+             memory: core::default::Default::default(),
++            nested: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/datetime_index_params_builder.rs b/src/builders/datetime_index_params_builder.rs
+index 8a38fb39f29a732e8fd60a61082f478fe6c9dd0d..84f64d9dfa6a9855445fbdae66e32b039dd7ad13 100644
+--- a/src/builders/datetime_index_params_builder.rs
++++ b/src/builders/datetime_index_params_builder.rs
+@@ -11,6 +11,8 @@ pub struct DatetimeIndexParamsBuilder {
+     pub(crate) enable_hnsw: Option<Option<bool>>,
+     /// Memory placement of the index.
+     pub(crate) memory: Option<Option<i32>>,
++    /// Index every object of this array as a separate entry.
++    pub(crate) nested: Option<Option<String>>,
+ }
+ 
+ impl DatetimeIndexParamsBuilder {
+@@ -41,6 +43,13 @@ impl DatetimeIndexParamsBuilder {
+         new.memory = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++    /// The field must be inside the array's elements.
++    pub fn nested(self, value: impl Into<String>) -> Self {
++        let mut new = self;
++        new.nested = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     #[allow(deprecated)]
+     fn build_inner(self) -> Result<DatetimeIndexParams, std::convert::Infallible> {
+@@ -49,6 +58,7 @@ impl DatetimeIndexParamsBuilder {
+             is_principal: self.is_principal.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
+             memory: self.memory.unwrap_or_default(),
++            nested: self.nested.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -58,6 +68,7 @@ impl DatetimeIndexParamsBuilder {
+             is_principal: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
+             memory: core::default::Default::default(),
++            nested: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/float_index_params_builder.rs b/src/builders/float_index_params_builder.rs
+index 4b0a60382c47f58ee4e0c403d8019cd17abf01d3..918497f685ec9346a64251a35dd121b27fc255f8 100644
+--- a/src/builders/float_index_params_builder.rs
++++ b/src/builders/float_index_params_builder.rs
+@@ -11,6 +11,8 @@ pub struct FloatIndexParamsBuilder {
+     pub(crate) enable_hnsw: Option<Option<bool>>,
+     /// Memory placement of the index.
+     pub(crate) memory: Option<Option<i32>>,
++    /// Index every object of this array as a separate entry.
++    pub(crate) nested: Option<Option<String>>,
+ }
+ 
+ impl Default for FloatIndexParamsBuilder {
+@@ -51,6 +53,13 @@ impl FloatIndexParamsBuilder {
+         new.memory = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++    /// The field must be inside the array's elements.
++    pub fn nested(self, value: impl Into<String>) -> Self {
++        let mut new = self;
++        new.nested = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     #[allow(deprecated)]
+     fn build_inner(self) -> Result<FloatIndexParams, std::convert::Infallible> {
+@@ -59,6 +68,7 @@ impl FloatIndexParamsBuilder {
+             is_principal: self.is_principal.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
+             memory: self.memory.unwrap_or_default(),
++            nested: self.nested.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -68,6 +78,7 @@ impl FloatIndexParamsBuilder {
+             is_principal: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
+             memory: core::default::Default::default(),
++            nested: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/geo_index_params_builder.rs b/src/builders/geo_index_params_builder.rs
+index aaf50394e4f6eb3ef198e6221a5890326f399a95..c4bbb7479832581b1794ddacaf132970efb445b3 100644
+--- a/src/builders/geo_index_params_builder.rs
++++ b/src/builders/geo_index_params_builder.rs
+@@ -9,6 +9,8 @@ pub struct GeoIndexParamsBuilder {
+     pub(crate) enable_hnsw: Option<Option<bool>>,
+     /// Memory placement of the index.
+     pub(crate) memory: Option<Option<i32>>,
++    /// Index every object of this array as a separate entry.
++    pub(crate) nested: Option<Option<String>>,
+ }
+ 
+ impl Default for GeoIndexParamsBuilder {
+@@ -43,6 +45,13 @@ impl GeoIndexParamsBuilder {
+         new.memory = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++    /// The field must be inside the array's elements.
++    pub fn nested(self, value: impl Into<String>) -> Self {
++        let mut new = self;
++        new.nested = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     #[allow(deprecated)]
+     fn build_inner(self) -> Result<GeoIndexParams, std::convert::Infallible> {
+@@ -50,6 +59,7 @@ impl GeoIndexParamsBuilder {
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
+             memory: self.memory.unwrap_or_default(),
++            nested: self.nested.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -58,6 +68,7 @@ impl GeoIndexParamsBuilder {
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
+             memory: core::default::Default::default(),
++            nested: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/integer_index_params_builder.rs b/src/builders/integer_index_params_builder.rs
+index df7a02d2cb83b34b70d406d89947aacdf9660900..39aa99e99f2c1844a4785f8d214748306fea5e52 100644
+--- a/src/builders/integer_index_params_builder.rs
++++ b/src/builders/integer_index_params_builder.rs
+@@ -15,6 +15,8 @@ pub struct IntegerIndexParamsBuilder {
+     pub(crate) enable_hnsw: Option<Option<bool>>,
+     /// Memory placement of the index.
+     pub(crate) memory: Option<Option<i32>>,
++    /// Index every object of this array as a separate entry.
++    pub(crate) nested: Option<Option<String>>,
+ }
+ 
+ impl IntegerIndexParamsBuilder {
+@@ -61,6 +63,13 @@ impl IntegerIndexParamsBuilder {
+         new.memory = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++    /// The field must be inside the array's elements.
++    pub fn nested(self, value: impl Into<String>) -> Self {
++        let mut new = self;
++        new.nested = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     #[allow(deprecated)]
+     fn build_inner(self) -> Result<IntegerIndexParams, IntegerIndexParamsBuilderError> {
+@@ -71,6 +80,7 @@ impl IntegerIndexParamsBuilder {
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
+             memory: self.memory.unwrap_or_default(),
++            nested: self.nested.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -82,6 +92,7 @@ impl IntegerIndexParamsBuilder {
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
+             memory: core::default::Default::default(),
++            nested: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/keyword_index_params_builder.rs b/src/builders/keyword_index_params_builder.rs
+index 5778a83f20f59402bdb4fc867cf44e957f1f168e..3f1c5f81404830359ec22e6a438e37d1cad73dd1 100644
+--- a/src/builders/keyword_index_params_builder.rs
++++ b/src/builders/keyword_index_params_builder.rs
+@@ -13,6 +13,8 @@ pub struct KeywordIndexParamsBuilder {
+     pub(crate) prefix: Option<Option<KeywordPrefixParams>>,
+     /// Memory placement of the index.
+     pub(crate) memory: Option<Option<i32>>,
++    /// Index every object of this array as a separate entry.
++    pub(crate) nested: Option<Option<String>>,
+ }
+ 
+ impl Default for KeywordIndexParamsBuilder {
+@@ -55,6 +57,13 @@ impl KeywordIndexParamsBuilder {
+         new.memory = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++    /// The field must be inside the array's elements.
++    pub fn nested(self, value: impl Into<String>) -> Self {
++        let mut new = self;
++        new.nested = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     #[allow(deprecated)]
+     fn build_inner(self) -> Result<KeywordIndexParams, std::convert::Infallible> {
+@@ -64,6 +73,7 @@ impl KeywordIndexParamsBuilder {
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
+             prefix: self.prefix.unwrap_or_default(),
+             memory: self.memory.unwrap_or_default(),
++            nested: self.nested.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -74,6 +84,7 @@ impl KeywordIndexParamsBuilder {
+             enable_hnsw: core::default::Default::default(),
+             prefix: core::default::Default::default(),
+             memory: core::default::Default::default(),
++            nested: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/builders/text_index_params_builder.rs b/src/builders/text_index_params_builder.rs
+index 6d70ee5fa347826676a2819e50af32011446c9ea..5b347ec19d241d2730328c6e79da02d6bc559a73 100644
+--- a/src/builders/text_index_params_builder.rs
++++ b/src/builders/text_index_params_builder.rs
+@@ -24,6 +24,8 @@ pub struct TextIndexParamsBuilder {
+     pub(crate) enable_hnsw: Option<Option<bool>>,
+     /// Memory placement of the index.
+     pub(crate) memory: Option<Option<i32>>,
++    /// Index every object of this array as a separate entry.
++    pub(crate) nested: Option<Option<String>>,
+     /// Enable ranking points by BM25 over this field.
+     pub(crate) scoring: Option<Option<TextScoringParams>>,
+ }
+@@ -148,9 +150,16 @@ impl TextIndexParamsBuilder {
+         new.memory = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].title`.
++    /// The field must be inside the array's elements.
++    pub fn nested(self, value: impl Into<String>) -> Self {
++        let mut new = self;
++        new.nested = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     /// Enable ranking points by BM25 over this field, see [`Query::new_text`].
+-    /// Implies `phrase_matching: true`. Changing it rebuilds the index.
++    /// Changing it rebuilds the index.
+     /// Default: disabled.
+     pub fn scoring<VALUE: core::convert::Into<TextScoringParams>>(self, value: VALUE) -> Self {
+         let mut new = self;
+@@ -159,7 +168,7 @@ impl TextIndexParamsBuilder {
+     }
+ 
+     /// Enable BM25 ranking over this field, see [`Query::new_text`].
+-    /// Implies `phrase_matching: true`. Changing it rebuilds the index.
++    /// Changing it rebuilds the index.
+     pub fn bm25_scoring(self) -> Self {
+         self.scoring(TextScoringType::Bm25)
+     }
+@@ -185,6 +194,7 @@ impl TextIndexParamsBuilder {
+             ascii_folding: self.ascii_folding.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
+             memory: self.memory.unwrap_or_default(),
++            nested: self.nested.unwrap_or_default(),
+             scoring: self.scoring.unwrap_or_default(),
+         })
+     }
+@@ -203,6 +213,7 @@ impl TextIndexParamsBuilder {
+             ascii_folding: Default::default(),
+             enable_hnsw: Default::default(),
+             memory: Default::default(),
++            nested: Default::default(),
+             scoring: Default::default(),
+         }
+     }
+diff --git a/src/builders/uuid_index_params_builder.rs b/src/builders/uuid_index_params_builder.rs
+index 629cb46e338d4b0af0dd3e4da12d438a223df142..5f57c5168c5e03177bd82b958d32fc85dd72b17c 100644
+--- a/src/builders/uuid_index_params_builder.rs
++++ b/src/builders/uuid_index_params_builder.rs
+@@ -11,6 +11,8 @@ pub struct UuidIndexParamsBuilder {
+     pub(crate) enable_hnsw: Option<Option<bool>>,
+     /// Memory placement of the index.
+     pub(crate) memory: Option<Option<i32>>,
++    /// Index every object of this array as a separate entry.
++    pub(crate) nested: Option<Option<String>>,
+ }
+ 
+ impl UuidIndexParamsBuilder {
+@@ -41,6 +43,13 @@ impl UuidIndexParamsBuilder {
+         new.memory = Option::Some(Option::Some(value.into()));
+         new
+     }
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers[].price`.
++    /// The field must be inside the array's elements.
++    pub fn nested(self, value: impl Into<String>) -> Self {
++        let mut new = self;
++        new.nested = Option::Some(Option::Some(value.into()));
++        new
++    }
+ 
+     #[allow(deprecated)]
+     fn build_inner(self) -> Result<UuidIndexParams, std::convert::Infallible> {
+@@ -49,6 +58,7 @@ impl UuidIndexParamsBuilder {
+             on_disk: self.on_disk.unwrap_or_default(),
+             enable_hnsw: self.enable_hnsw.unwrap_or_default(),
+             memory: self.memory.unwrap_or_default(),
++            nested: self.nested.unwrap_or_default(),
+         })
+     }
+     /// Create an empty builder, with all fields set to `None` or `PhantomData`.
+@@ -58,6 +68,7 @@ impl UuidIndexParamsBuilder {
+             on_disk: core::default::Default::default(),
+             enable_hnsw: core::default::Default::default(),
+             memory: core::default::Default::default(),
++            nested: core::default::Default::default(),
+         }
+     }
+ }
+diff --git a/src/qdrant.rs b/src/qdrant.rs
+index f54a6639de257d29ade005de2e2fba49313e270f..dab229e0fdfd810674fb6204a2612861c905cb16 100644
+--- a/src/qdrant.rs
++++ b/src/qdrant.rs
+@@ -595,6 +595,9 @@ pub struct CollectionWarning {
+ pub struct HnswConfigDiff {
+     /// Number of edges per node in the index graph.
+     /// Larger the value - more accurate the search, more space required.
++    /// Set to 0 to disable the main HNSW graph. Additional payload-aware links
++    /// may still be built when the effective payload M is positive (see payload_m).
++    /// This setting alone does not guarantee exact search.
+     #[prost(uint64, optional, tag = "1")]
+     pub m: ::core::option::Option<u64>,
+     /// Number of neighbours to consider during the index building.
+@@ -620,8 +623,9 @@ pub struct HnswConfigDiff {
+     #[deprecated]
+     #[prost(bool, optional, tag = "5")]
+     pub on_disk: ::core::option::Option<bool>,
+-    /// Number of additional payload-aware links per node in the index graph.
+-    /// If not set - regular M parameter will be used.
++    /// Number of additional payload-aware links per node. If unset, the value of m is used.
++    /// An effective value of 0 disables these additional links. A positive value allows
++    /// them for indexed payload fields with HNSW enabled, even when m is 0.
+     #[prost(uint64, optional, tag = "6")]
+     pub payload_m: ::core::option::Option<u64>,
+     /// Store copies of original and quantized vectors within the HNSW index file. Default: false.
+@@ -1222,7 +1226,7 @@ pub struct CollectionConfig {
+     #[prost(map = "string, message", tag = "7")]
+     pub metadata: ::std::collections::HashMap<::prost::alloc::string::String, Value>,
+ }
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct KeywordIndexParams {
+     /// If true - used for tenant optimization.
+     #[prost(bool, optional, tag = "1")]
+@@ -1244,12 +1248,17 @@ pub struct KeywordIndexParams {
+     /// Overrides the deprecated `on_disk` flag if both are set.
+     #[prost(enumeration = "Memory", optional, tag = "5")]
+     pub memory: ::core::option::Option<i32>,
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers\[\].price`.
++    /// The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++    /// its elements lacks the field, and never a point without elements. Default: disabled.
++    #[prost(string, optional, tag = "6")]
++    pub nested: ::core::option::Option<::prost::alloc::string::String>,
+ }
+ /// Prefix matching options for the keyword index. Has no options yet:
+ /// presence of this message enables prefix matching.
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct KeywordPrefixParams {}
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct IntegerIndexParams {
+     /// If true - support direct lookups. Default is true.
+     #[prost(bool, optional, tag = "1")]
+@@ -1276,8 +1285,13 @@ pub struct IntegerIndexParams {
+     /// Overrides the deprecated `on_disk` flag if both are set.
+     #[prost(enumeration = "Memory", optional, tag = "6")]
+     pub memory: ::core::option::Option<i32>,
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers\[\].price`.
++    /// The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++    /// its elements lacks the field, and never a point without elements. Default: disabled.
++    #[prost(string, optional, tag = "7")]
++    pub nested: ::core::option::Option<::prost::alloc::string::String>,
+ }
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct FloatIndexParams {
+     /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
+@@ -1297,8 +1311,13 @@ pub struct FloatIndexParams {
+     /// Overrides the deprecated `on_disk` flag if both are set.
+     #[prost(enumeration = "Memory", optional, tag = "4")]
+     pub memory: ::core::option::Option<i32>,
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers\[\].price`.
++    /// The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++    /// its elements lacks the field, and never a point without elements. Default: disabled.
++    #[prost(string, optional, tag = "5")]
++    pub nested: ::core::option::Option<::prost::alloc::string::String>,
+ }
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct GeoIndexParams {
+     /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
+@@ -1314,6 +1333,11 @@ pub struct GeoIndexParams {
+     /// Overrides the deprecated `on_disk` flag if both are set.
+     #[prost(enumeration = "Memory", optional, tag = "3")]
+     pub memory: ::core::option::Option<i32>,
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers\[\].price`.
++    /// The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++    /// its elements lacks the field, and never a point without elements. Default: disabled.
++    #[prost(string, optional, tag = "4")]
++    pub nested: ::core::option::Option<::prost::alloc::string::String>,
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct StopwordsSet {
+@@ -1366,10 +1390,17 @@ pub struct TextIndexParams {
+     #[prost(enumeration = "Memory", optional, tag = "11")]
+     pub memory: ::core::option::Option<i32>,
+     /// Enable ranking points by BM25 over this field.
+-    /// Implies `phrase_matching: true`. Changing it rebuilds the index.
++    /// Changing it rebuilds the index.
+     /// Default: disabled.
+     #[prost(message, optional, tag = "12")]
+     pub scoring: ::core::option::Option<TextScoringParams>,
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers\[\].title`.
++    /// The field must be inside the array's elements. Every query on the field, not only nested filters,
++    /// treats each element as its own document: a condition matches a point when a single element
++    /// matches it, and BM25 scores elements separately. `is_empty` on the field matches a point when
++    /// one of its elements lacks the field, and never a point without elements. Default: disabled.
++    #[prost(string, optional, tag = "13")]
++    pub nested: ::core::option::Option<::prost::alloc::string::String>,
+ }
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct TextScoringParams {
+@@ -1403,7 +1434,7 @@ pub struct SnowballParams {
+ /// Marker selecting the "no stemming" algorithm.
+ #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct DisabledStemmer {}
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct BoolIndexParams {
+     /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
+@@ -1419,8 +1450,13 @@ pub struct BoolIndexParams {
+     /// Overrides the deprecated `on_disk` flag if both are set.
+     #[prost(enumeration = "Memory", optional, tag = "3")]
+     pub memory: ::core::option::Option<i32>,
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers\[\].price`.
++    /// The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++    /// its elements lacks the field, and never a point without elements. Default: disabled.
++    #[prost(string, optional, tag = "4")]
++    pub nested: ::core::option::Option<::prost::alloc::string::String>,
+ }
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct DatetimeIndexParams {
+     /// Deprecated: use `memory` instead.
+     /// If true - store index on disk.
+@@ -1440,8 +1476,13 @@ pub struct DatetimeIndexParams {
+     /// Overrides the deprecated `on_disk` flag if both are set.
+     #[prost(enumeration = "Memory", optional, tag = "4")]
+     pub memory: ::core::option::Option<i32>,
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers\[\].price`.
++    /// The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++    /// its elements lacks the field, and never a point without elements. Default: disabled.
++    #[prost(string, optional, tag = "5")]
++    pub nested: ::core::option::Option<::prost::alloc::string::String>,
+ }
+-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct UuidIndexParams {
+     /// If true - used for tenant optimization.
+     #[prost(bool, optional, tag = "1")]
+@@ -1460,6 +1501,11 @@ pub struct UuidIndexParams {
+     /// Overrides the deprecated `on_disk` flag if both are set.
+     #[prost(enumeration = "Memory", optional, tag = "4")]
+     pub memory: ::core::option::Option<i32>,
++    /// Index every object of this array as a separate entry, e.g. `offers` for the field `offers\[\].price`.
++    /// The field must be inside the array's elements. `is_empty` on the field matches a point when one of
++    /// its elements lacks the field, and never a point without elements. Default: disabled.
++    #[prost(string, optional, tag = "5")]
++    pub nested: ::core::option::Option<::prost::alloc::string::String>,
+ }
+ #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+ pub struct PayloadIndexParams {

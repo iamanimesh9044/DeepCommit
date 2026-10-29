@@ -176,46 +176,13 @@ A **workspace** groups 2-5 repositories developed together (for example an API/c
 
 `config/<workspace_id>.workspace.yaml` lists the member repos. Each member keeps the single-repo fields (`owner`, `repo`, `start`/`end` tag or `since`/`until`, `main_branch`, `repo_src_dirs` as literal path prefixes, `test_dirs`, `exclude`) plus `name` (the directory name under `repo_data/`), `role` (`contract | server | sdk | library`) and, for contract repos, `contract_paths`. An `xrepo:` block configures cross-repo edge detection (`pin_files`, `link_confidence_threshold`, `time_window_days`, `generated_globs`). The schema is documented in `deepcommit/multirepo/workspace.py`.
 
-### CLI
+### CLI and CSF task export
 
-```bash
-deepcommit workspace <validate|preproc|merge|run> <manifest>
-```
-
-| Command | What it does |
-|---|---|
-| `validate` | Parse the manifest, check names/roles/ranges, check that bare 7-char SHAs are unique across the repos (a collision is a hard error) |
-| `preproc` | Run Phase 1 per repository into `preprocessed/<ws>/<repo>/` |
-| `merge` | Build `preprocessed/<ws>/merged/` (merged commits, DAG with cross-repo edges, `commit_repos.json`, repos table) |
-| `run` | Run Phase 2 on the merged data |
-
-The `workspace` CLI is being implemented in the same effort; its exact flags may differ until it lands.
-
-### Data layout
-
-```text
-preprocessed/<ws>/<repo>/        # per-repo Phase 1 output, unchanged format
-preprocessed/<ws>/merged/        # input of Phase 2
-    main_commits.jsonl           # commits carry repo, committed_at, merged_via_pr_key
-    commit_dag.json              # edges_dag (textual + hard xrepo) and edges_soft (hints)
-    commit_repos.json            # bare sha -> repo
-    pull_requests.jsonl, issues.jsonl   # carry repo and pr_key (<repo>#<n>)
-trial_space/<id>/repo_data/<repo>/   # one checkout per repo
-```
-
-Conventions: commit keys stay **bare 7-char SHAs** (unique inside a workspace; the repo comes from `commit_repos.json`); every path in merged data is prefixed `<repo>/<path>`.
-
-### What changes in Phase 2 (milestone DAG construction)
-
-Prompts switch on `is_multi_repo` and receive `workspace_id` and `workspace_repos_table`. The agent inspects code with `git -C repo_data/<repo> ...` (MCP tools route automatically). Rules redefined for workspaces: coverage and overlap over the union of commits (reported per repo and overall); path completeness enforced on textual edges and **hard** cross-repo edges only (soft edges are hints and may be cut); seeds linked by a hard edge share a group; about 20 seeds per repo; `src_loc` summed per repo with CV on the sum; contract change never split from its first consumer; one `integration_test_commit` per repo; new `repos` column in `milestones.csv`; new dependency type `XREPO`; a cross-repo milestone must change at least 2 repos and no single repo's part may be a complete feature.
-
-### Phase 3 and Phase 4 (in progress)
-
-Multi-repo testbeds (per-repo branches/tags, one image with all toolchains at `/workspace/<repo>/`, a list of test suites with `{repo}::` test ids, one gold patch per repo) and multi-repo SRS generation (per-repo "Interface contract" section, boundary vs internal names) are **in progress** and not yet usable.
+Commands, the milestone rules, task generation and grading are in [multirepo.md](multirepo.md). A finished example with all artifacts is in [`examples/qdrant-clients-v1/`](../examples/qdrant-clients-v1/).
 
 ### Known limits
 
-- Phase 3-4 support is not finished (above).
+- Phase 3-4 for multi-repo workspaces run through the CSF task export (`workspace export-task`, `finalize-task`) instead of the single-repo testbed and SRS phases.
 - Cross-repo edge heuristics are unvalidated on real data; expect to tune `link_confidence_threshold`.
 - The compile-check of split commits is skipped for cross-repo milestones.
 - Max 5 repos per workspace; repos must have non-colliding 7-char SHAs.

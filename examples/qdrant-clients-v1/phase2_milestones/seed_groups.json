@@ -1,0 +1,127 @@
+{
+  "metadata": {
+    "total_seeds": 38,
+    "total_groups": 9,
+    "note": "Hub topology: mega-sync seeds (3631300, 589aece, 0dca5bf, 3247b10) create a 25-seed connected component via hard xrepo edges. Groups split at sync-commit boundaries to respect 2-5 size constraint while maximizing intra-group xrepo coverage."
+  },
+  "groups": [
+    {
+      "group_id": "G01",
+      "seeds": ["9c0248c", "4c4e356"],
+      "rationale": "Mirror tonic 0.14/prost 0.14 upgrades across qdrant contract and rust-client. Both are layer-0 foundation commits — 9c0248c has 65 descendants (highest in workspace), 4c4e356 has 8. No hard xrepo edge detected (independent framework upgrades), but identical semantic purpose and shared generated qdrant.rs hotspot.",
+      "semantic_theme": "grpc_framework_upgrade",
+      "repos": ["qdrant", "rust-client"],
+      "xrepo_edges_within": [],
+      "xrepo_edges_cross_group": ["9c0248c descendants feed into G02/G03/G04 qdrant seeds", "4c4e356 descendants feed into G02/G04 rust-client syncs"]
+    },
+    {
+      "group_id": "G02",
+      "seeds": ["e58be0c", "ad3abf7", "76f4f3e", "3631300", "589aece"],
+      "rationale": "Core v1.19 contract features (TurboQuant, memory placement, IDF corpus) paired with their primary SDK sync commits. Hard xrepo: e58be0c→589aece, ad3abf7→3631300, ad3abf7→589aece, 76f4f3e→3631300, 76f4f3e→589aece. 3631300 and 589aece are mega-sync hubs consuming many features — grouped here with the highest-impact v1.19 contract changes they consume.",
+      "semantic_theme": "v1_19_core_api_and_sdk_sync",
+      "repos": ["qdrant", "rust-client", "qdrant-client"],
+      "xrepo_edges_within": [
+        "e58be0c→589aece", "ad3abf7→3631300", "ad3abf7→589aece",
+        "76f4f3e→3631300", "76f4f3e→589aece", "e58be0c→3247b10(G04)"
+      ],
+      "xrepo_edges_cross_group": [
+        "3631300 also consumes: 2573869(G03), 55cf6b7(G03), 08a73b5(G04), d75d805(G05), c34acc1(G05)",
+        "589aece also consumes: 2573869(G03), 55cf6b7(G03), 73e6c16(G03), 08a73b5(G04), bedab3c(G06), d75d805(G05), c34acc1(G05), 7477c7c(G05)"
+      ]
+    },
+    {
+      "group_id": "G03",
+      "seeds": ["2573869", "55cf6b7", "73e6c16", "5ffa732", "693c6a3"],
+      "rationale": "Filter/search contract changes and their SDK consumption. 2573869 (keyword prefix) and 55cf6b7 (slice filtering) extend filter vocabulary; 73e6c16 (remove deprecated search) is breaking API change. 5ffa732 and 693c6a3 are direct SDK consumers. Hard xrepo within: 55cf6b7→693c6a3, 73e6c16→5ffa732, 55cf6b7→5ffa732. High DAG co-occurrence: 2573869 (55 desc), 55cf6b7 (37 desc), 73e6c16 (36 desc).",
+      "semantic_theme": "filter_search_contract_changes",
+      "repos": ["qdrant", "rust-client", "qdrant-client"],
+      "xrepo_edges_within": [
+        "55cf6b7→693c6a3", "73e6c16→5ffa732", "55cf6b7→5ffa732"
+      ],
+      "xrepo_edges_cross_group": [
+        "2573869→3631300(G02), 2573869→589aece(G02), 2573869→8c14f9f(G07), 2573869→7e917d1(G07)",
+        "55cf6b7→3631300(G02), 55cf6b7→589aece(G02), 55cf6b7→3247b10(G04), 55cf6b7→da58e7d(G05)",
+        "73e6c16→589aece(G02), 73e6c16→0dca5bf(G04), 73e6c16→1860632(G08)"
+      ]
+    },
+    {
+      "group_id": "G04",
+      "seeds": ["08a73b5", "8a5566c", "9614dc0", "0dca5bf", "3247b10"],
+      "rationale": "BM25/text search pipeline (disabled stemmer, TextQuery) plus id tracker memory placement, paired with their SDK syncs (0dca5bf for rust-client, 3247b10 for python). Hard xrepo within: 08a73b5→0dca5bf, 8a5566c→0dca5bf, 9614dc0→0dca5bf, 9614dc0→3247b10, 8a5566c→3247b10. These represent the 'next wave' of features after v1.19 sync.",
+      "semantic_theme": "bm25_text_search_and_v1_20_sync",
+      "repos": ["qdrant", "rust-client", "qdrant-client"],
+      "xrepo_edges_within": [
+        "08a73b5→0dca5bf", "8a5566c→0dca5bf", "9614dc0→0dca5bf",
+        "9614dc0→3247b10", "8a5566c→3247b10"
+      ],
+      "xrepo_edges_cross_group": [
+        "08a73b5→3631300(G02), 08a73b5→589aece(G02), 08a73b5→8c14f9f(G07), 08a73b5→7e917d1(G07)",
+        "bedab3c(G06)→0dca5bf, bedab3c(G06)→3247b10",
+        "ad3abf7(G02)→0dca5bf, ad3abf7(G02)→3247b10"
+      ]
+    },
+    {
+      "group_id": "G05",
+      "seeds": ["d75d805", "c34acc1", "da58e7d", "7477c7c"],
+      "rationale": "Resource management lifecycle: d75d805 introduces strict mode max_disk_usage_percent (layer 0, 39 desc), c34acc1 supersedes it with global quota API (layer 1, 38 desc), da58e7d removes the field in python client. Hard xrepo: c34acc1→da58e7d, d75d805→da58e7d. 7477c7c (stale snapshot fix) is a cluster stability fix with hard xrepo to 589aece(G02); placed here as it shares the operational/stability theme.",
+      "semantic_theme": "resource_management_quotas_stability",
+      "repos": ["qdrant", "qdrant-client"],
+      "xrepo_edges_within": [
+        "c34acc1→da58e7d", "d75d805→da58e7d"
+      ],
+      "xrepo_edges_cross_group": [
+        "d75d805→3631300(G02), d75d805→589aece(G02)",
+        "c34acc1→3631300(G02), c34acc1→589aece(G02)",
+        "7477c7c→589aece(G02)"
+      ]
+    },
+    {
+      "group_id": "G06",
+      "seeds": ["bedab3c", "fb0cda7", "7f44c40", "de3c432"],
+      "rationale": "Filter/index extensions: bedab3c (substring match), fb0cda7 (nested payload indexes), 7f44c40 (nested payload sync in rust-client), de3c432 (text/phrase local mode fix). Hard xrepo: bedab3c→de3c432 (substring contract consumed by local mode fix). fb0cda7→7f44c40 is soft (conf 0.6) but they're a semantic mirror (same author within 3 days). High affinity: all extend the filter/index vocabulary.",
+      "semantic_theme": "filter_index_extensions",
+      "repos": ["qdrant", "rust-client", "qdrant-client"],
+      "xrepo_edges_within": [
+        "bedab3c→de3c432"
+      ],
+      "xrepo_edges_cross_group": [
+        "bedab3c→0dca5bf(G04), bedab3c→3247b10(G04), bedab3c→589aece(G02)",
+        "fb0cda7→3247b10(G04) soft"
+      ]
+    },
+    {
+      "group_id": "G07",
+      "seeds": ["d5a4f44", "8c14f9f", "7e917d1"],
+      "rationale": "Serverless client prototype — entirely new product track across both SDKs. d5a4f44 (rust serverless, +1871 LoC, layer 2) seeds 8c14f9f (pagination, +399 LoC, layer 3). 7e917d1 (python serverless, +3660 LoC, layer 3) is the largest addition in qdrant-client. All three create new modules (src/serverless/ and qdrant_client/serverless/). Intra-repo DAG: d5a4f44→8c14f9f. Cross-SDK parallel development.",
+      "semantic_theme": "serverless_client",
+      "repos": ["rust-client", "qdrant-client"],
+      "xrepo_edges_within": [],
+      "xrepo_edges_cross_group": [
+        "08a73b5(G04)→8c14f9f, 08a73b5(G04)→7e917d1",
+        "2573869(G03)→8c14f9f, 2573869(G03)→7e917d1",
+        "ad3abf7(G02)→7e917d1"
+      ]
+    },
+    {
+      "group_id": "G08",
+      "seeds": ["53c81ee", "f28634c", "f212c4a", "5c0fd88", "1860632"],
+      "rationale": "Python local mode correctness campaign. 53c81ee opens the filter correctness hardening (layer 0, 25 desc). f28634c (layer 0, 32 desc — highest in qdrant-client) is the philosophical shift to warning about dropped params. f212c4a starts fail-fast semantics for empty vectors. 5c0fd88 fixes shared-state mutation in collection config. 1860632 replaces asserts with proper validation. All in qdrant-client local mode paths. Payload_filters.py is the hotspot (41 revisions).",
+      "semantic_theme": "local_mode_correctness",
+      "repos": ["qdrant-client"],
+      "xrepo_edges_within": [],
+      "xrepo_edges_cross_group": [
+        "ad3abf7(G02)→5c0fd88 (hard, memory placement consumed in config isolation)",
+        "73e6c16(G03)→1860632 (hard, deprecated search terms used in validation)"
+      ]
+    },
+    {
+      "group_id": "G09_singletons",
+      "seeds": ["d4b0466", "b09b213", "f7530a2", "d6f79fd", "789eced"],
+      "rationale": "Low-affinity seeds with no hard xrepo edges to other seeds. d4b0466 (rust-client connection check, standalone feature). b09b213 (python remove deprecated add/query, net -1322 LoC). f7530a2 (nested json-path parser, new utility module). d6f79fd (sparse vector isolation, new sparse.py module). 789eced (gRPC conversion performance). Each is self-contained or starts a distinct sub-theme. Grouped for batch processing efficiency.",
+      "semantic_theme": "mixed_standalone_features",
+      "repos": ["rust-client", "qdrant-client"],
+      "xrepo_edges_within": [],
+      "xrepo_edges_cross_group": []
+    }
+  ]
+}

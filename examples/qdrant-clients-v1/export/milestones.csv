@@ -1,0 +1,20 @@
+step,id,title,category,repos,commits,depends_on
+m1-upgrade-tonic-prost-reqwest-dependencies,M02,Upgrade tonic/prost/reqwest dependencies in rust-client SDK,Platform,rust-client,4c4e356,
+m2-remove-deprecated-fastembed-methods,M21,Remove Deprecated Fastembed Methods,Breaking,qdrant-client,b09b213,
+m3-local-mode-payload-type-filter-query-and,M22_sub-01,"Local Mode Payload, Type, Filter, Query, and Formula Correctness",Quality,qdrant-client,f7530a2;e0dcd93;6f0d9be;3e682a0;f7da4e9;2113ec6;704f037;b5a6bb2;0ae22bc;d3f55a1;4b105f1;f93340b;ffe7b84;23c0de5;e242b3d;c7dd486;53c81ee;201232d;efc4619;34dbb37;3497f1e;69a6ee2;3ea3815;33f5f9c;613b88e;e37b9ea;cc7c4ba;27a5563;28196c3;631f767;69fe253;0f8a939;18d4606;3fb6023;40863fe;65c0c16;ec713ad;e6f0d08;334e9cb;919cf53;8acb48d,
+m4-v1-19-proto-and-grpc-stub-regeneration,M22_sub-02,v1.19 Proto and gRPC Stub Regeneration,Quality,qdrant-client,f28634c;24bd6bf;7bd755b;c82a9d3,M22_sub-01;M05;M13
+m5-v1-19-local-mode-client-api-and-post-syn,M22_sub-04,"v1.19 Local Mode, Client API, and Post-Sync Fixes",Quality,qdrant-client,03fe5e7;9f3c870;de3c432;6a6fd05;25550f8;72a4dd3,M22_sub-03
+m6-remove-max-disk-usage-percent-and-deprec,M08,Remove max_disk_usage_percent and Deprecate max_resident_memory_percent in Python Client,Breaking,qdrant-client,da58e7d,M22_sub-04
+m7-vector-validation-filter-chain-and-remot,M22_sub-05,"Vector Validation, Filter Chain, and Remote Correctness",Quality,qdrant-client,fd8de6a;b4ef6a4;f212c4a;2fb6eaa;5c0fd88;cac289e;c8bf20d;24f5497;7687903;693c6a3;1860632;69f0a9c;05441fd;13ce595;db0a712;2a4d094;e6817f7;be987f9;41e1dda,M22_sub-04
+m8-filter-and-prefix-sdk-consumption-in-pyt,M15,Filter and Prefix SDK Consumption in Python Client,Quality,qdrant-client,e4e44a7;9a01291,M22_sub-05
+m9-sparse-vector-storage-payload-consolidat,M22_sub-06,"Sparse Vector Storage, Payload Consolidation, and Collection Validation",Quality,qdrant-client,d6f79fd;d5ef5cc;c7dd438;4f9f8bb;63b1d2e;c10adff;e39d152;fd5c7f5;88ab315;56397f3;0cb8f0b;6d287c3;3b00b3f,M22_sub-05
+m10-grpc-payload-conversion-performance-qdra,M24,gRPC Payload Conversion Performance + Qdrant gRPC and Internal Protocol Extensions (cross-repo),Quality,qdrant;qdrant-client,789eced;cbb9d43;70e3d30;7a55e3a;82728a5;f82ba0b;3885c01;9760417;3c979b8;78ad7bc;278140c;c6cf72a;ef0dc1a;c5c1ba5,M22_sub-05
+m11-qdrantserverless-rust-client,M03,QdrantServerless Rust Client,Feature,rust-client,d5a4f44;8c14f9f;bfd6205;40a7286,M02;M24
+m12-rust-client-v1-19-sdk-sync,M25,Rust Client v1.19 SDK Sync,Feature,rust-client,3631300,M02;M05;M13
+m13-deprecated-search-sdk-sync-in-rust-clien,M14,Deprecated Search SDK Sync in Rust Client,Breaking,rust-client,5ffa732,M25
+m14-qdrantserverless-proto-grpc-stubs-and-da,M04_sub-01,"QdrantServerless Proto, gRPC Stubs, and Data Models",Feature,qdrant-client,111b046;2e497b2,M30
+m15-qdrantserverless-sync-and-async-client-i,M04_sub-02,QdrantServerless Sync and Async Client Implementation,Feature,qdrant-client,2439ecb;28b80bc;1a8140b;9f47286,M04_sub-01
+m16-bm25-and-formula-contract-with-rust-clie,M17_sub-01,BM25 and Formula Contract with Rust Client v1.20 SDK Sync,Feature,qdrant;rust-client,8a5566c;8d788c9;b381478;6f50938;b051def;e70ee32;9614dc0;333ca00;fe27f6a;aba9516;f8acc7c;310d2d7;0dca5bf;2e9bfb5;a5e8e85,M25;M28;M30
+m17-sync-nested-payload-index-parameters-to,M10,Sync Nested Payload Index Parameters to Rust Client,Feature,rust-client,7f44c40,M17_sub-01
+m18-python-client-grpc-and-rest-conversion-f,M34,Python Client gRPC and REST Conversion Fixes,Quality,qdrant-client,200d865;5a0e0d0;715b48b;52153fc;694d317;cffdc09;dcaff1e;9883f5a;b10fad0;0cef98b;9a77f4c;3fe85d3,M22_sub-05
+m19-rust-client-miscellaneous-fixes,M36,Rust Client Miscellaneous Fixes,Quality,rust-client,20f2b45;1a6c046,

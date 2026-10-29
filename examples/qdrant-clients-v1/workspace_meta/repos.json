@@ -1,0 +1,100 @@
+{
+  "qdrant": {
+    "name": "qdrant",
+    "owner": "qdrant",
+    "repo": "qdrant",
+    "role": "contract",
+    "start": "v1.18.0",
+    "end": "v1.20.0",
+    "since": "",
+    "until": "",
+    "main_branch": "master",
+    "repo_src_dirs": [
+      "lib/api/"
+    ],
+    "test_dirs": [
+      "tests/**",
+      "**/tests/**"
+    ],
+    "exclude": [],
+    "contract_paths": [
+      "lib/api/src/grpc/proto/**/*.proto",
+      "docs/redoc/master/openapi.json"
+    ],
+    "base_image_name": null,
+    "build_command": null,
+    "repo_id": "qdrant_qdrant",
+    "checkout_path": "/Users/iamanimesh/workspace/csf-data/experiments/DeepCommit/DATA/trial_space/qdrant_clients_v1_v1/repo_data/qdrant",
+    "preprocessed_dir": "/Users/iamanimesh/workspace/csf-data/experiments/DeepCommit/DATA/github_data/preprocessed/qdrant_qdrant_v1.18.0_v1.20.0",
+    "prefixed_src_dirs": [
+      "qdrant/lib/api/"
+    ],
+    "prefixed_test_dirs": [
+      "qdrant/tests/**",
+      "**/tests/**"
+    ],
+    "prefixed_exclude": []
+  },
+  "rust-client": {
+    "name": "rust-client",
+    "owner": "qdrant",
+    "repo": "rust-client",
+    "role": "sdk",
+    "start": "v1.18.0",
+    "end": "v1.20.0",
+    "since": "",
+    "until": "",
+    "main_branch": "master",
+    "repo_src_dirs": [
+      "src/"
+    ],
+    "test_dirs": [
+      "tests/**"
+    ],
+    "exclude": [],
+    "contract_paths": [],
+    "base_image_name": null,
+    "build_command": null,
+    "repo_id": "qdrant_rust-client",
+    "checkout_path": "/Users/iamanimesh/workspace/csf-data/experiments/DeepCommit/DATA/trial_space/qdrant_clients_v1_v1/repo_data/rust-client",
+    "preprocessed_dir": "/Users/iamanimesh/workspace/csf-data/experiments/DeepCommit/DATA/github_data/preprocessed/qdrant_rust-client_v1.18.0_v1.20.0",
+    "prefixed_src_dirs": [
+      "rust-client/src/"
+    ],
+    "prefixed_test_dirs": [
+      "rust-client/tests/**"
+    ],
+    "prefixed_exclude": []
+  },
+  "qdrant-client": {
+    "name": "qdrant-client",
+    "owner": "qdrant",
+    "repo": "qdrant-client",
+    "role": "sdk",
+    "start": "v1.18.0",
+    "end": "v1.20.0",
+    "since": "",
+    "until": "",
+    "main_branch": "master",
+    "repo_src_dirs": [
+      "qdrant_client/"
+    ],
+    "test_dirs": [
+      "tests/**"
+    ],
+    "exclude": [],
+    "contract_paths": [],
+    "base_image_name": null,
+    "build_command": null,
+    "repo_id": "qdrant_qdrant-client",
+    "checkout_path": "/Users/iamanimesh/workspace/csf-data/experiments/DeepCommit/DATA/trial_space/qdrant_clients_v1_v1/repo_data/qdrant-client",
+    "preprocessed_dir": "/Users/iamanimesh/workspace/csf-data/experiments/DeepCommit/DATA/github_data/preprocessed/qdrant_qdrant-client_v1.18.0_v1.20.0",
+    "prefixed_src_dirs": [
+      "qdrant-client/qdrant_client/"
+    ],
+    "prefixed_test_dirs": [
+      "qdrant-client/tests/**"
+    ],
+    "prefixed_exclude": []
+  }
+}

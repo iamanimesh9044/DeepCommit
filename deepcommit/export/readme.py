@@ -97,9 +97,9 @@ def build(task: Path, report: dict, folded: dict, gates: dict | None = None) -> 
         "",
         "## Running it",
         "",
-        "Needs Harbor 0.25 or newer (multi-step tasks, schema 1.4) and Docker. The image build clones the three repositories "
-        "from GitHub and downloads toolchains, crates and the Qdrant server binary, so the build needs network; the trial itself "
-        "needs none.",
+        "Needs Harbor 0.25 or newer (multi-step tasks, schema 1.4) and Docker. The three repositories (pinned commits) and the Qdrant "
+        "server binary are vendored in `environment/vendor/`, so the build does not depend on GitHub; it still downloads toolchains "
+        "and crates from their registries, so it needs network. The trial itself needs none.",
         "",
         "```bash",
         "harbor run -p <this folder> -a oracle        # gold solution: every step must score 1",

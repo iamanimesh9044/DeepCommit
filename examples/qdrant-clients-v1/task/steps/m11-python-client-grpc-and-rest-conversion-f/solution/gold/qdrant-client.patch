@@ -1,0 +1,448 @@
+diff --git a/qdrant_client/async_qdrant_client.py b/qdrant_client/async_qdrant_client.py
+index 383b7501e5eaae48484b03010881298ef842729f..bafc7ebbe21d250d2857c49677e2de98a7a746ac 100644
+--- a/qdrant_client/async_qdrant_client.py
++++ b/qdrant_client/async_qdrant_client.py
+@@ -63,7 +63,7 @@ class AsyncQdrantClient(AsyncQdrantFastembedMixin):
+             Default: `None`
+         timeout:
+             Timeout for REST and gRPC API requests.
+-            Default: 5 seconds for REST and unlimited for gRPC
++            Default: 5 seconds for both REST and gRPC (when timeout is None)
+         host: Host name of Qdrant service. If url and host are None, set to 'localhost'.
+             Default: `None`
+         path: Persistence path for QdrantLocal. Default: `None`
+diff --git a/qdrant_client/async_qdrant_remote.py b/qdrant_client/async_qdrant_remote.py
+index cff6bada3af150369b605fb32744c59b5148308a..7fa9bc6cb8388664d5712ea0196caa421db18cb5 100644
+--- a/qdrant_client/async_qdrant_remote.py
++++ b/qdrant_client/async_qdrant_remote.py
+@@ -24,6 +24,7 @@ from qdrant_client import grpc as grpc
+ from qdrant_client._pydantic_compat import construct, model_copy
+ from qdrant_client.auth import BearerAuth
+ from qdrant_client.async_client_base import AsyncQdrantBase
++from qdrant_client.common.validation import validate_batch_lengths
+ from qdrant_client.common.version_check import is_compatible, get_server_version
+ from qdrant_client.connection import get_async_channel as get_channel
+ from qdrant_client.conversions import common_types as types
+@@ -978,6 +979,7 @@ class AsyncQdrantRemote(AsyncQdrantBase):
+     ) -> types.UpdateResult:
+         if self._prefer_grpc:
+             if isinstance(points, models.Batch):
++                validate_batch_lengths(points)
+                 vectors_batch: list[grpc.Vectors] = RestToGrpc.convert_batch_vector_struct(
+                     points.vectors, len(points.ids)
+                 )
+@@ -2060,6 +2062,8 @@ class AsyncQdrantRemote(AsyncQdrantBase):
+                 "wait": wait,
+                 "shard_key_selector": shard_key_selector,
+                 "options": self._grpc_options,
++                "compression": self._grpc_compression,
++                "auth_token_provider": self._auth_token_provider,
+                 "timeout": self._timeout,
+                 "update_filter": update_filter,
+                 "update_mode": update_mode,
+@@ -2181,6 +2185,11 @@ class AsyncQdrantRemote(AsyncQdrantBase):
+                 index_params = getattr(field_index_params, name)
+                 if isinstance(index_params, grpc.TextIndexParams):
+                     field_schema = grpc.FieldType.FieldTypeText
++                    if index_params.tokenizer == grpc.TokenizerType.Unknown:
++                        field_index_params = grpc.PayloadIndexParams(
++                            text_index_params=index_params
++                        )
++                        field_index_params.text_index_params.tokenizer = grpc.TokenizerType.Word
+                 if isinstance(index_params, grpc.IntegerIndexParams):
+                     field_schema = grpc.FieldType.FieldTypeInteger
+                 if isinstance(index_params, grpc.KeywordIndexParams):
+@@ -2195,6 +2204,8 @@ class AsyncQdrantRemote(AsyncQdrantBase):
+                     field_schema = grpc.FieldType.FieldTypeDatetime
+                 if isinstance(index_params, grpc.UuidIndexParams):
+                     field_schema = grpc.FieldType.FieldTypeUuid
++            if isinstance(ordering, models.WriteOrdering):
++                ordering = RestToGrpc.convert_write_ordering(ordering)
+             request = grpc.CreateFieldIndexCollection(
+                 collection_name=collection_name,
+                 field_name=field_name,
+@@ -2235,6 +2246,8 @@ class AsyncQdrantRemote(AsyncQdrantBase):
+         **kwargs: Any,
+     ) -> types.UpdateResult:
+         if self._prefer_grpc:
++            if isinstance(ordering, models.WriteOrdering):
++                ordering = RestToGrpc.convert_write_ordering(ordering)
+             request = grpc.DeleteFieldIndexCollection(
+                 collection_name=collection_name,
+                 field_name=field_name,
+diff --git a/qdrant_client/common/validation.py b/qdrant_client/common/validation.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3e184a9def8b98088f117145452457d964f0484b
+--- /dev/null
++++ b/qdrant_client/common/validation.py
+@@ -0,0 +1,21 @@
++from qdrant_client.http import models
++
++
++def validate_batch_lengths(batch: models.Batch) -> None:
++    """Reject a batch whose vector or payload columns are not as long as its ids.
++
++    The server validates this for REST only. gRPC has no batch shape, so the client splits
++    the batch into points itself, and indexing the columns by position would silently drop
++    extra values.
++    """
++    num_ids = len(batch.ids)
++    columns = batch.vectors.values() if isinstance(batch.vectors, dict) else [batch.vectors]
++    for vectors in columns:
++        if len(vectors) != num_ids:
++            raise ValueError(
++                f"number of ids and vectors must be equal ({num_ids} != {len(vectors)})"
++            )
++    if batch.payloads is not None and len(batch.payloads) != num_ids:
++        raise ValueError(
++            f"number of ids and payloads must be equal ({num_ids} != {len(batch.payloads)})"
++        )
+diff --git a/qdrant_client/conversions/conversion.py b/qdrant_client/conversions/conversion.py
+index 26b67d345eabd78390e29105148e2c69cec09ea3..d03bd032b42493affbce27bd1e9e51268b1f291a 100644
+--- a/qdrant_client/conversions/conversion.py
++++ b/qdrant_client/conversions/conversion.py
+@@ -15,6 +15,7 @@ from qdrant_client import grpc
+ from qdrant_client.grpc import NullValue, Struct, Value
+ from qdrant_client.http.models import models as rest
+ from qdrant_client._pydantic_compat import construct, to_jsonable_python
++from qdrant_client.common.validation import validate_batch_lengths
+ from qdrant_client.conversions.common_types import get_args_subscribed
+ 
+ 
+@@ -283,7 +284,7 @@ class GrpcToRest:
+             payload_schema=cls.convert_payload_schema(model.payload_schema),
+             segments_count=model.segments_count,
+             status=cls.convert_collection_status(model.status),
+-            points_count=model.points_count,
++            points_count=model.points_count if model.HasField("points_count") else None,
+             indexed_vectors_count=(
+                 model.indexed_vectors_count if model.HasField("indexed_vectors_count") else None
+             ),
+@@ -334,7 +335,8 @@ class GrpcToRest:
+                 if model.HasField("strict_mode_config")
+                 else None
+             ),
+-            metadata=cls.convert_payload(model.metadata) if model.metadata is not None else None,
++            # a proto map is never None, an empty one means no metadata
++            metadata=cls.convert_payload(model.metadata) if len(model.metadata) > 0 else None,
+         )
+ 
+     @classmethod
+@@ -542,7 +544,7 @@ class GrpcToRest:
+     @classmethod
+     def convert_update_result(cls, model: grpc.UpdateResult) -> rest.UpdateResult:
+         return rest.UpdateResult(
+-            operation_id=model.operation_id,
++            operation_id=model.operation_id if model.HasField("operation_id") else None,
+             status=cls.convert_update_status(model.status),
+         )
+ 
+@@ -925,7 +927,7 @@ class GrpcToRest:
+                 if model.HasField("strict_mode_config")
+                 else None
+             ),
+-            metadata=(cls.convert_payload(model.metadata) if model.metadata is not None else None),
++            metadata=(cls.convert_payload(model.metadata) if len(model.metadata) > 0 else None),
+         )
+ 
+     @classmethod
+@@ -1716,8 +1718,8 @@ class GrpcToRest:
+     ) -> rest.IntegerIndexParams:
+         return rest.IntegerIndexParams(
+             type=rest.IntegerIndexType.INTEGER,
+-            range=model.range,
+-            lookup=model.lookup,
++            range=model.range if model.HasField("range") else None,
++            lookup=model.lookup if model.HasField("lookup") else None,
+             is_principal=model.is_principal if model.HasField("is_principal") else None,
+             on_disk=model.on_disk if model.HasField("on_disk") else None,
+             memory=cls.convert_memory(model.memory) if model.HasField("memory") else None,
+@@ -2301,9 +2303,7 @@ class GrpcToRest:
+     ) -> rest.SparseVectorParams:
+         return rest.SparseVectorParams(
+             index=(
+-                cls.convert_sparse_index_config(model.index)
+-                if model.HasField("index") is not None
+-                else None
++                cls.convert_sparse_index_config(model.index) if model.HasField("index") else None
+             ),
+             modifier=(
+                 cls.convert_modifier(model.modifier) if model.HasField("modifier") else None
+@@ -2557,6 +2557,7 @@ class GrpcToRest:
+             return dt
+         if model.HasField("datetime"):
+             return model.datetime
++        raise ValueError(f"invalid StartFrom model: {model}")  # pragma: no cover
+ 
+     @classmethod
+     def convert_order_by(cls, model: grpc.OrderBy) -> rest.OrderBy:
+@@ -3262,8 +3263,14 @@ class RestToGrpc:
+                 else None
+             ),
+             version=model.version,
+-            shard_key=cls.convert_shard_key(model.shard_key) if model.shard_key else None,
+-            order_value=cls.convert_order_value(model.order_value) if model.order_value else None,
++            shard_key=(
++                cls.convert_shard_key(model.shard_key) if model.shard_key is not None else None
++            ),
++            order_value=(
++                cls.convert_order_value(model.order_value)
++                if model.order_value is not None
++                else None
++            ),
+         )
+ 
+     @classmethod
+@@ -3755,8 +3762,14 @@ class RestToGrpc:
+                 if model.vector is not None
+                 else None
+             ),
+-            shard_key=cls.convert_shard_key(model.shard_key) if model.shard_key else None,
+-            order_value=cls.convert_order_value(model.order_value) if model.order_value else None,
++            shard_key=(
++                cls.convert_shard_key(model.shard_key) if model.shard_key is not None else None
++            ),
++            order_value=(
++                cls.convert_order_value(model.order_value)
++                if model.order_value is not None
++                else None
++            ),
+         )
+ 
+     @classmethod
+@@ -3897,6 +3910,8 @@ class RestToGrpc:
+                     vectors.update({key: grpc.Vector(image=cls.convert_image(val))})
+                 elif isinstance(val, rest.InferenceObject):
+                     vectors.update({key: grpc.Vector(object=cls.convert_inference_object(val))})
++                else:
++                    raise ValueError(f"invalid VectorStruct model: vector {key!r} is {val!r}")
+             return grpc.Vectors(vectors=grpc.NamedVectors(vectors=vectors))
+         elif isinstance(model, rest.Document):
+             return grpc.Vectors(vector=grpc.Vector(document=cls.convert_document(model)))
+@@ -4809,6 +4824,7 @@ class RestToGrpc:
+     ) -> list[grpc.PointStruct]:
+         # shard key and update_filter are converted in the parent function
+         if isinstance(model, rest.PointsBatch):
++            validate_batch_lengths(model.batch)
+             vectors_batch: list[grpc.Vectors] = cls.convert_batch_vector_struct(
+                 model.batch.vectors, len(model.batch.ids)
+             )
+@@ -4840,7 +4856,7 @@ class RestToGrpc:
+         if isinstance(model, rest.UpsertOperation):
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.upsert.shard_key)
+-                if model.upsert.shard_key
++                if model.upsert.shard_key is not None
+                 else None
+             )
+             update_filter = (
+@@ -4864,7 +4880,7 @@ class RestToGrpc:
+         elif isinstance(model, rest.DeleteOperation):
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.delete.shard_key)
+-                if model.delete.shard_key
++                if model.delete.shard_key is not None
+                 else None
+             )
+             points_selector = cls.convert_points_selector(model.delete)
+@@ -4885,7 +4901,7 @@ class RestToGrpc:
+ 
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.set_payload.shard_key)
+-                if model.set_payload.shard_key
++                if model.set_payload.shard_key is not None
+                 else None
+             )
+ 
+@@ -4907,7 +4923,7 @@ class RestToGrpc:
+ 
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.overwrite_payload.shard_key)
+-                if model.overwrite_payload.shard_key
++                if model.overwrite_payload.shard_key is not None
+                 else None
+             )
+ 
+@@ -4929,7 +4945,7 @@ class RestToGrpc:
+ 
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.delete_payload.shard_key)
+-                if model.delete_payload.shard_key
++                if model.delete_payload.shard_key is not None
+                 else None
+             )
+ 
+@@ -4943,7 +4959,7 @@ class RestToGrpc:
+         elif isinstance(model, rest.ClearPayloadOperation):
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.clear_payload.shard_key)
+-                if model.clear_payload.shard_key
++                if model.clear_payload.shard_key is not None
+                 else None
+             )
+             points_selector = cls.convert_points_selector(model.clear_payload)
+@@ -4957,7 +4973,7 @@ class RestToGrpc:
+         elif isinstance(model, rest.UpdateVectorsOperation):
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.update_vectors.shard_key)
+-                if model.update_vectors.shard_key
++                if model.update_vectors.shard_key is not None
+                 else None
+             )
+             update_filter = (
+@@ -4984,7 +5000,7 @@ class RestToGrpc:
+ 
+             shard_key_selector = (
+                 cls.convert_shard_key_selector(model.delete_vectors.shard_key)
+-                if model.delete_vectors.shard_key
++                if model.delete_vectors.shard_key is not None
+                 else None
+             )
+ 
+diff --git a/qdrant_client/http/api_client.py b/qdrant_client/http/api_client.py
+index 180a4168290669fd22f6ba1077b655a554dd25b4..0f559aaecf127fda962c826a5b37d0e75e37b2e4 100644
+--- a/qdrant_client/http/api_client.py
++++ b/qdrant_client/http/api_client.py
+@@ -1,6 +1,6 @@
+ from asyncio import get_event_loop
+ from typing import Any, Awaitable, Callable, Dict, Generic, Type, TypeVar, overload
+-from urllib.parse import urljoin
++from urllib.parse import quote, urljoin
+ 
+ from httpx import AsyncClient, Client, Request, Response
+ from pydantic import ValidationError
+@@ -67,6 +67,20 @@ MiddlewareT = Callable[[Request, Send], Response]
+ AsyncMiddlewareT = Callable[[Request, SendAsync], Awaitable[Response]]
+ 
+ 
++def quote_path_params(path_params: Dict[str, Any]) -> Dict[str, str]:
++    # each path param is a single URL segment, so reserved characters have to be escaped,
++    # otherwise a name like `example/collection1` would change the path of the request
++    quoted_params = {}
++    for name, value in path_params.items():
++        value = str(value)
++        # `.` and `..` are resolved as dot segments by urljoin, moving the request to a parent path,
++        # e.g. deleting a payload index `..` would delete the whole collection
++        if value in (".", ".."):
++            raise ValueError(f"{name} can't be {value!r}")
++        quoted_params[name] = quote(value, safe="")
++    return quoted_params
++
++
+ class ApiClient:
+     def __init__(self, host: str, **kwargs: Any) -> None:
+         self.host = host
+@@ -91,7 +105,7 @@ class ApiClient:
+         url = url[1:] if url.startswith("/") else url
+         # in order to do a correct join, url join requires base_url to end with /, and url to not start with /,
+         # since url is treated as an absolute path and might truncate prefix in base_url
+-        url = urljoin(host, url.format(**path_params))
++        url = urljoin(host, url.format(**quote_path_params(path_params)))
+         if "params" in kwargs and "timeout" in kwargs["params"]:
+             kwargs["timeout"] = int(kwargs["params"]["timeout"])
+         request = self._client.build_request(method, url, **kwargs)
+@@ -182,7 +196,7 @@ class AsyncApiClient:
+         url = url[1:] if url.startswith("/") else url
+         # in order to do a correct join, url join requires base_url to end with /, and url to not start with /,
+         # since url is treated as an absolute path and might truncate prefix in base_url
+-        url = urljoin(host, url.format(**path_params))
++        url = urljoin(host, url.format(**quote_path_params(path_params)))
+         if "params" in kwargs and "timeout" in kwargs["params"]:
+             kwargs["timeout"] = int(kwargs["params"]["timeout"])
+         request = self._async_client.build_request(method, url, **kwargs)
+diff --git a/qdrant_client/local/local_collection.py b/qdrant_client/local/local_collection.py
+index 9ff64425c8fe1f0c30b23f15f60ddb513bf58b7b..8f0ed9c4259292567a9dcdb1445bf1c7c4243854 100644
+--- a/qdrant_client/local/local_collection.py
++++ b/qdrant_client/local/local_collection.py
+@@ -15,6 +15,7 @@ import numpy as np
+ 
+ from qdrant_client import grpc as grpc
+ from qdrant_client.common.client_warnings import show_warning_once
++from qdrant_client.common.validation import validate_batch_lengths
+ from qdrant_client._pydantic_compat import (
+     construct,
+     to_dict,
+@@ -2820,6 +2821,8 @@ class LocalCollection:
+ 
+         if isinstance(points, models.Batch):
+             batch = points
++            # indexing the columns below would drop extra values or fail on missing ones
++            validate_batch_lengths(batch)
+             if isinstance(batch.vectors, list):
+                 vectors = {DEFAULT_VECTOR_NAME: batch.vectors}
+             else:
+diff --git a/qdrant_client/qdrant_client.py b/qdrant_client/qdrant_client.py
+index 9d0d48c4117e9d790b33b382004475ca48f20ec1..daff5bb0164754d8ac6b4ed41916612bff36bb65 100644
+--- a/qdrant_client/qdrant_client.py
++++ b/qdrant_client/qdrant_client.py
+@@ -62,7 +62,7 @@ class QdrantClient(QdrantFastembedMixin):
+             Default: `None`
+         timeout:
+             Timeout for REST and gRPC API requests.
+-            Default: 5 seconds for REST and unlimited for gRPC
++            Default: 5 seconds for both REST and gRPC (when timeout is None)
+         host: Host name of Qdrant service. If url and host are None, set to 'localhost'.
+             Default: `None`
+         path: Persistence path for QdrantLocal. Default: `None`
+diff --git a/qdrant_client/qdrant_remote.py b/qdrant_client/qdrant_remote.py
+index ed1f71f488bb92e848a23ca029dce65d038a0ea6..c09a68aef60abeadaf7f8d9b139732fbf7fa888a 100644
+--- a/qdrant_client/qdrant_remote.py
++++ b/qdrant_client/qdrant_remote.py
+@@ -25,6 +25,7 @@ from qdrant_client import grpc as grpc
+ from qdrant_client._pydantic_compat import construct, model_copy
+ from qdrant_client.auth import BearerAuth
+ from qdrant_client.client_base import QdrantBase
++from qdrant_client.common.validation import validate_batch_lengths
+ from qdrant_client.common.version_check import is_compatible, get_server_version
+ from qdrant_client.connection import get_channel
+ from qdrant_client.conversions import common_types as types
+@@ -1112,6 +1113,7 @@ class QdrantRemote(QdrantBase):
+     ) -> types.UpdateResult:
+         if self._prefer_grpc:
+             if isinstance(points, models.Batch):
++                validate_batch_lengths(points)
+                 vectors_batch: list[grpc.Vectors] = RestToGrpc.convert_batch_vector_struct(
+                     points.vectors, len(points.ids)
+                 )
+@@ -2239,6 +2241,8 @@ class QdrantRemote(QdrantBase):
+                 "wait": wait,
+                 "shard_key_selector": shard_key_selector,
+                 "options": self._grpc_options,
++                "compression": self._grpc_compression,
++                "auth_token_provider": self._auth_token_provider,
+                 "timeout": self._timeout,
+                 "update_filter": update_filter,
+                 "update_mode": update_mode,
+@@ -2375,6 +2379,12 @@ class QdrantRemote(QdrantBase):
+                 index_params = getattr(field_index_params, name)
+                 if isinstance(index_params, grpc.TextIndexParams):
+                     field_schema = grpc.FieldType.FieldTypeText
++                    if index_params.tokenizer == grpc.TokenizerType.Unknown:
++                        # an unset tokenizer is rejected over grpc, while REST defaults it to word
++                        field_index_params = grpc.PayloadIndexParams(
++                            text_index_params=index_params
++                        )
++                        field_index_params.text_index_params.tokenizer = grpc.TokenizerType.Word
+ 
+                 if isinstance(index_params, grpc.IntegerIndexParams):
+                     field_schema = grpc.FieldType.FieldTypeInteger
+@@ -2397,6 +2407,9 @@ class QdrantRemote(QdrantBase):
+                 if isinstance(index_params, grpc.UuidIndexParams):
+                     field_schema = grpc.FieldType.FieldTypeUuid
+ 
++            if isinstance(ordering, models.WriteOrdering):
++                ordering = RestToGrpc.convert_write_ordering(ordering)
++
+             request = grpc.CreateFieldIndexCollection(
+                 collection_name=collection_name,
+                 field_name=field_name,
+@@ -2438,6 +2451,9 @@ class QdrantRemote(QdrantBase):
+         **kwargs: Any,
+     ) -> types.UpdateResult:
+         if self._prefer_grpc:
++            if isinstance(ordering, models.WriteOrdering):
++                ordering = RestToGrpc.convert_write_ordering(ordering)
++
+             request = grpc.DeleteFieldIndexCollection(
+                 collection_name=collection_name,
+                 field_name=field_name,

@@ -1,0 +1,2779 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index bb15f19f83663d02d6b81d212322b85a94a2a60c..f63b26053a592b5c5b98ccade19760850274254a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -43,6 +43,10 @@ uuid = ["dep:uuid"]
+ name = "query"
+ required-features = ["serde"]
+ 
++[[example]]
++name = "serverless"
++required-features = ["serde"]
++
+ [package.metadata.docs.rs]
+ features = ["download_snapshots", "serde"]
+ no-default-features = true
+diff --git a/examples/serverless.rs b/examples/serverless.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c89a314e23e83177c5fe581348f63090ea1d1b4d
+--- /dev/null
++++ b/examples/serverless.rs
+@@ -0,0 +1,82 @@
++//! Example of using the Qdrant Serverless client.
++//!
++//! **In development — do not use yet.** This client is experimental and unstable;
++//! it may change without notice and is not ready for production or general use.
++//!
++//! Collection management uses the simplified serverless API; point operations
++//! (query, upsert, ...) work like in the regular client (unsupported cluster
++//! parameters are stripped before each RPC).
++//!
++//! ```bash
++//! cargo run --example serverless --features serde
++//! ```
++
++use qdrant_client::qdrant::{PointStruct, QueryPointsBuilder, UpsertPointsBuilder};
++use qdrant_client::serverless::{
++    CollectionConfig, DenseVectorConfig, Distance, KeywordIndex, ListCollectionsBuilder,
++    QdrantServerless,
++};
++use qdrant_client::{Payload, QdrantError};
++
++#[tokio::main]
++async fn main() -> Result<(), QdrantError> {
++    let client =
++        QdrantServerless::from_url("https://serverless.plush-volt.aws.development-cloud.qdrant.io")
++            .api_key("<your api key>")
++            .build()?;
++
++    let collection_name = "my-collection";
++
++    // make the example rerunnable: creating an existing collection returns ALREADY_EXISTS
++    if client.collection_exists(collection_name).await? {
++        client.delete_collection(collection_name).await?;
++    }
++
++    // serverless-specific collection management: no quantization, wal,
++    // segment number etc. - the serverless manager decides those
++    let result = client
++        .create_collection(
++            collection_name,
++            CollectionConfig::new()
++                .dense_vector(DenseVectorConfig::new(4, Distance::Cosine))
++                .payload_index("color", KeywordIndex::new()),
++        )
++        .await?;
++    println!("create_collection: {result:?}");
++
++    println!(
++        "collections: {:?}",
++        client
++            .list_collections(ListCollectionsBuilder::new())
++            .await?
++    );
++    println!("info: {:?}", client.get_collection(collection_name).await?);
++
++    let points = vec![
++        PointStruct::new(
++            1,
++            vec![0.1, 0.2, 0.3, 0.4],
++            Payload::try_from(serde_json::json!({"color": "red"})).unwrap(),
++        ),
++        PointStruct::new(
++            2,
++            vec![0.4, 0.3, 0.2, 0.1],
++            Payload::try_from(serde_json::json!({"color": "blue"})).unwrap(),
++        ),
++    ];
++    client
++        .upsert_points(UpsertPointsBuilder::new(collection_name, points))
++        .await?;
++
++    let hits = client
++        .query(
++            QueryPointsBuilder::new(collection_name)
++                .query(vec![0.1, 0.2, 0.3, 0.4])
++                .limit(10),
++        )
++        .await?;
++    println!("query: {hits:?}");
++
++    client.delete_collection(collection_name).await?;
++    Ok(())
++}
+diff --git a/proto/serverless_collections.proto b/proto/serverless_collections.proto
+new file mode 100644
+index 0000000000000000000000000000000000000000..19e4f57efa58e4be467965fb422c7882780b2b23
+--- /dev/null
++++ b/proto/serverless_collections.proto
+@@ -0,0 +1,294 @@
++// Source: https://github.com/qdrant/qdrant-cloud-public-api/blob/main/proto/qdrant/serverless/collections.proto
++// Renamed to serverless_collections.proto to sit alongside the regular collections.proto.
++// Client copy: buf.validate options are stripped (server-side only; wire format unchanged).
++// Regenerate with: cargo test --test serverless_protos -- --ignored --nocapture
++
++syntax = "proto3";
++
++package qdrant.serverless;
++
++
++// CollectionsService manages the collections of a qdrant serverless space.
++// Unlike the qdrant server API, it exposes only a simplified configuration:
++// the manager turns it into concrete qdrant settings, which are never
++// exposed to the tenant.
++service CollectionsService {
++  // Creates a collection with the given tenant-facing configuration.
++  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse);
++  // Deletes a collection and all of its data.
++  rpc DeleteCollection(DeleteCollectionRequest) returns (DeleteCollectionResponse);
++  // Returns a single collection's configuration and stats.
++  rpc GetCollection(GetCollectionRequest) returns (GetCollectionResponse);
++  // Lists the caller's collections.
++  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
++}
++
++// Distance metric used to compare dense vectors.
++enum Distance {
++  // Unset; a concrete metric is required.
++  DISTANCE_UNSPECIFIED = 0;
++  // Cosine similarity.
++  COSINE = 1;
++  // Euclidean (L2) distance.
++  EUCLID = 2;
++  // Dot product.
++  DOT = 3;
++  // Manhattan (L1) distance.
++  MANHATTAN = 4;
++}
++
++// How much of the original vector precision may be traded for cost. The manager
++// turns this into a concrete quantization / datatype choice; the tenant never
++// picks scalar/product/binary quantization or its parameters directly.
++enum PrecisionTier {
++  // Unset: HIGH.
++  PRECISION_TIER_UNSPECIFIED = 0;
++  // Aggressive compression, lowest cost, approximate results.
++  LOW = 1;
++  // Moderate compression with a small accuracy trade-off.
++  MEDIUM = 2;
++  // Light compression, near-exact results.
++  HIGH = 3;
++  // No lossy compression: exact vectors, fully in memory. Highest cost.
++  FULL = 4;
++}
++
++// Configuration of a single dense (embedding) vector.
++message DenseVectorConfig {
++  // Dimensionality of the embedding, e.g. 512 (CLIP), 1536, 3072.
++  uint64 size = 1;
++  // Distance metric used to compare vectors.
++  Distance distance = 2;
++  // Store several sub-vectors per point and compare with max-sim, for
++  // late-interaction models (ColBERT, ColPali, ...).
++  bool multivector = 3;
++  // Precision/cost trade-off for this vector. Unset: HIGH.
++  optional PrecisionTier precision_tier = 4;
++}
++
++// Configuration of a single sparse vector.
++message SparseVectorConfig {
++  // Apply the IDF modifier at query time. Enable for BM25-style models that
++  // expect inverse-document-frequency weighting.
++  bool use_idf = 1;
++  // Precision/cost trade-off for this vector. Unset: HIGH.
++  optional PrecisionTier precision_tier = 2;
++}
++
++// Full-text tokenizer, mirrors qdrant's `TokenizerType`.
++enum Tokenizer {
++  // Unset: WHITESPACE.
++  TOKENIZER_UNSPECIFIED = 0;
++  // Index every prefix of each token.
++  PREFIX = 1;
++  // Split on whitespace.
++  WHITESPACE = 2;
++  // Split on word boundaries.
++  WORD = 3;
++  // Language-aware tokenization.
++  MULTILINGUAL = 4;
++}
++
++// Exact match on string values, e.g. `color: "red"`.
++message KeywordIndex {
++  // If set, enable prefix matching (`match: { "prefix": ... }`) on this field.
++  // Presence of this message enables prefix matching; it has no options yet.
++  optional KeywordPrefixParams prefix = 1;
++}
++
++// Prefix matching options for the keyword index. Has no options yet:
++// presence of this message enables prefix matching.
++message KeywordPrefixParams {}
++
++// Exact match and/or range filters on integers, e.g. `age: 25`. Both are on
++// by default; turning one off shrinks the index.
++message IntegerIndex {
++  // Support exact-match filters.
++  optional bool lookup = 1;
++  // Support range filters.
++  optional bool range = 2;
++}
++
++// Range filters on floating point (and integer) numbers, e.g. `price: 99.5`.
++message FloatIndex {}
++
++// Exact match on UUID strings; like keyword but stored compactly.
++message UuidIndex {}
++
++// Range filters on RFC 3339 datetimes, e.g. `created_at: "2023-02-08T10:49:00Z"`.
++message DatetimeIndex {}
++
++// Tokens ignored by a full-text index. Language names match qdrant (e.g.
++// "english"); predefined lists and custom tokens are merged.
++message StopwordsSet {
++  // Languages whose predefined stopword lists to apply.
++  repeated string languages = 1;
++  // Extra stopwords to ignore, merged with the language lists.
++  repeated string custom = 2;
++}
++
++// Snowball stemming for a full-text index.
++message SnowballParams {
++  // Language for the snowball algorithm, e.g. "english".
++  string language = 1;
++}
++
++// Explicitly disable stemming (overrides any language default).
++message DisabledStemmer {}
++
++// Stemming algorithm for a full-text index. Unset: no stemming.
++message StemmingAlgorithm {
++  // Which stemming algorithm to use.
++  oneof stemming_params {
++    // Snowball stemmer for the given language.
++    SnowballParams snowball = 1;
++    // Explicitly disable stemming.
++    DisabledStemmer disabled = 2;
++  }
++}
++
++// Full-text filtering on string values.
++message TextIndex {
++  // Tokenizer to split text with. Unset: WHITESPACE.
++  optional Tokenizer tokenizer = 1;
++  // Lowercase text before indexing. Default true.
++  optional bool lowercase = 2;
++  // Support phrase queries; extra index structure. Default true.
++  optional bool phrase_matching = 3;
++  // Minimum token length to index.
++  optional uint64 min_token_len = 4;
++  // Maximum token length to index.
++  optional uint64 max_token_len = 5;
++  // Fold accented characters to ASCII. Default false.
++  optional bool ascii_folding = 6;
++  // Tokens to ignore at index and query time.
++  optional StopwordsSet stopwords = 7;
++  // Stemming algorithm. Unset: engine default (no stemming).
++  optional StemmingAlgorithm stemmer = 8;
++}
++
++// Geo radius / bounding box / polygon filters on `{lon, lat}` values.
++message GeoIndex {}
++
++// Exact match on booleans, e.g. `is_active: true`.
++message BoolIndex {}
++
++// One payload index. Only the *kind* of filter the field supports is chosen
++// here; storage placement of the index is the manager's decision.
++message PayloadIndexConfig {
++  // The kind of filter the field supports.
++  oneof index {
++    // Exact match on strings.
++    KeywordIndex keyword = 1;
++    // Exact match and/or range filters on integers.
++    IntegerIndex integer = 2;
++    // Range filters on numbers.
++    FloatIndex float = 3;
++    // Exact match on UUIDs.
++    UuidIndex uuid = 4;
++    // Range filters on datetimes.
++    DatetimeIndex datetime = 5;
++    // Full-text filtering.
++    TextIndex text = 6;
++    // Geo filters.
++    GeoIndex geo = 7;
++    // Exact match on booleans.
++    BoolIndex bool = 8;
++  }
++}
++
++// The tenant's collection config. Persisted verbatim. At least one dense or
++// sparse vector is required.
++message CollectionConfig {
++  // Keyed by vector name. The empty name "" is the unnamed default vector, as
++  // in qdrant; a collection either has the single unnamed vector or named ones.
++  map<string, DenseVectorConfig> dense_vectors = 1;
++  // Keyed by vector name.
++  map<string, SparseVectorConfig> sparse_vectors = 2;
++  // Keyed by payload field name (JSON path, e.g. `user_id` or `meta.tags`).
++  map<string, PayloadIndexConfig> payload_indexes = 3;
++}
++
++// Every request names the collection by its tenant-facing name only. The
++// tenant (`x-account-id`, `x-space-id`) travels in gRPC metadata, injected by
++// auth. The storage id is the manager's: minted on create, resolved
++// internally on get/delete.
++message CreateCollectionRequest {
++  // Tenant-facing name of the collection to create.
++  string collection_name = 1;
++  // The collection's configuration.
++  CollectionConfig config = 2;
++}
++
++// Result of a create.
++message CreateCollectionResponse {
++  // Tenant-facing name of the collection.
++  string collection_name = 1;
++  // Outcome, e.g. "created", "already exists".
++  string result = 2;
++  // Time spent to process
++  double time = 3;
++}
++
++// Names the collection to delete.
++message DeleteCollectionRequest {
++  // Tenant-facing name of the collection to delete.
++  string collection_name = 1;
++}
++
++// Result of a delete.
++message DeleteCollectionResponse {
++  // Whether the collection existed and was deleted.
++  bool deleted = 1;
++  // Time spent to process
++  double time = 2;
++}
++
++// Names the collection to fetch.
++message GetCollectionRequest {
++  // Tenant-facing name of the collection.
++  string collection_name = 1;
++}
++
++// The collection's configuration and stats, if it exists.
++message GetCollectionResponse {
++  // Whether the collection exists.
++  bool exists = 1;
++  // The configuration the collection was created with.
++  optional CollectionConfig config = 2;
++  // Available points as of the last applied write (eventually consistent);
++  // absent until the updater has written stats for the collection.
++  optional uint64 point_count = 3;
++  // Time spent to process
++  double time = 4;
++}
++
++// Lists the caller's collections. The tenant travels in metadata.
++message ListCollectionsRequest {
++  // Maximum number of collections to return. Defaults to 20 and must not
++  // exceed 100.
++  optional uint32 limit = 1;
++  // Opaque token returned as `next_offset_token` by the previous page. Clients
++  // must not interpret this value.
++  optional string offset_token = 2;
++}
++
++// One collection in a listing.
++message CollectionSummary {
++  // Tenant-facing name of the collection.
++  string collection_name = 1;
++  // Available points as of the last applied write (eventually consistent);
++  // absent until the updater has written stats for the collection.
++  optional uint64 point_count = 2;
++}
++
++// The caller's collections.
++message ListCollectionsResponse {
++  // Collections in this page.
++  repeated CollectionSummary collections = 1;
++  // Opaque token to pass as `offset_token` to retrieve the next page. Absent
++  // when there are no more results.
++  optional string next_offset_token = 2;
++  // Time spent to process
++  double time = 3;
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index b0cc2de7ec4d01b40d528d928b972a6c75dc8d96..4a71a4a41b8f08c3c98a7b9281f698295547b5a9 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -146,6 +146,8 @@ mod payload;
+ mod qdrant_client;
+ #[cfg(feature = "serde")]
+ mod serde_impl;
++/// Client for Qdrant Serverless (**in development — do not use yet**)
++pub mod serverless;
+ 
+ #[cfg(feature = "serde")]
+ pub mod serde_deser;
+diff --git a/src/qdrant_client/mod.rs b/src/qdrant_client/mod.rs
+index 63760373d0da815e47110dce791c8c2436eced43..e7a32baa432d2f41790259bbe1007a27fba32306 100644
+--- a/src/qdrant_client/mod.rs
++++ b/src/qdrant_client/mod.rs
+@@ -190,8 +190,16 @@ impl Qdrant {
+         QdrantBuilder::from_url(url)
+     }
+ 
++    /// Shared connection pool (used by the serverless client for CollectionsService).
++    pub(crate) fn channel(&self) -> &Arc<ChannelPool> {
++        &self.channel
++    }
++
+     /// Wraps a channel with a metadata interceptor (api key + custom headers)
+-    fn with_api_key(&self, channel: Channel) -> InterceptedService<Channel, MetadataInterceptor> {
++    pub(crate) fn with_api_key(
++        &self,
++        channel: Channel,
++    ) -> InterceptedService<Channel, MetadataInterceptor> {
+         let interceptor = MetadataInterceptor::new(
+             self.config.api_key.clone(),
+             self.config.custom_headers.clone(),
+diff --git a/src/serverless/client.rs b/src/serverless/client.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a39597906fb9b960c428d4871b98c8579b52e4c8
+--- /dev/null
++++ b/src/serverless/client.rs
+@@ -0,0 +1,581 @@
++//! Client for Qdrant Serverless.
++//!
++//! **In development — do not use yet.** This API is experimental and unstable;
++//! it may change without notice and is not ready for production or general use.
++//!
++//! Serverless exposes the same point-level API as a regular Qdrant cluster (minus
++//! read consistency, shard selection, write ordering and filtered updates), but a
++//! much simpler, tenant-facing collection management API. Point operations are
++//! delegated to the regular gRPC client; collection operations talk to the
++//! serverless CollectionsService.
++
++use std::future::Future;
++
++use tonic::codegen::InterceptedService;
++use tonic::transport::{Channel, Uri};
++use tonic::Status;
++
++use crate::auth::MetadataInterceptor;
++use crate::config::{AsOptionApiKey, AsTimeout, CompressionEncoding, QdrantConfig};
++use crate::qdrant::{
++    ClearPayloadPoints, CountPoints, CountResponse, DeletePayloadPoints, DeletePointVectors,
++    DeletePoints, GetPoints, GetResponse, PointsOperationResponse, QueryBatchPoints,
++    QueryBatchResponse, QueryGroupsResponse, QueryPointGroups, QueryPoints, QueryResponse,
++    ScrollPoints, ScrollResponse, SetPayloadPoints, UpdateBatchPoints, UpdateBatchResponse,
++    UpdatePointVectors, UpsertPoints,
++};
++use crate::qdrant_client::QdrantResult;
++use crate::serverless::conversions::{collection_config_from_grpc, collection_config_to_grpc};
++use crate::serverless::grpc::collections_service_client::CollectionsServiceClient;
++use crate::serverless::grpc::{
++    CreateCollectionRequest, DeleteCollectionRequest, GetCollectionRequest, ListCollectionsRequest,
++};
++use crate::serverless::models::{
++    CollectionConfig, CollectionInfo, CollectionSummary, CollectionsList, CreateCollectionResult,
++    DeleteCollectionResult, ListCollections,
++};
++use crate::Qdrant;
++
++/// Default gRPC port for serverless when the URL omits an explicit port.
++///
++/// Serverless is exposed on the standard TLS port, not on Qdrant's 6334.
++pub const DEFAULT_SERVERLESS_GRPC_PORT: u16 = 443;
++
++/// Entry point to a Qdrant Serverless space.
++///
++/// **In development — do not use yet.** This client is experimental and unstable;
++/// the API may change without notice and is not ready for production or general use.
++///
++/// Point operations behave like in the regular [`Qdrant`] client, except that
++/// parameters serverless does not support (read consistency, shard selection,
++/// write ordering, filtered updates, cross-collection lookups) are cleared
++/// before the request is sent. Collection management uses the simplified
++/// serverless API: only the tenant-facing configuration is exposed; storage
++/// internals (quantization, WAL, segments, ...) are decided by the serverless
++/// manager.
++///
++/// # Example
++///
++/// ```no_run
++/// use qdrant_client::serverless::{
++///     CollectionConfig, DenseVectorConfig, Distance, KeywordIndex, QdrantServerless,
++/// };
++/// use qdrant_client::qdrant::{PointStruct, QueryPointsBuilder, UpsertPointsBuilder};
++/// use qdrant_client::Payload;
++///
++/// # async fn run() -> Result<(), qdrant_client::QdrantError> {
++/// let client = QdrantServerless::from_url("https://serverless.example.cloud.qdrant.io")
++///     .api_key("<your api key>")
++///     .build()?;
++///
++/// client
++///     .create_collection(
++///         "my-collection",
++///         CollectionConfig::new()
++///             .dense_vector(DenseVectorConfig::new(4, Distance::Cosine))
++///             .payload_index("color", KeywordIndex::new()),
++///     )
++///     .await?;
++///
++/// client
++///     .upsert_points(UpsertPointsBuilder::new(
++///         "my-collection",
++///         vec![PointStruct::new(1, vec![0.1, 0.2, 0.3, 0.4], Payload::default())],
++///     ))
++///     .await?;
++///
++/// client
++///     .query(QueryPointsBuilder::new("my-collection").query(vec![0.1, 0.2, 0.3, 0.4]))
++///     .await?;
++/// # Ok(())
++/// # }
++/// ```
++#[derive(Clone)]
++pub struct QdrantServerless {
++    points: Qdrant,
++}
++
++/// Builder for [`QdrantServerless`].
++///
++/// Defaults differ from the regular [`Qdrant`] client:
++/// - compatibility checks are skipped (serverless has no matching server version)
++/// - URLs without an explicit port default to port [`DEFAULT_SERVERLESS_GRPC_PORT`] (443)
++#[derive(Clone)]
++pub struct QdrantServerlessBuilder {
++    config: QdrantConfig,
++}
++
++impl QdrantServerless {
++    /// Start configuring a serverless client from a base URL.
++    ///
++    /// ```no_run
++    /// use qdrant_client::serverless::QdrantServerless;
++    ///
++    /// # fn main() -> Result<(), qdrant_client::QdrantError> {
++    /// let client = QdrantServerless::from_url("https://serverless.example.cloud.qdrant.io")
++    ///     .api_key(std::env::var("QDRANT_API_KEY"))
++    ///     .build()?;
++    /// # Ok(())
++    /// # }
++    /// ```
++    pub fn from_url(url: &str) -> QdrantServerlessBuilder {
++        QdrantServerlessBuilder {
++            config: QdrantConfig {
++                uri: normalize_serverless_url(url),
++                check_compatibility: false,
++                ..QdrantConfig::default()
++            },
++        }
++    }
++
++    /// Create a serverless client from an existing config.
++    ///
++    /// Compatibility checks are forced off. Prefer [`Self::from_url`].
++    pub fn new(mut config: QdrantConfig) -> QdrantResult<Self> {
++        config.check_compatibility = false;
++        config.uri = normalize_serverless_url(&config.uri);
++        Ok(Self {
++            points: Qdrant::new(config)?,
++        })
++    }
++
++    async fn with_collections_client<T, O: Future<Output = Result<T, Status>>>(
++        &self,
++        f: impl Fn(CollectionsServiceClient<InterceptedService<Channel, MetadataInterceptor>>) -> O,
++    ) -> QdrantResult<T> {
++        let result = self
++            .points
++            .channel()
++            .with_channel(
++                |channel| {
++                    let service = self.points.with_api_key(channel);
++                    let mut client = CollectionsServiceClient::new(service)
++                        .max_decoding_message_size(usize::MAX);
++                    if let Some(compression) = self.points.config.compression {
++                        client = client
++                            .send_compressed(compression.into())
++                            .accept_compressed(compression.into());
++                    }
++                    f(client)
++                },
++                true,
++            )
++            .await?;
++        Ok(result)
++    }
++}
++
++/// # Construct and connect
++impl QdrantServerlessBuilder {
++    /// Set an optional API key (sent as `api-key` metadata).
++    pub fn api_key(mut self, api_key: impl AsOptionApiKey) -> Self {
++        self.config.api_key = api_key.api_key();
++        self
++    }
++
++    /// Set the timeout for API requests.
++    pub fn timeout(mut self, timeout: impl AsTimeout) -> Self {
++        self.config.timeout = timeout.timeout();
++        self
++    }
++
++    /// Set the connect timeout.
++    pub fn connect_timeout(mut self, timeout: impl AsTimeout) -> Self {
++        self.config.connect_timeout = timeout.timeout();
++        self
++    }
++
++    /// Set optional request compression.
++    pub fn compression(mut self, compression: Option<CompressionEncoding>) -> Self {
++        self.config.compression = compression;
++        self
++    }
++
++    /// Add a custom header to send with every request.
++    pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
++        self.config.custom_headers.push((key.into(), value.into()));
++        self
++    }
++
++    /// Keep idle connections alive.
++    pub fn keep_alive_while_idle(mut self) -> Self {
++        self.config.keep_alive_while_idle = true;
++        self
++    }
++
++    /// Build the configured [`QdrantServerless`] client.
++    pub fn build(self) -> QdrantResult<QdrantServerless> {
++        QdrantServerless::new(self.config)
++    }
++}
++
++/// # Collection operations
++///
++/// Simplified, tenant-facing collection management. Storage internals are not exposed.
++impl QdrantServerless {
++    /// Creates a collection with the given tenant-facing configuration.
++    ///
++    /// At least one dense or sparse vector is required. Unlike the regular client,
++    /// no storage internals (quantization, WAL, segment number, ...) can be
++    /// configured: the serverless manager decides those.
++    pub async fn create_collection(
++        &self,
++        collection_name: impl Into<String>,
++        config: CollectionConfig,
++    ) -> QdrantResult<CreateCollectionResult> {
++        let request = CreateCollectionRequest {
++            collection_name: collection_name.into(),
++            config: Some(collection_config_to_grpc(&config)),
++        };
++        let request = &request;
++        self.with_collections_client(|mut api| async move {
++            let response = api.create_collection(request.clone()).await?.into_inner();
++            Ok(CreateCollectionResult {
++                collection_name: response.collection_name,
++                result: response.result,
++                time: response.time,
++            })
++        })
++        .await
++    }
++
++    /// Deletes a collection and all of its data.
++    pub async fn delete_collection(
++        &self,
++        collection_name: impl Into<String>,
++    ) -> QdrantResult<DeleteCollectionResult> {
++        let request = DeleteCollectionRequest {
++            collection_name: collection_name.into(),
++        };
++        let request = &request;
++        self.with_collections_client(|mut api| async move {
++            let response = api.delete_collection(request.clone()).await?.into_inner();
++            Ok(DeleteCollectionResult {
++                deleted: response.deleted,
++                time: response.time,
++            })
++        })
++        .await
++    }
++
++    /// Returns a collection's configuration and stats.
++    ///
++    /// Unlike the regular client, does not error if the collection is missing:
++    /// check the [`CollectionInfo::exists`] field of the result.
++    pub async fn get_collection(
++        &self,
++        collection_name: impl Into<String>,
++    ) -> QdrantResult<CollectionInfo> {
++        let request = GetCollectionRequest {
++            collection_name: collection_name.into(),
++        };
++        let request = &request;
++        let response = self
++            .with_collections_client(|mut api| async move {
++                Ok(api.get_collection(request.clone()).await?.into_inner())
++            })
++            .await?;
++        Ok(CollectionInfo {
++            exists: response.exists,
++            config: response
++                .config
++                .as_ref()
++                .map(collection_config_from_grpc)
++                .transpose()?,
++            point_count: response.point_count,
++            time: response.time,
++        })
++    }
++
++    /// Checks whether a collection exists.
++    pub async fn collection_exists(
++        &self,
++        collection_name: impl Into<String>,
++    ) -> QdrantResult<bool> {
++        Ok(self.get_collection(collection_name).await?.exists)
++    }
++
++    /// Lists a page of collections in the space.
++    ///
++    /// Defaults to the server page size (20, max 100). Pass `offset_token` from a
++    /// previous response's `next_offset_token` to fetch the next page.
++    ///
++    /// ```no_run
++    /// # use qdrant_client::serverless::{ListCollectionsBuilder, QdrantServerless};
++    /// # async fn run(client: QdrantServerless) -> Result<(), qdrant_client::QdrantError> {
++    /// let page = client
++    ///     .list_collections(ListCollectionsBuilder::new().limit(50))
++    ///     .await?;
++    /// if let Some(token) = page.next_offset_token {
++    ///     let next = client
++    ///         .list_collections(ListCollectionsBuilder::new().offset_token(token))
++    ///         .await?;
++    /// }
++    /// # Ok(())
++    /// # }
++    /// ```
++    pub async fn list_collections(
++        &self,
++        request: impl Into<ListCollections>,
++    ) -> QdrantResult<CollectionsList> {
++        let ListCollections {
++            limit,
++            offset_token,
++        } = request.into();
++        let request = ListCollectionsRequest {
++            limit,
++            offset_token,
++        };
++        let request = &request;
++        self.with_collections_client(|mut api| async move {
++            let response = api.list_collections(request.clone()).await?.into_inner();
++            Ok(CollectionsList {
++                collections: response
++                    .collections
++                    .into_iter()
++                    .map(|c| CollectionSummary {
++                        collection_name: c.collection_name,
++                        point_count: c.point_count,
++                    })
++                    .collect(),
++                next_offset_token: response.next_offset_token,
++                time: response.time,
++            })
++        })
++        .await
++    }
++}
++
++/// # Point operations
++///
++/// Same semantics as the regular client, minus parameters serverless does not
++/// support. Unsupported fields on the request (`read_consistency`,
++/// `shard_key_selector`, `ordering`, `lookup_from`, `with_lookup`,
++/// `update_filter`, `update_mode`) are cleared before the RPC.
++impl QdrantServerless {
++    /// Query points in a collection.
++    pub async fn query(&self, request: impl Into<QueryPoints>) -> QdrantResult<QueryResponse> {
++        let mut request = request.into();
++        sanitize_query_points(&mut request);
++        self.points.query(request).await
++    }
++
++    /// Batch multiple point queries in a collection.
++    pub async fn query_batch(
++        &self,
++        request: impl Into<QueryBatchPoints>,
++    ) -> QdrantResult<QueryBatchResponse> {
++        let mut request = request.into();
++        request.read_consistency = None;
++        for query in &mut request.query_points {
++            sanitize_query_points(query);
++        }
++        self.points.query_batch(request).await
++    }
++
++    /// Query points and group results by a payload field.
++    pub async fn query_groups(
++        &self,
++        request: impl Into<QueryPointGroups>,
++    ) -> QdrantResult<QueryGroupsResponse> {
++        let mut request = request.into();
++        request.read_consistency = None;
++        request.shard_key_selector = None;
++        request.lookup_from = None;
++        request.with_lookup = None;
++        self.points.query_groups(request).await
++    }
++
++    /// Retrieve points by IDs.
++    pub async fn get_points(&self, request: impl Into<GetPoints>) -> QdrantResult<GetResponse> {
++        let mut request = request.into();
++        request.read_consistency = None;
++        request.shard_key_selector = None;
++        self.points.get_points(request).await
++    }
++
++    /// Scroll over points, optionally filtered.
++    pub async fn scroll(&self, request: impl Into<ScrollPoints>) -> QdrantResult<ScrollResponse> {
++        let mut request = request.into();
++        request.read_consistency = None;
++        request.shard_key_selector = None;
++        self.points.scroll(request).await
++    }
++
++    /// Count points in a collection.
++    pub async fn count(&self, request: impl Into<CountPoints>) -> QdrantResult<CountResponse> {
++        let mut request = request.into();
++        request.read_consistency = None;
++        request.shard_key_selector = None;
++        self.points.count(request).await
++    }
++
++    /// Insert or update points.
++    ///
++    /// Clears `ordering`, `shard_key_selector`, `update_filter`, and `update_mode`.
++    pub async fn upsert_points(
++        &self,
++        request: impl Into<UpsertPoints>,
++    ) -> QdrantResult<PointsOperationResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        request.shard_key_selector = None;
++        request.update_filter = None;
++        request.update_mode = None;
++        self.points.upsert_points(request).await
++    }
++
++    /// Update vectors of existing points.
++    pub async fn update_vectors(
++        &self,
++        request: impl Into<UpdatePointVectors>,
++    ) -> QdrantResult<PointsOperationResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        request.shard_key_selector = None;
++        request.update_filter = None;
++        self.points.update_vectors(request).await
++    }
++
++    /// Delete named vectors from points.
++    pub async fn delete_vectors(
++        &self,
++        request: impl Into<DeletePointVectors>,
++    ) -> QdrantResult<PointsOperationResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        request.shard_key_selector = None;
++        self.points.delete_vectors(request).await
++    }
++
++    /// Delete points by selector.
++    ///
++    /// Prefer selecting by explicit IDs: serverless rejects filtered updates.
++    pub async fn delete_points(
++        &self,
++        request: impl Into<DeletePoints>,
++    ) -> QdrantResult<PointsOperationResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        request.shard_key_selector = None;
++        self.points.delete_points(request).await
++    }
++
++    /// Set (merge) payload on points.
++    pub async fn set_payload(
++        &self,
++        request: impl Into<SetPayloadPoints>,
++    ) -> QdrantResult<PointsOperationResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        request.shard_key_selector = None;
++        self.points.set_payload(request).await
++    }
++
++    /// Overwrite the entire payload of points.
++    pub async fn overwrite_payload(
++        &self,
++        request: impl Into<SetPayloadPoints>,
++    ) -> QdrantResult<PointsOperationResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        request.shard_key_selector = None;
++        self.points.overwrite_payload(request).await
++    }
++
++    /// Delete payload keys from points.
++    pub async fn delete_payload(
++        &self,
++        request: impl Into<DeletePayloadPoints>,
++    ) -> QdrantResult<PointsOperationResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        request.shard_key_selector = None;
++        self.points.delete_payload(request).await
++    }
++
++    /// Clear the entire payload of points.
++    pub async fn clear_payload(
++        &self,
++        request: impl Into<ClearPayloadPoints>,
++    ) -> QdrantResult<PointsOperationResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        request.shard_key_selector = None;
++        self.points.clear_payload(request).await
++    }
++
++    /// Batch point update operations.
++    ///
++    /// Operations with filter-based selectors are rejected by the serverless service.
++    pub async fn batch_update_points(
++        &self,
++        request: impl Into<UpdateBatchPoints>,
++    ) -> QdrantResult<UpdateBatchResponse> {
++        let mut request = request.into();
++        request.ordering = None;
++        self.points.update_points_batch(request).await
++    }
++}
++
++fn sanitize_query_points(request: &mut QueryPoints) {
++    request.read_consistency = None;
++    request.shard_key_selector = None;
++    request.lookup_from = None;
++}
++
++/// Ensure a serverless URL uses port 443 when none is specified.
++fn normalize_serverless_url(url: &str) -> String {
++    match url.parse::<Uri>() {
++        Ok(uri) => {
++            if uri.port().is_some() {
++                return url.to_string();
++            }
++            let scheme = uri.scheme_str().unwrap_or("https");
++            let Some(authority) = uri.authority() else {
++                return url.to_string();
++            };
++            let host = authority.host();
++            let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("");
++            // Avoid duplicating "/" path when the URI has only the default path.
++            let path = if path_and_query == "/" {
++                ""
++            } else {
++                path_and_query
++            };
++            format!("{scheme}://{host}:{DEFAULT_SERVERLESS_GRPC_PORT}{path}")
++        }
++        Err(_) => url.to_string(),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn normalize_adds_default_port() {
++        assert_eq!(
++            normalize_serverless_url("https://serverless.example.qdrant.io"),
++            "https://serverless.example.qdrant.io:443"
++        );
++        assert_eq!(
++            normalize_serverless_url("https://serverless.example.qdrant.io:8443"),
++            "https://serverless.example.qdrant.io:8443"
++        );
++    }
++
++    #[test]
++    fn client_construction_is_offline() {
++        let client = QdrantServerless::from_url("https://serverless.example.qdrant.io")
++            .api_key("secret")
++            .build()
++            .unwrap();
++        assert_eq!(
++            client.points.config.uri,
++            "https://serverless.example.qdrant.io:443"
++        );
++        assert_eq!(client.points.config.api_key.as_deref(), Some("secret"));
++        assert!(!client.points.config.check_compatibility);
++    }
++}
+diff --git a/src/serverless/conversions.rs b/src/serverless/conversions.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9d235604cf8bf931143d083c8a0b8924ddc09a5
+--- /dev/null
++++ b/src/serverless/conversions.rs
+@@ -0,0 +1,448 @@
++//! Conversions between serverless public models and the internal gRPC types.
++//!
++//! Generated gRPC types are an implementation detail and must not leak into
++//! the public interface.
++//!
++//! All struct fields are bound by destructuring (never via `.field` or `_`) so
++//! adding a proto/model field is a compile error until conversions are updated.
++
++use crate::qdrant_client::error::QdrantError;
++use crate::serverless::grpc::{
++    self, payload_index_config, stemming_algorithm, BoolIndex as GrpcBoolIndex,
++    DatetimeIndex as GrpcDatetimeIndex, DenseVectorConfig as GrpcDenseVectorConfig,
++    DisabledStemmer as GrpcDisabledStemmer, Distance as GrpcDistance, FloatIndex as GrpcFloatIndex,
++    GeoIndex as GrpcGeoIndex, IntegerIndex as GrpcIntegerIndex, KeywordIndex as GrpcKeywordIndex,
++    KeywordPrefixParams as GrpcKeywordPrefixParams, PayloadIndexConfig,
++    PrecisionTier as GrpcPrecisionTier, SnowballParams as GrpcSnowballParams,
++    SparseVectorConfig as GrpcSparseVectorConfig, StemmingAlgorithm as GrpcStemmingAlgorithm,
++    StopwordsSet as GrpcStopwordsSet, TextIndex as GrpcTextIndex, Tokenizer as GrpcTokenizer,
++    UuidIndex as GrpcUuidIndex,
++};
++use crate::serverless::models::{
++    BoolIndex, CollectionConfig, DatetimeIndex, DenseVectorConfig, Distance, FloatIndex, GeoIndex,
++    IntegerIndex, KeywordIndex, KeywordPrefixParams, PayloadIndex, PrecisionTier, SnowballParams,
++    SparseVectorConfig, StemmingAlgorithm, StopwordsSet, TextIndex, Tokenizer, UuidIndex,
++};
++
++fn distance_to_grpc(distance: Distance) -> GrpcDistance {
++    match distance {
++        Distance::Cosine => GrpcDistance::Cosine,
++        Distance::Euclid => GrpcDistance::Euclid,
++        Distance::Dot => GrpcDistance::Dot,
++        Distance::Manhattan => GrpcDistance::Manhattan,
++    }
++}
++
++fn distance_from_grpc(distance: GrpcDistance) -> Result<Distance, QdrantError> {
++    match distance {
++        GrpcDistance::Cosine => Ok(Distance::Cosine),
++        GrpcDistance::Euclid => Ok(Distance::Euclid),
++        GrpcDistance::Dot => Ok(Distance::Dot),
++        GrpcDistance::Manhattan => Ok(Distance::Manhattan),
++        GrpcDistance::Unspecified => Err(QdrantError::ConversionError(
++            "serverless Distance is unspecified".into(),
++        )),
++    }
++}
++
++fn precision_to_grpc(tier: PrecisionTier) -> GrpcPrecisionTier {
++    match tier {
++        PrecisionTier::Low => GrpcPrecisionTier::Low,
++        PrecisionTier::Medium => GrpcPrecisionTier::Medium,
++        PrecisionTier::High => GrpcPrecisionTier::High,
++        PrecisionTier::Full => GrpcPrecisionTier::Full,
++    }
++}
++
++fn precision_from_grpc(tier: GrpcPrecisionTier) -> Result<PrecisionTier, QdrantError> {
++    match tier {
++        GrpcPrecisionTier::Low => Ok(PrecisionTier::Low),
++        GrpcPrecisionTier::Medium => Ok(PrecisionTier::Medium),
++        GrpcPrecisionTier::High => Ok(PrecisionTier::High),
++        GrpcPrecisionTier::Full => Ok(PrecisionTier::Full),
++        GrpcPrecisionTier::Unspecified => Err(QdrantError::ConversionError(
++            "serverless PrecisionTier is unspecified".into(),
++        )),
++    }
++}
++
++fn tokenizer_to_grpc(tokenizer: Tokenizer) -> GrpcTokenizer {
++    match tokenizer {
++        Tokenizer::Prefix => GrpcTokenizer::Prefix,
++        Tokenizer::Whitespace => GrpcTokenizer::Whitespace,
++        Tokenizer::Word => GrpcTokenizer::Word,
++        Tokenizer::Multilingual => GrpcTokenizer::Multilingual,
++    }
++}
++
++fn tokenizer_from_grpc(tokenizer: GrpcTokenizer) -> Result<Tokenizer, QdrantError> {
++    match tokenizer {
++        GrpcTokenizer::Prefix => Ok(Tokenizer::Prefix),
++        GrpcTokenizer::Whitespace => Ok(Tokenizer::Whitespace),
++        GrpcTokenizer::Word => Ok(Tokenizer::Word),
++        GrpcTokenizer::Multilingual => Ok(Tokenizer::Multilingual),
++        GrpcTokenizer::Unspecified => Err(QdrantError::ConversionError(
++            "serverless Tokenizer is unspecified".into(),
++        )),
++    }
++}
++
++fn stopwords_to_grpc(StopwordsSet { languages, custom }: &StopwordsSet) -> GrpcStopwordsSet {
++    GrpcStopwordsSet {
++        languages: languages.clone(),
++        custom: custom.clone(),
++    }
++}
++
++fn stopwords_from_grpc(GrpcStopwordsSet { languages, custom }: &GrpcStopwordsSet) -> StopwordsSet {
++    StopwordsSet {
++        languages: languages.clone(),
++        custom: custom.clone(),
++    }
++}
++
++fn stemmer_to_grpc(stemmer: &StemmingAlgorithm) -> GrpcStemmingAlgorithm {
++    match stemmer {
++        StemmingAlgorithm::Snowball(SnowballParams { language }) => GrpcStemmingAlgorithm {
++            stemming_params: Some(stemming_algorithm::StemmingParams::Snowball(
++                GrpcSnowballParams {
++                    language: language.clone(),
++                },
++            )),
++        },
++        StemmingAlgorithm::Disabled => GrpcStemmingAlgorithm {
++            stemming_params: Some(stemming_algorithm::StemmingParams::Disabled(
++                GrpcDisabledStemmer {},
++            )),
++        },
++    }
++}
++
++fn stemmer_from_grpc(
++    GrpcStemmingAlgorithm { stemming_params }: &GrpcStemmingAlgorithm,
++) -> Result<StemmingAlgorithm, QdrantError> {
++    match stemming_params {
++        Some(stemming_algorithm::StemmingParams::Snowball(GrpcSnowballParams { language })) => {
++            Ok(StemmingAlgorithm::Snowball(SnowballParams {
++                language: language.clone(),
++            }))
++        }
++        Some(stemming_algorithm::StemmingParams::Disabled(GrpcDisabledStemmer {})) => {
++            Ok(StemmingAlgorithm::Disabled)
++        }
++        None => Err(QdrantError::ConversionError(
++            "serverless StemmingAlgorithm has no stemming_params variant".into(),
++        )),
++    }
++}
++
++pub(crate) fn dense_vector_to_grpc(
++    DenseVectorConfig {
++        size,
++        distance,
++        multivector,
++        precision_tier,
++    }: &DenseVectorConfig,
++) -> GrpcDenseVectorConfig {
++    GrpcDenseVectorConfig {
++        size: *size,
++        distance: distance_to_grpc(*distance) as i32,
++        multivector: *multivector,
++        precision_tier: precision_tier.map(|t| precision_to_grpc(t) as i32),
++    }
++}
++
++pub(crate) fn dense_vector_from_grpc(
++    GrpcDenseVectorConfig {
++        size,
++        distance,
++        multivector,
++        precision_tier,
++    }: &GrpcDenseVectorConfig,
++) -> Result<DenseVectorConfig, QdrantError> {
++    Ok(DenseVectorConfig {
++        size: *size,
++        distance: distance_from_grpc(
++            GrpcDistance::try_from(*distance).map_err(|_| {
++                QdrantError::ConversionError(format!("unknown Distance {distance}"))
++            })?,
++        )?,
++        multivector: *multivector,
++        precision_tier: precision_tier
++            .map(|t| {
++                precision_from_grpc(GrpcPrecisionTier::try_from(t).map_err(|_| {
++                    QdrantError::ConversionError(format!("unknown PrecisionTier {t}"))
++                })?)
++            })
++            .transpose()?,
++    })
++}
++
++pub(crate) fn sparse_vector_to_grpc(
++    SparseVectorConfig {
++        use_idf,
++        precision_tier,
++    }: &SparseVectorConfig,
++) -> GrpcSparseVectorConfig {
++    GrpcSparseVectorConfig {
++        use_idf: *use_idf,
++        precision_tier: precision_tier.map(|t| precision_to_grpc(t) as i32),
++    }
++}
++
++pub(crate) fn sparse_vector_from_grpc(
++    GrpcSparseVectorConfig {
++        use_idf,
++        precision_tier,
++    }: &GrpcSparseVectorConfig,
++) -> Result<SparseVectorConfig, QdrantError> {
++    Ok(SparseVectorConfig {
++        use_idf: *use_idf,
++        precision_tier: precision_tier
++            .map(|t| {
++                precision_from_grpc(GrpcPrecisionTier::try_from(t).map_err(|_| {
++                    QdrantError::ConversionError(format!("unknown PrecisionTier {t}"))
++                })?)
++            })
++            .transpose()?,
++    })
++}
++
++pub(crate) fn payload_index_to_grpc(model: &PayloadIndex) -> PayloadIndexConfig {
++    let index = match model {
++        PayloadIndex::Keyword(KeywordIndex { prefix }) => {
++            payload_index_config::Index::Keyword(GrpcKeywordIndex {
++                prefix: prefix
++                    .as_ref()
++                    .map(|KeywordPrefixParams| GrpcKeywordPrefixParams {}),
++            })
++        }
++        PayloadIndex::Integer(IntegerIndex { lookup, range }) => {
++            payload_index_config::Index::Integer(GrpcIntegerIndex {
++                lookup: *lookup,
++                range: *range,
++            })
++        }
++        PayloadIndex::Float(FloatIndex) => payload_index_config::Index::Float(GrpcFloatIndex {}),
++        PayloadIndex::Uuid(UuidIndex) => payload_index_config::Index::Uuid(GrpcUuidIndex {}),
++        PayloadIndex::Datetime(DatetimeIndex) => {
++            payload_index_config::Index::Datetime(GrpcDatetimeIndex {})
++        }
++        PayloadIndex::Text(TextIndex {
++            tokenizer,
++            lowercase,
++            phrase_matching,
++            min_token_len,
++            max_token_len,
++            ascii_folding,
++            stopwords,
++            stemmer,
++        }) => payload_index_config::Index::Text(GrpcTextIndex {
++            tokenizer: tokenizer.map(|t| tokenizer_to_grpc(t) as i32),
++            lowercase: *lowercase,
++            phrase_matching: *phrase_matching,
++            min_token_len: *min_token_len,
++            max_token_len: *max_token_len,
++            ascii_folding: *ascii_folding,
++            stopwords: stopwords.as_ref().map(stopwords_to_grpc),
++            stemmer: stemmer.as_ref().map(stemmer_to_grpc),
++        }),
++        PayloadIndex::Geo(GeoIndex) => payload_index_config::Index::Geo(GrpcGeoIndex {}),
++        PayloadIndex::Bool(BoolIndex) => payload_index_config::Index::Bool(GrpcBoolIndex {}),
++    };
++    PayloadIndexConfig { index: Some(index) }
++}
++
++pub(crate) fn payload_index_from_grpc(
++    PayloadIndexConfig { index }: &PayloadIndexConfig,
++) -> Result<PayloadIndex, QdrantError> {
++    match index.as_ref() {
++        Some(payload_index_config::Index::Keyword(GrpcKeywordIndex { prefix })) => {
++            Ok(PayloadIndex::Keyword(KeywordIndex {
++                prefix: prefix
++                    .as_ref()
++                    .map(|GrpcKeywordPrefixParams {}| KeywordPrefixParams),
++            }))
++        }
++        Some(payload_index_config::Index::Integer(GrpcIntegerIndex { lookup, range })) => {
++            Ok(PayloadIndex::Integer(IntegerIndex {
++                lookup: *lookup,
++                range: *range,
++            }))
++        }
++        Some(payload_index_config::Index::Float(GrpcFloatIndex {})) => {
++            Ok(PayloadIndex::Float(FloatIndex))
++        }
++        Some(payload_index_config::Index::Uuid(GrpcUuidIndex {})) => {
++            Ok(PayloadIndex::Uuid(UuidIndex))
++        }
++        Some(payload_index_config::Index::Datetime(GrpcDatetimeIndex {})) => {
++            Ok(PayloadIndex::Datetime(DatetimeIndex))
++        }
++        Some(payload_index_config::Index::Text(GrpcTextIndex {
++            tokenizer,
++            lowercase,
++            phrase_matching,
++            min_token_len,
++            max_token_len,
++            ascii_folding,
++            stopwords,
++            stemmer,
++        })) => Ok(PayloadIndex::Text(TextIndex {
++            tokenizer: tokenizer
++                .map(|t| {
++                    tokenizer_from_grpc(GrpcTokenizer::try_from(t).map_err(|_| {
++                        QdrantError::ConversionError(format!("unknown Tokenizer {t}"))
++                    })?)
++                })
++                .transpose()?,
++            lowercase: *lowercase,
++            phrase_matching: *phrase_matching,
++            min_token_len: *min_token_len,
++            max_token_len: *max_token_len,
++            ascii_folding: *ascii_folding,
++            stopwords: stopwords.as_ref().map(stopwords_from_grpc),
++            stemmer: stemmer.as_ref().map(stemmer_from_grpc).transpose()?,
++        })),
++        Some(payload_index_config::Index::Geo(GrpcGeoIndex {})) => Ok(PayloadIndex::Geo(GeoIndex)),
++        Some(payload_index_config::Index::Bool(GrpcBoolIndex {})) => {
++            Ok(PayloadIndex::Bool(BoolIndex))
++        }
++        None => Err(QdrantError::ConversionError(
++            "serverless PayloadIndexConfig has no index variant".into(),
++        )),
++    }
++}
++
++pub(crate) fn collection_config_to_grpc(
++    CollectionConfig {
++        dense_vectors,
++        sparse_vectors,
++        payload_indexes,
++    }: &CollectionConfig,
++) -> grpc::CollectionConfig {
++    grpc::CollectionConfig {
++        dense_vectors: dense_vectors
++            .iter()
++            .map(|(name, dense)| (name.clone(), dense_vector_to_grpc(dense)))
++            .collect(),
++        sparse_vectors: sparse_vectors
++            .iter()
++            .map(|(name, sparse)| (name.clone(), sparse_vector_to_grpc(sparse)))
++            .collect(),
++        payload_indexes: payload_indexes
++            .iter()
++            .map(|(field, index)| (field.clone(), payload_index_to_grpc(index)))
++            .collect(),
++    }
++}
++
++pub(crate) fn collection_config_from_grpc(
++    grpc::CollectionConfig {
++        dense_vectors,
++        sparse_vectors,
++        payload_indexes,
++    }: &grpc::CollectionConfig,
++) -> Result<CollectionConfig, QdrantError> {
++    Ok(CollectionConfig {
++        dense_vectors: dense_vectors
++            .iter()
++            .map(|(name, dense)| Ok((name.clone(), dense_vector_from_grpc(dense)?)))
++            .collect::<Result<_, QdrantError>>()?,
++        sparse_vectors: sparse_vectors
++            .iter()
++            .map(|(name, sparse)| Ok((name.clone(), sparse_vector_from_grpc(sparse)?)))
++            .collect::<Result<_, QdrantError>>()?,
++        payload_indexes: payload_indexes
++            .iter()
++            .map(|(field, index)| Ok((field.clone(), payload_index_from_grpc(index)?)))
++            .collect::<Result<_, QdrantError>>()?,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::serverless::models::{IntegerIndex, KeywordIndex, TextIndex};
++
++    #[test]
++    fn collection_config_grpc_roundtrip() {
++        let config = CollectionConfig::new()
++            .dense_vector(DenseVectorConfig::new(1536, Distance::Cosine))
++            .named_dense_vector(
++                "colbert",
++                DenseVectorConfig::new(128, Distance::Dot)
++                    .multivector(true)
++                    .precision_tier(PrecisionTier::Low),
++            )
++            .named_sparse_vector("bm25", SparseVectorConfig::new().use_idf(true))
++            .payload_index("user_id", KeywordIndex::new().with_prefix())
++            .payload_index("age", IntegerIndex::new().lookup(true).range(false))
++            .payload_index(
++                "description",
++                TextIndex::new()
++                    .tokenizer(Tokenizer::Word)
++                    .lowercase(false)
++                    .ascii_folding(true)
++                    .stopwords(StopwordsSet::new().languages(["english"]))
++                    .stemmer(StemmingAlgorithm::Snowball(SnowballParams::new("english"))),
++            );
++
++        let roundtrip = collection_config_from_grpc(&collection_config_to_grpc(&config)).unwrap();
++        assert_eq!(roundtrip, config);
++    }
++
++    #[test]
++    fn optional_fields_stay_unset() {
++        let config = CollectionConfig::new()
++            .dense_vector(DenseVectorConfig::new(4, Distance::Euclid))
++            .payload_index("age", IntegerIndex::new())
++            .payload_index("user_id", KeywordIndex::new())
++            .payload_index("text", TextIndex::new());
++
++        let grpc_config = collection_config_to_grpc(&config);
++        let dense = grpc_config.dense_vectors.get("").unwrap();
++        assert!(dense.precision_tier.is_none());
++        let age = grpc_config.payload_indexes.get("age").unwrap();
++        match age.index.as_ref().unwrap() {
++            payload_index_config::Index::Integer(GrpcIntegerIndex { lookup, range }) => {
++                assert!(lookup.is_none());
++                assert!(range.is_none());
++            }
++            other => panic!("expected integer index, got {other:?}"),
++        }
++        let keyword = grpc_config.payload_indexes.get("user_id").unwrap();
++        match keyword.index.as_ref().unwrap() {
++            payload_index_config::Index::Keyword(GrpcKeywordIndex { prefix }) => {
++                assert!(prefix.is_none());
++            }
++            other => panic!("expected keyword index, got {other:?}"),
++        }
++        let text = grpc_config.payload_indexes.get("text").unwrap();
++        match text.index.as_ref().unwrap() {
++            payload_index_config::Index::Text(GrpcTextIndex {
++                tokenizer,
++                lowercase,
++                phrase_matching,
++                min_token_len,
++                max_token_len,
++                ascii_folding,
++                stopwords,
++                stemmer,
++            }) => {
++                assert!(tokenizer.is_none());
++                assert!(lowercase.is_none());
++                assert!(phrase_matching.is_none());
++                assert!(min_token_len.is_none());
++                assert!(max_token_len.is_none());
++                assert!(ascii_folding.is_none());
++                assert!(stopwords.is_none());
++                assert!(stemmer.is_none());
++            }
++            other => panic!("expected text index, got {other:?}"),
++        }
++
++        let roundtrip = collection_config_from_grpc(&grpc_config).unwrap();
++        assert_eq!(roundtrip, config);
++    }
++}
+diff --git a/src/serverless/grpc.rs b/src/serverless/grpc.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ac499ae59de35f23bb7ca022f87132667961621
+--- /dev/null
++++ b/src/serverless/grpc.rs
+@@ -0,0 +1,647 @@
++// @generated by tonic-prost-build. DO NOT EDIT.
++// Regenerate: cargo test --test serverless_protos -- --ignored --nocapture
++// This file is @generated by prost-build.
++/// Configuration of a single dense (embedding) vector.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct DenseVectorConfig {
++    /// Dimensionality of the embedding, e.g. 512 (CLIP), 1536, 3072.
++    #[prost(uint64, tag = "1")]
++    pub size: u64,
++    /// Distance metric used to compare vectors.
++    #[prost(enumeration = "Distance", tag = "2")]
++    pub distance: i32,
++    /// Store several sub-vectors per point and compare with max-sim, for
++    /// late-interaction models (ColBERT, ColPali, ...).
++    #[prost(bool, tag = "3")]
++    pub multivector: bool,
++    /// Precision/cost trade-off for this vector. Unset: HIGH.
++    #[prost(enumeration = "PrecisionTier", optional, tag = "4")]
++    pub precision_tier: ::core::option::Option<i32>,
++}
++/// Configuration of a single sparse vector.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct SparseVectorConfig {
++    /// Apply the IDF modifier at query time. Enable for BM25-style models that
++    /// expect inverse-document-frequency weighting.
++    #[prost(bool, tag = "1")]
++    pub use_idf: bool,
++    /// Precision/cost trade-off for this vector. Unset: HIGH.
++    #[prost(enumeration = "PrecisionTier", optional, tag = "2")]
++    pub precision_tier: ::core::option::Option<i32>,
++}
++/// Exact match on string values, e.g. `color: "red"`.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct KeywordIndex {
++    /// If set, enable prefix matching (`match: { "prefix": ... }`) on this field.
++    /// Presence of this message enables prefix matching; it has no options yet.
++    #[prost(message, optional, tag = "1")]
++    pub prefix: ::core::option::Option<KeywordPrefixParams>,
++}
++/// Prefix matching options for the keyword index. Has no options yet:
++/// presence of this message enables prefix matching.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct KeywordPrefixParams {}
++/// Exact match and/or range filters on integers, e.g. `age: 25`. Both are on
++/// by default; turning one off shrinks the index.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct IntegerIndex {
++    /// Support exact-match filters.
++    #[prost(bool, optional, tag = "1")]
++    pub lookup: ::core::option::Option<bool>,
++    /// Support range filters.
++    #[prost(bool, optional, tag = "2")]
++    pub range: ::core::option::Option<bool>,
++}
++/// Range filters on floating point (and integer) numbers, e.g. `price: 99.5`.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct FloatIndex {}
++/// Exact match on UUID strings; like keyword but stored compactly.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct UuidIndex {}
++/// Range filters on RFC 3339 datetimes, e.g. `created_at: "2023-02-08T10:49:00Z"`.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct DatetimeIndex {}
++/// Tokens ignored by a full-text index. Language names match qdrant (e.g.
++/// "english"); predefined lists and custom tokens are merged.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct StopwordsSet {
++    /// Languages whose predefined stopword lists to apply.
++    #[prost(string, repeated, tag = "1")]
++    pub languages: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
++    /// Extra stopwords to ignore, merged with the language lists.
++    #[prost(string, repeated, tag = "2")]
++    pub custom: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
++}
++/// Snowball stemming for a full-text index.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct SnowballParams {
++    /// Language for the snowball algorithm, e.g. "english".
++    #[prost(string, tag = "1")]
++    pub language: ::prost::alloc::string::String,
++}
++/// Explicitly disable stemming (overrides any language default).
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct DisabledStemmer {}
++/// Stemming algorithm for a full-text index. Unset: no stemming.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct StemmingAlgorithm {
++    /// Which stemming algorithm to use.
++    #[prost(oneof = "stemming_algorithm::StemmingParams", tags = "1, 2")]
++    pub stemming_params: ::core::option::Option<stemming_algorithm::StemmingParams>,
++}
++/// Nested message and enum types in `StemmingAlgorithm`.
++pub mod stemming_algorithm {
++    /// Which stemming algorithm to use.
++    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
++    pub enum StemmingParams {
++        /// Snowball stemmer for the given language.
++        #[prost(message, tag = "1")]
++        Snowball(super::SnowballParams),
++        /// Explicitly disable stemming.
++        #[prost(message, tag = "2")]
++        Disabled(super::DisabledStemmer),
++    }
++}
++/// Full-text filtering on string values.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct TextIndex {
++    /// Tokenizer to split text with. Unset: WHITESPACE.
++    #[prost(enumeration = "Tokenizer", optional, tag = "1")]
++    pub tokenizer: ::core::option::Option<i32>,
++    /// Lowercase text before indexing. Default true.
++    #[prost(bool, optional, tag = "2")]
++    pub lowercase: ::core::option::Option<bool>,
++    /// Support phrase queries; extra index structure. Default true.
++    #[prost(bool, optional, tag = "3")]
++    pub phrase_matching: ::core::option::Option<bool>,
++    /// Minimum token length to index.
++    #[prost(uint64, optional, tag = "4")]
++    pub min_token_len: ::core::option::Option<u64>,
++    /// Maximum token length to index.
++    #[prost(uint64, optional, tag = "5")]
++    pub max_token_len: ::core::option::Option<u64>,
++    /// Fold accented characters to ASCII. Default false.
++    #[prost(bool, optional, tag = "6")]
++    pub ascii_folding: ::core::option::Option<bool>,
++    /// Tokens to ignore at index and query time.
++    #[prost(message, optional, tag = "7")]
++    pub stopwords: ::core::option::Option<StopwordsSet>,
++    /// Stemming algorithm. Unset: engine default (no stemming).
++    #[prost(message, optional, tag = "8")]
++    pub stemmer: ::core::option::Option<StemmingAlgorithm>,
++}
++/// Geo radius / bounding box / polygon filters on `{lon, lat}` values.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct GeoIndex {}
++/// Exact match on booleans, e.g. `is_active: true`.
++#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct BoolIndex {}
++/// One payload index. Only the *kind* of filter the field supports is chosen
++/// here; storage placement of the index is the manager's decision.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct PayloadIndexConfig {
++    /// The kind of filter the field supports.
++    #[prost(oneof = "payload_index_config::Index", tags = "1, 2, 3, 4, 5, 6, 7, 8")]
++    pub index: ::core::option::Option<payload_index_config::Index>,
++}
++/// Nested message and enum types in `PayloadIndexConfig`.
++pub mod payload_index_config {
++    /// The kind of filter the field supports.
++    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
++    pub enum Index {
++        /// Exact match on strings.
++        #[prost(message, tag = "1")]
++        Keyword(super::KeywordIndex),
++        /// Exact match and/or range filters on integers.
++        #[prost(message, tag = "2")]
++        Integer(super::IntegerIndex),
++        /// Range filters on numbers.
++        #[prost(message, tag = "3")]
++        Float(super::FloatIndex),
++        /// Exact match on UUIDs.
++        #[prost(message, tag = "4")]
++        Uuid(super::UuidIndex),
++        /// Range filters on datetimes.
++        #[prost(message, tag = "5")]
++        Datetime(super::DatetimeIndex),
++        /// Full-text filtering.
++        #[prost(message, tag = "6")]
++        Text(super::TextIndex),
++        /// Geo filters.
++        #[prost(message, tag = "7")]
++        Geo(super::GeoIndex),
++        /// Exact match on booleans.
++        #[prost(message, tag = "8")]
++        Bool(super::BoolIndex),
++    }
++}
++/// The tenant's collection config. Persisted verbatim. At least one dense or
++/// sparse vector is required.
++#[derive(Clone, PartialEq, ::prost::Message)]
++pub struct CollectionConfig {
++    /// Keyed by vector name. The empty name "" is the unnamed default vector, as
++    /// in qdrant; a collection either has the single unnamed vector or named ones.
++    #[prost(map = "string, message", tag = "1")]
++    pub dense_vectors: ::std::collections::HashMap<
++        ::prost::alloc::string::String,
++        DenseVectorConfig,
++    >,
++    /// Keyed by vector name.
++    #[prost(map = "string, message", tag = "2")]
++    pub sparse_vectors: ::std::collections::HashMap<
++        ::prost::alloc::string::String,
++        SparseVectorConfig,
++    >,
++    /// Keyed by payload field name (JSON path, e.g. `user_id` or `meta.tags`).
++    #[prost(map = "string, message", tag = "3")]
++    pub payload_indexes: ::std::collections::HashMap<
++        ::prost::alloc::string::String,
++        PayloadIndexConfig,
++    >,
++}
++/// Every request names the collection by its tenant-facing name only. The
++/// tenant (`x-account-id`, `x-space-id`) travels in gRPC metadata, injected by
++/// auth. The storage id is the manager's: minted on create, resolved
++/// internally on get/delete.
++#[derive(Clone, PartialEq, ::prost::Message)]
++pub struct CreateCollectionRequest {
++    /// Tenant-facing name of the collection to create.
++    #[prost(string, tag = "1")]
++    pub collection_name: ::prost::alloc::string::String,
++    /// The collection's configuration.
++    #[prost(message, optional, tag = "2")]
++    pub config: ::core::option::Option<CollectionConfig>,
++}
++/// Result of a create.
++#[derive(Clone, PartialEq, ::prost::Message)]
++pub struct CreateCollectionResponse {
++    /// Tenant-facing name of the collection.
++    #[prost(string, tag = "1")]
++    pub collection_name: ::prost::alloc::string::String,
++    /// Outcome, e.g. "created", "already exists".
++    #[prost(string, tag = "2")]
++    pub result: ::prost::alloc::string::String,
++    /// Time spent to process
++    #[prost(double, tag = "3")]
++    pub time: f64,
++}
++/// Names the collection to delete.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct DeleteCollectionRequest {
++    /// Tenant-facing name of the collection to delete.
++    #[prost(string, tag = "1")]
++    pub collection_name: ::prost::alloc::string::String,
++}
++/// Result of a delete.
++#[derive(Clone, Copy, PartialEq, ::prost::Message)]
++pub struct DeleteCollectionResponse {
++    /// Whether the collection existed and was deleted.
++    #[prost(bool, tag = "1")]
++    pub deleted: bool,
++    /// Time spent to process
++    #[prost(double, tag = "2")]
++    pub time: f64,
++}
++/// Names the collection to fetch.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct GetCollectionRequest {
++    /// Tenant-facing name of the collection.
++    #[prost(string, tag = "1")]
++    pub collection_name: ::prost::alloc::string::String,
++}
++/// The collection's configuration and stats, if it exists.
++#[derive(Clone, PartialEq, ::prost::Message)]
++pub struct GetCollectionResponse {
++    /// Whether the collection exists.
++    #[prost(bool, tag = "1")]
++    pub exists: bool,
++    /// The configuration the collection was created with.
++    #[prost(message, optional, tag = "2")]
++    pub config: ::core::option::Option<CollectionConfig>,
++    /// Available points as of the last applied write (eventually consistent);
++    /// absent until the updater has written stats for the collection.
++    #[prost(uint64, optional, tag = "3")]
++    pub point_count: ::core::option::Option<u64>,
++    /// Time spent to process
++    #[prost(double, tag = "4")]
++    pub time: f64,
++}
++/// Lists the caller's collections. The tenant travels in metadata.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct ListCollectionsRequest {
++    /// Maximum number of collections to return. Defaults to 20 and must not
++    /// exceed 100.
++    #[prost(uint32, optional, tag = "1")]
++    pub limit: ::core::option::Option<u32>,
++    /// Opaque token returned as `next_offset_token` by the previous page. Clients
++    /// must not interpret this value.
++    #[prost(string, optional, tag = "2")]
++    pub offset_token: ::core::option::Option<::prost::alloc::string::String>,
++}
++/// One collection in a listing.
++#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
++pub struct CollectionSummary {
++    /// Tenant-facing name of the collection.
++    #[prost(string, tag = "1")]
++    pub collection_name: ::prost::alloc::string::String,
++    /// Available points as of the last applied write (eventually consistent);
++    /// absent until the updater has written stats for the collection.
++    #[prost(uint64, optional, tag = "2")]
++    pub point_count: ::core::option::Option<u64>,
++}
++/// The caller's collections.
++#[derive(Clone, PartialEq, ::prost::Message)]
++pub struct ListCollectionsResponse {
++    /// Collections in this page.
++    #[prost(message, repeated, tag = "1")]
++    pub collections: ::prost::alloc::vec::Vec<CollectionSummary>,
++    /// Opaque token to pass as `offset_token` to retrieve the next page. Absent
++    /// when there are no more results.
++    #[prost(string, optional, tag = "2")]
++    pub next_offset_token: ::core::option::Option<::prost::alloc::string::String>,
++    /// Time spent to process
++    #[prost(double, tag = "3")]
++    pub time: f64,
++}
++/// Distance metric used to compare dense vectors.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
++#[repr(i32)]
++pub enum Distance {
++    /// Unset; a concrete metric is required.
++    Unspecified = 0,
++    /// Cosine similarity.
++    Cosine = 1,
++    /// Euclidean (L2) distance.
++    Euclid = 2,
++    /// Dot product.
++    Dot = 3,
++    /// Manhattan (L1) distance.
++    Manhattan = 4,
++}
++impl Distance {
++    /// String value of the enum field names used in the ProtoBuf definition.
++    ///
++    /// The values are not transformed in any way and thus are considered stable
++    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
++    pub fn as_str_name(&self) -> &'static str {
++        match self {
++            Self::Unspecified => "DISTANCE_UNSPECIFIED",
++            Self::Cosine => "COSINE",
++            Self::Euclid => "EUCLID",
++            Self::Dot => "DOT",
++            Self::Manhattan => "MANHATTAN",
++        }
++    }
++    /// Creates an enum from field names used in the ProtoBuf definition.
++    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
++        match value {
++            "DISTANCE_UNSPECIFIED" => Some(Self::Unspecified),
++            "COSINE" => Some(Self::Cosine),
++            "EUCLID" => Some(Self::Euclid),
++            "DOT" => Some(Self::Dot),
++            "MANHATTAN" => Some(Self::Manhattan),
++            _ => None,
++        }
++    }
++}
++/// How much of the original vector precision may be traded for cost. The manager
++/// turns this into a concrete quantization / datatype choice; the tenant never
++/// picks scalar/product/binary quantization or its parameters directly.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
++#[repr(i32)]
++pub enum PrecisionTier {
++    /// Unset: HIGH.
++    Unspecified = 0,
++    /// Aggressive compression, lowest cost, approximate results.
++    Low = 1,
++    /// Moderate compression with a small accuracy trade-off.
++    Medium = 2,
++    /// Light compression, near-exact results.
++    High = 3,
++    /// No lossy compression: exact vectors, fully in memory. Highest cost.
++    Full = 4,
++}
++impl PrecisionTier {
++    /// String value of the enum field names used in the ProtoBuf definition.
++    ///
++    /// The values are not transformed in any way and thus are considered stable
++    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
++    pub fn as_str_name(&self) -> &'static str {
++        match self {
++            Self::Unspecified => "PRECISION_TIER_UNSPECIFIED",
++            Self::Low => "LOW",
++            Self::Medium => "MEDIUM",
++            Self::High => "HIGH",
++            Self::Full => "FULL",
++        }
++    }
++    /// Creates an enum from field names used in the ProtoBuf definition.
++    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
++        match value {
++            "PRECISION_TIER_UNSPECIFIED" => Some(Self::Unspecified),
++            "LOW" => Some(Self::Low),
++            "MEDIUM" => Some(Self::Medium),
++            "HIGH" => Some(Self::High),
++            "FULL" => Some(Self::Full),
++            _ => None,
++        }
++    }
++}
++/// Full-text tokenizer, mirrors qdrant's `TokenizerType`.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
++#[repr(i32)]
++pub enum Tokenizer {
++    /// Unset: WHITESPACE.
++    Unspecified = 0,
++    /// Index every prefix of each token.
++    Prefix = 1,
++    /// Split on whitespace.
++    Whitespace = 2,
++    /// Split on word boundaries.
++    Word = 3,
++    /// Language-aware tokenization.
++    Multilingual = 4,
++}
++impl Tokenizer {
++    /// String value of the enum field names used in the ProtoBuf definition.
++    ///
++    /// The values are not transformed in any way and thus are considered stable
++    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
++    pub fn as_str_name(&self) -> &'static str {
++        match self {
++            Self::Unspecified => "TOKENIZER_UNSPECIFIED",
++            Self::Prefix => "PREFIX",
++            Self::Whitespace => "WHITESPACE",
++            Self::Word => "WORD",
++            Self::Multilingual => "MULTILINGUAL",
++        }
++    }
++    /// Creates an enum from field names used in the ProtoBuf definition.
++    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
++        match value {
++            "TOKENIZER_UNSPECIFIED" => Some(Self::Unspecified),
++            "PREFIX" => Some(Self::Prefix),
++            "WHITESPACE" => Some(Self::Whitespace),
++            "WORD" => Some(Self::Word),
++            "MULTILINGUAL" => Some(Self::Multilingual),
++            _ => None,
++        }
++    }
++}
++/// Generated client implementations.
++pub mod collections_service_client {
++    #![allow(
++        unused_variables,
++        dead_code,
++        missing_docs,
++        clippy::wildcard_imports,
++        clippy::let_unit_value,
++    )]
++    use tonic::codegen::*;
++    use tonic::codegen::http::Uri;
++    /// CollectionsService manages the collections of a qdrant serverless space.
++    /// Unlike the qdrant server API, it exposes only a simplified configuration:
++    /// the manager turns it into concrete qdrant settings, which are never
++    /// exposed to the tenant.
++    #[derive(Debug, Clone)]
++    pub struct CollectionsServiceClient<T> {
++        inner: tonic::client::Grpc<T>,
++    }
++    impl CollectionsServiceClient<tonic::transport::Channel> {
++        /// Attempt to create a new client by connecting to a given endpoint.
++        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
++        where
++            D: TryInto<tonic::transport::Endpoint>,
++            D::Error: Into<StdError>,
++        {
++            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
++            Ok(Self::new(conn))
++        }
++    }
++    impl<T> CollectionsServiceClient<T>
++    where
++        T: tonic::client::GrpcService<tonic::body::Body>,
++        T::Error: Into<StdError>,
++        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
++        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
++    {
++        pub fn new(inner: T) -> Self {
++            let inner = tonic::client::Grpc::new(inner);
++            Self { inner }
++        }
++        pub fn with_origin(inner: T, origin: Uri) -> Self {
++            let inner = tonic::client::Grpc::with_origin(inner, origin);
++            Self { inner }
++        }
++        pub fn with_interceptor<F>(
++            inner: T,
++            interceptor: F,
++        ) -> CollectionsServiceClient<InterceptedService<T, F>>
++        where
++            F: tonic::service::Interceptor,
++            T::ResponseBody: Default,
++            T: tonic::codegen::Service<
++                http::Request<tonic::body::Body>,
++                Response = http::Response<
++                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
++                >,
++            >,
++            <T as tonic::codegen::Service<
++                http::Request<tonic::body::Body>,
++            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
++        {
++            CollectionsServiceClient::new(InterceptedService::new(inner, interceptor))
++        }
++        /// Compress requests with the given encoding.
++        ///
++        /// This requires the server to support it otherwise it might respond with an
++        /// error.
++        #[must_use]
++        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
++            self.inner = self.inner.send_compressed(encoding);
++            self
++        }
++        /// Enable decompressing responses.
++        #[must_use]
++        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
++            self.inner = self.inner.accept_compressed(encoding);
++            self
++        }
++        /// Limits the maximum size of a decoded message.
++        ///
++        /// Default: `4MB`
++        #[must_use]
++        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
++            self.inner = self.inner.max_decoding_message_size(limit);
++            self
++        }
++        /// Limits the maximum size of an encoded message.
++        ///
++        /// Default: `usize::MAX`
++        #[must_use]
++        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
++            self.inner = self.inner.max_encoding_message_size(limit);
++            self
++        }
++        /// Creates a collection with the given tenant-facing configuration.
++        pub async fn create_collection(
++            &mut self,
++            request: impl tonic::IntoRequest<super::CreateCollectionRequest>,
++        ) -> std::result::Result<
++            tonic::Response<super::CreateCollectionResponse>,
++            tonic::Status,
++        > {
++            self.inner
++                .ready()
++                .await
++                .map_err(|e| {
++                    tonic::Status::unknown(
++                        format!("Service was not ready: {}", e.into()),
++                    )
++                })?;
++            let codec = tonic_prost::ProstCodec::default();
++            let path = http::uri::PathAndQuery::from_static(
++                "/qdrant.serverless.CollectionsService/CreateCollection",
++            );
++            let mut req = request.into_request();
++            req.extensions_mut()
++                .insert(
++                    GrpcMethod::new(
++                        "qdrant.serverless.CollectionsService",
++                        "CreateCollection",
++                    ),
++                );
++            self.inner.unary(req, path, codec).await
++        }
++        /// Deletes a collection and all of its data.
++        pub async fn delete_collection(
++            &mut self,
++            request: impl tonic::IntoRequest<super::DeleteCollectionRequest>,
++        ) -> std::result::Result<
++            tonic::Response<super::DeleteCollectionResponse>,
++            tonic::Status,
++        > {
++            self.inner
++                .ready()
++                .await
++                .map_err(|e| {
++                    tonic::Status::unknown(
++                        format!("Service was not ready: {}", e.into()),
++                    )
++                })?;
++            let codec = tonic_prost::ProstCodec::default();
++            let path = http::uri::PathAndQuery::from_static(
++                "/qdrant.serverless.CollectionsService/DeleteCollection",
++            );
++            let mut req = request.into_request();
++            req.extensions_mut()
++                .insert(
++                    GrpcMethod::new(
++                        "qdrant.serverless.CollectionsService",
++                        "DeleteCollection",
++                    ),
++                );
++            self.inner.unary(req, path, codec).await
++        }
++        /// Returns a single collection's configuration and stats.
++        pub async fn get_collection(
++            &mut self,
++            request: impl tonic::IntoRequest<super::GetCollectionRequest>,
++        ) -> std::result::Result<
++            tonic::Response<super::GetCollectionResponse>,
++            tonic::Status,
++        > {
++            self.inner
++                .ready()
++                .await
++                .map_err(|e| {
++                    tonic::Status::unknown(
++                        format!("Service was not ready: {}", e.into()),
++                    )
++                })?;
++            let codec = tonic_prost::ProstCodec::default();
++            let path = http::uri::PathAndQuery::from_static(
++                "/qdrant.serverless.CollectionsService/GetCollection",
++            );
++            let mut req = request.into_request();
++            req.extensions_mut()
++                .insert(
++                    GrpcMethod::new(
++                        "qdrant.serverless.CollectionsService",
++                        "GetCollection",
++                    ),
++                );
++            self.inner.unary(req, path, codec).await
++        }
++        /// Lists the caller's collections.
++        pub async fn list_collections(
++            &mut self,
++            request: impl tonic::IntoRequest<super::ListCollectionsRequest>,
++        ) -> std::result::Result<
++            tonic::Response<super::ListCollectionsResponse>,
++            tonic::Status,
++        > {
++            self.inner
++                .ready()
++                .await
++                .map_err(|e| {
++                    tonic::Status::unknown(
++                        format!("Service was not ready: {}", e.into()),
++                    )
++                })?;
++            let codec = tonic_prost::ProstCodec::default();
++            let path = http::uri::PathAndQuery::from_static(
++                "/qdrant.serverless.CollectionsService/ListCollections",
++            );
++            let mut req = request.into_request();
++            req.extensions_mut()
++                .insert(
++                    GrpcMethod::new(
++                        "qdrant.serverless.CollectionsService",
++                        "ListCollections",
++                    ),
++                );
++            self.inner.unary(req, path, codec).await
++        }
++    }
++}
+diff --git a/src/serverless/mod.rs b/src/serverless/mod.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c0acc5b51e0b16333561cf1710935d5e36836c61
+--- /dev/null
++++ b/src/serverless/mod.rs
+@@ -0,0 +1,46 @@
++//! Client for Qdrant Serverless.
++//!
++//! **In development — do not use yet.** This API is experimental and unstable;
++//! it may change without notice and is not ready for production or general use.
++//!
++//! Point-level operations (query, upsert, ...) behave like the regular client;
++//! collection management uses the simplified, tenant-facing serverless API.
++//!
++//! # Example
++//!
++//! ```no_run
++//! use qdrant_client::serverless::{
++//!     CollectionConfig, DenseVectorConfig, Distance, QdrantServerless,
++//! };
++//!
++//! # async fn run() -> Result<(), qdrant_client::QdrantError> {
++//! let client = QdrantServerless::from_url("https://serverless.example.cloud.qdrant.io")
++//!     .api_key("<your api key>")
++//!     .build()?;
++//!
++//! client
++//!     .create_collection(
++//!         "my-collection",
++//!         CollectionConfig::new()
++//!             .dense_vector(DenseVectorConfig::new(1536, Distance::Cosine)),
++//!     )
++//!     .await?;
++//! # Ok(())
++//! # }
++//! ```
++
++mod client;
++mod conversions;
++#[allow(clippy::all)]
++#[rustfmt::skip]
++pub(crate) mod grpc;
++pub mod models;
++
++pub use client::{QdrantServerless, QdrantServerlessBuilder, DEFAULT_SERVERLESS_GRPC_PORT};
++pub use models::{
++    BoolIndex, CollectionConfig, CollectionInfo, CollectionSummary, CollectionsList,
++    CreateCollectionResult, DatetimeIndex, DeleteCollectionResult, DenseVectorConfig, Distance,
++    FloatIndex, GeoIndex, IntegerIndex, KeywordIndex, KeywordPrefixParams, ListCollections,
++    ListCollectionsBuilder, PayloadIndex, PrecisionTier, SnowballParams, SparseVectorConfig,
++    StemmingAlgorithm, StopwordsSet, TextIndex, Tokenizer, UuidIndex,
++};
+diff --git a/src/serverless/models.rs b/src/serverless/models.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..678febbf492203c85a16f007575c7d614024d652
+--- /dev/null
++++ b/src/serverless/models.rs
+@@ -0,0 +1,540 @@
++//! Public models for the Qdrant Serverless collection management API.
++//!
++//! **In development — do not use yet.** Part of the experimental serverless client;
++//! the API may change without notice.
++//!
++//! These mirror the tenant-facing serverless config: unlike the regular client's
++//! collection models, they deliberately expose no storage internals (quantization,
++//! WAL, segments, on-disk placement, ...) — the serverless manager decides those.
++
++use std::collections::HashMap;
++
++/// Distance metric used to compare dense vectors.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
++pub enum Distance {
++    Cosine,
++    Euclid,
++    Dot,
++    Manhattan,
++}
++
++/// How much of the original vector precision may be traded for cost.
++///
++/// The manager turns this into a concrete quantization / datatype choice.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
++pub enum PrecisionTier {
++    Low,
++    Medium,
++    High,
++    Full,
++}
++
++/// Full-text tokenizer, mirrors Qdrant's `TokenizerType`.
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
++pub enum Tokenizer {
++    Prefix,
++    Whitespace,
++    Word,
++    Multilingual,
++}
++
++/// Configuration of a single dense (embedding) vector.
++#[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct DenseVectorConfig {
++    /// Dimensionality of the embedding, e.g. 512, 1536, 3072.
++    pub size: u64,
++    /// Distance metric used to compare vectors.
++    pub distance: Distance,
++    /// Store several sub-vectors per point and compare with max-sim.
++    pub multivector: bool,
++    /// Precision/cost trade-off for this vector. Unset: HIGH.
++    pub precision_tier: Option<PrecisionTier>,
++}
++
++impl DenseVectorConfig {
++    /// Create a dense vector config with the given size and distance.
++    pub fn new(size: u64, distance: Distance) -> Self {
++        Self {
++            size,
++            distance,
++            multivector: false,
++            precision_tier: None,
++        }
++    }
++
++    /// Enable multi-vector (late-interaction) storage.
++    pub fn multivector(mut self, multivector: bool) -> Self {
++        self.multivector = multivector;
++        self
++    }
++
++    /// Set the precision/cost trade-off.
++    pub fn precision_tier(mut self, tier: PrecisionTier) -> Self {
++        self.precision_tier = Some(tier);
++        self
++    }
++}
++
++/// Configuration of a single sparse vector.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct SparseVectorConfig {
++    /// Apply the IDF modifier at query time.
++    pub use_idf: bool,
++    /// Precision/cost trade-off for this vector. Unset: HIGH.
++    pub precision_tier: Option<PrecisionTier>,
++}
++
++impl SparseVectorConfig {
++    /// Create a sparse vector config.
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Enable IDF weighting (BM25-style).
++    pub fn use_idf(mut self, use_idf: bool) -> Self {
++        self.use_idf = use_idf;
++        self
++    }
++
++    /// Set the precision/cost trade-off.
++    pub fn precision_tier(mut self, tier: PrecisionTier) -> Self {
++        self.precision_tier = Some(tier);
++        self
++    }
++}
++
++/// Prefix matching options for a keyword index. Presence enables prefix matching.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct KeywordPrefixParams;
++
++/// Exact match on string values, e.g. `color: "red"`.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct KeywordIndex {
++    /// If set, enable prefix matching (`match: { "prefix": ... }`) on this field.
++    pub prefix: Option<KeywordPrefixParams>,
++}
++
++impl KeywordIndex {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Enable prefix matching on this keyword field.
++    pub fn with_prefix(mut self) -> Self {
++        self.prefix = Some(KeywordPrefixParams);
++        self
++    }
++}
++
++/// Exact match and/or range filters on integers. Both default to enabled.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct IntegerIndex {
++    pub lookup: Option<bool>,
++    pub range: Option<bool>,
++}
++
++impl IntegerIndex {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    pub fn lookup(mut self, lookup: bool) -> Self {
++        self.lookup = Some(lookup);
++        self
++    }
++
++    pub fn range(mut self, range: bool) -> Self {
++        self.range = Some(range);
++        self
++    }
++}
++
++/// Range filters on floating point (and integer) numbers.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct FloatIndex;
++
++/// Exact match on UUID strings; like keyword but stored compactly.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct UuidIndex;
++
++/// Range filters on RFC 3339 datetimes.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct DatetimeIndex;
++
++/// Tokens ignored by a full-text index.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct StopwordsSet {
++    /// Languages whose predefined stopword lists to apply (e.g. `"english"`).
++    pub languages: Vec<String>,
++    /// Extra stopwords to ignore, merged with the language lists.
++    pub custom: Vec<String>,
++}
++
++impl StopwordsSet {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    pub fn languages(mut self, languages: impl IntoIterator<Item = impl Into<String>>) -> Self {
++        self.languages = languages.into_iter().map(Into::into).collect();
++        self
++    }
++
++    pub fn custom(mut self, custom: impl IntoIterator<Item = impl Into<String>>) -> Self {
++        self.custom = custom.into_iter().map(Into::into).collect();
++        self
++    }
++}
++
++/// Snowball stemming for a full-text index.
++#[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct SnowballParams {
++    /// Language for the snowball algorithm, e.g. `"english"`.
++    pub language: String,
++}
++
++impl SnowballParams {
++    pub fn new(language: impl Into<String>) -> Self {
++        Self {
++            language: language.into(),
++        }
++    }
++}
++
++/// Stemming algorithm for a full-text index. Unset: no stemming.
++#[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
++pub enum StemmingAlgorithm {
++    /// Snowball stemmer for the given language.
++    Snowball(SnowballParams),
++    /// Explicitly disable stemming.
++    Disabled,
++}
++
++/// Full-text filtering on string values.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct TextIndex {
++    pub tokenizer: Option<Tokenizer>,
++    pub lowercase: Option<bool>,
++    pub phrase_matching: Option<bool>,
++    pub min_token_len: Option<u64>,
++    pub max_token_len: Option<u64>,
++    pub ascii_folding: Option<bool>,
++    pub stopwords: Option<StopwordsSet>,
++    pub stemmer: Option<StemmingAlgorithm>,
++}
++
++impl TextIndex {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    pub fn tokenizer(mut self, tokenizer: Tokenizer) -> Self {
++        self.tokenizer = Some(tokenizer);
++        self
++    }
++
++    pub fn lowercase(mut self, lowercase: bool) -> Self {
++        self.lowercase = Some(lowercase);
++        self
++    }
++
++    pub fn phrase_matching(mut self, phrase_matching: bool) -> Self {
++        self.phrase_matching = Some(phrase_matching);
++        self
++    }
++
++    pub fn min_token_len(mut self, min_token_len: u64) -> Self {
++        self.min_token_len = Some(min_token_len);
++        self
++    }
++
++    pub fn max_token_len(mut self, max_token_len: u64) -> Self {
++        self.max_token_len = Some(max_token_len);
++        self
++    }
++
++    pub fn ascii_folding(mut self, ascii_folding: bool) -> Self {
++        self.ascii_folding = Some(ascii_folding);
++        self
++    }
++
++    pub fn stopwords(mut self, stopwords: StopwordsSet) -> Self {
++        self.stopwords = Some(stopwords);
++        self
++    }
++
++    pub fn stemmer(mut self, stemmer: StemmingAlgorithm) -> Self {
++        self.stemmer = Some(stemmer);
++        self
++    }
++}
++
++/// Geo radius / bounding box / polygon filters on `{lon, lat}` values.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct GeoIndex;
++
++/// Exact match on booleans.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct BoolIndex;
++
++/// One payload index. Only the kind of filter the field supports is chosen;
++/// storage placement of the index is the manager's decision.
++#[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++#[cfg_attr(feature = "serde", serde(tag = "type", rename_all = "snake_case"))]
++pub enum PayloadIndex {
++    Keyword(KeywordIndex),
++    Integer(IntegerIndex),
++    Float(FloatIndex),
++    Uuid(UuidIndex),
++    Datetime(DatetimeIndex),
++    Text(TextIndex),
++    Geo(GeoIndex),
++    Bool(BoolIndex),
++}
++
++impl From<KeywordIndex> for PayloadIndex {
++    fn from(value: KeywordIndex) -> Self {
++        Self::Keyword(value)
++    }
++}
++
++impl From<IntegerIndex> for PayloadIndex {
++    fn from(value: IntegerIndex) -> Self {
++        Self::Integer(value)
++    }
++}
++
++impl From<FloatIndex> for PayloadIndex {
++    fn from(value: FloatIndex) -> Self {
++        Self::Float(value)
++    }
++}
++
++impl From<UuidIndex> for PayloadIndex {
++    fn from(value: UuidIndex) -> Self {
++        Self::Uuid(value)
++    }
++}
++
++impl From<DatetimeIndex> for PayloadIndex {
++    fn from(value: DatetimeIndex) -> Self {
++        Self::Datetime(value)
++    }
++}
++
++impl From<TextIndex> for PayloadIndex {
++    fn from(value: TextIndex) -> Self {
++        Self::Text(value)
++    }
++}
++
++impl From<GeoIndex> for PayloadIndex {
++    fn from(value: GeoIndex) -> Self {
++        Self::Geo(value)
++    }
++}
++
++impl From<BoolIndex> for PayloadIndex {
++    fn from(value: BoolIndex) -> Self {
++        Self::Bool(value)
++    }
++}
++
++/// The tenant-facing collection config.
++///
++/// Vector maps are keyed by vector name; the empty name `""` is the unnamed
++/// default vector. Payload indexes are keyed by payload field name
++/// (JSON path, e.g. `user_id` or `meta.tags`).
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct CollectionConfig {
++    pub dense_vectors: HashMap<String, DenseVectorConfig>,
++    pub sparse_vectors: HashMap<String, SparseVectorConfig>,
++    pub payload_indexes: HashMap<String, PayloadIndex>,
++}
++
++impl CollectionConfig {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Register a single unnamed dense vector (empty name `""`).
++    pub fn dense_vector(mut self, config: DenseVectorConfig) -> Self {
++        self.dense_vectors.insert(String::new(), config);
++        self
++    }
++
++    /// Register a named dense vector.
++    pub fn named_dense_vector(
++        mut self,
++        name: impl Into<String>,
++        config: DenseVectorConfig,
++    ) -> Self {
++        self.dense_vectors.insert(name.into(), config);
++        self
++    }
++
++    /// Register a single unnamed sparse vector (empty name `""`).
++    pub fn sparse_vector(mut self, config: SparseVectorConfig) -> Self {
++        self.sparse_vectors.insert(String::new(), config);
++        self
++    }
++
++    /// Register a named sparse vector.
++    pub fn named_sparse_vector(
++        mut self,
++        name: impl Into<String>,
++        config: SparseVectorConfig,
++    ) -> Self {
++        self.sparse_vectors.insert(name.into(), config);
++        self
++    }
++
++    /// Add a payload index for the given field path.
++    pub fn payload_index(
++        mut self,
++        field: impl Into<String>,
++        index: impl Into<PayloadIndex>,
++    ) -> Self {
++        self.payload_indexes.insert(field.into(), index.into());
++        self
++    }
++}
++
++/// Result of [`super::QdrantServerless::create_collection`].
++#[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct CreateCollectionResult {
++    /// Tenant-facing name of the collection.
++    pub collection_name: String,
++    /// Outcome, e.g. `"created"`.
++    pub result: String,
++    /// Time spent to process the request, in seconds.
++    pub time: f64,
++}
++
++/// Result of [`super::QdrantServerless::delete_collection`].
++#[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct DeleteCollectionResult {
++    /// Whether the collection existed and was deleted.
++    pub deleted: bool,
++    /// Time spent to process the request, in seconds.
++    pub time: f64,
++}
++
++/// A collection's configuration and stats, as returned by [`super::QdrantServerless::get_collection`].
++///
++/// `point_count` is eventually consistent and absent until stats have been
++/// written for the collection.
++#[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct CollectionInfo {
++    pub exists: bool,
++    pub config: Option<CollectionConfig>,
++    pub point_count: Option<u64>,
++    /// Time spent to process the request, in seconds.
++    pub time: f64,
++}
++
++/// Request for [`super::QdrantServerless::list_collections`].
++///
++/// Defaults to the server page size (20, max 100). Pass `offset_token` from a
++/// previous response's `next_offset_token` to fetch the next page.
++#[derive(Debug, Clone, PartialEq, Eq, Default)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct ListCollections {
++    /// Maximum number of collections to return. Unset: server default (20).
++    pub limit: Option<u32>,
++    /// Opaque token from a previous page's `next_offset_token`.
++    pub offset_token: Option<String>,
++}
++
++impl ListCollections {
++    /// Create an empty request (server defaults).
++    pub fn new() -> Self {
++        Self::default()
++    }
++}
++
++/// Builder for [`ListCollections`].
++#[must_use]
++#[derive(Clone, Default)]
++pub struct ListCollectionsBuilder {
++    limit: Option<u32>,
++    offset_token: Option<String>,
++}
++
++impl ListCollectionsBuilder {
++    /// Create an empty builder (server defaults).
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Maximum number of collections to return (must be 1..=100).
++    pub fn limit(mut self, limit: u32) -> Self {
++        self.limit = Some(limit);
++        self
++    }
++
++    /// Opaque token from a previous page's `next_offset_token`.
++    pub fn offset_token(mut self, offset_token: impl Into<String>) -> Self {
++        self.offset_token = Some(offset_token.into());
++        self
++    }
++
++    /// Build the [`ListCollections`] request.
++    pub fn build(self) -> ListCollections {
++        self.into()
++    }
++}
++
++impl From<ListCollectionsBuilder> for ListCollections {
++    fn from(builder: ListCollectionsBuilder) -> Self {
++        ListCollections {
++            limit: builder.limit,
++            offset_token: builder.offset_token,
++        }
++    }
++}
++
++/// One collection in a [`super::QdrantServerless::list_collections`] listing.
++#[derive(Debug, Clone, PartialEq, Eq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct CollectionSummary {
++    pub collection_name: String,
++    pub point_count: Option<u64>,
++}
++
++/// A page of collections returned by [`super::QdrantServerless::list_collections`].
++#[derive(Debug, Clone, PartialEq)]
++#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
++pub struct CollectionsList {
++    pub collections: Vec<CollectionSummary>,
++    /// Opaque token to pass as `offset_token` for the next page. Absent when done.
++    pub next_offset_token: Option<String>,
++    /// Time spent to process the request, in seconds.
++    pub time: f64,
++}
+diff --git a/tools/sync_serverless_proto.sh b/tools/sync_serverless_proto.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..c23129a4b5439d77b9161636e3b301ded6255c49
+--- /dev/null
++++ b/tools/sync_serverless_proto.sh
+@@ -0,0 +1,43 @@
++#!/usr/bin/env bash
++# Syncs proto/serverless_collections.proto from qdrant-cloud-public-api and
++# regenerates src/serverless/grpc.rs.
++#
++# Usage: ./tools/sync_serverless_proto.sh
++
++set -euo pipefail
++
++PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++cd "$PROJECT_ROOT"
++
++HEADER='// Source: https://github.com/qdrant/qdrant-cloud-public-api/blob/main/proto/qdrant/serverless/collections.proto
++// Renamed to serverless_collections.proto to sit alongside the regular collections.proto.
++// Client copy: buf.validate options are stripped (server-side only; wire format unchanged).
++// Regenerate with: cargo test --test serverless_protos -- --ignored --nocapture
++'
++
++PROTO_PATH="proto/serverless_collections.proto"
++TMP_PROTO="$(mktemp)"
++curl -fsSL https://raw.githubusercontent.com/qdrant/qdrant-cloud-public-api/main/proto/qdrant/serverless/collections.proto \
++  > "$TMP_PROTO"
++
++# Drop server-side protovalidate import/options; clients do not need them and
++# vendoring buf/validate would pull an extra dependency into the sync path.
++python3 - "$TMP_PROTO" "$PROTO_PATH" "$HEADER" <<'PY'
++import re, sys
++src_path, out_path, header = sys.argv[1], sys.argv[2], sys.argv[3]
++src = open(src_path).read()
++src = re.sub(r'\nimport "buf/validate/validate\.proto";\n', '\n', src)
++src = re.sub(
++    r' \[\(buf\.validate\.field\)\.uint32 = \{\s*gt: 0\s*lte: 100\s*\}\]',
++    '',
++    src,
++)
++if 'buf.validate' in src:
++    raise SystemExit('failed to strip buf.validate annotations from collections.proto')
++open(out_path, 'w').write(header + '\n' + src)
++PY
++rm -f "$TMP_PROTO"
++
++cargo test --test serverless_protos regenerate_serverless_protos -- --ignored --nocapture
++
++echo "Synced $PROTO_PATH and regenerated src/serverless/grpc.rs"

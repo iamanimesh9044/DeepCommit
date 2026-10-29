@@ -47,7 +47,10 @@ and how to run each phase.
 
 ### Multi-repo workspaces
 
-Milestones can span several repositories (for example an API contract repo plus its SDKs). Describe the repos in a workspace manifest and use `deepcommit workspace <validate|preproc|merge|run> <manifest>`. Phases 1-2 are covered; Phases 3-4 are in progress. See [Multi-repo workspaces](docs/execution_guide.md#multi-repo-workspaces) and the examples in [`config/examples/`](config/examples/).
+Milestones can span several repositories (for example an API contract repo plus its SDKs) and end as a Harbor multi-step CSF task.
+Describe the repos in a workspace manifest and run `deepcommit workspace <validate|preproc|merge|run|bundle|export-task|finalize-task|check-task>`.
+How it works and the commands to generate a task: [docs/multirepo.md](docs/multirepo.md). A finished example with every artifact:
+[`examples/qdrant-clients-v1/`](examples/qdrant-clients-v1/).
 
 ## Contributing
 
