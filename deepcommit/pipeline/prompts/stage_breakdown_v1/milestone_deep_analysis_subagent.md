@@ -16,6 +16,25 @@ Analyze milestone **{milestone_id}** for splitting feasibility. This milestone h
 - **Milestone CSV**: `{milestone_csv}`
 - **Dependencies CSV**: `{dependencies_csv}`
 
+### Workspace `{{workspace_id}}`
+
+This run covers a workspace of one or more repositories that are developed together:
+
+{{workspace_repos_table}}
+
+- Inspect code with `git -C repo_data/<repo> ...` (the `repo dir` column of the table; for a one-repo workspace that is `repo_data` itself). The MCP git tools route to the correct repository automatically.
+- Commit ids are bare 7-character SHAs, unique inside the workspace. A commit's repository is its `repo` field in the commit records or its entry in `commit_repos` (`commit_repos.json`). Never guess it from the SHA and never run `git` against the wrong repository.
+- With more than one repository, every file path in merged data is prefixed `<repo>/<path-in-repo>`; strip the prefix before passing a path to `git -C repo_data/<repo>`.
+- Edges in `commit_dag.json` come in two groups. `edges_dag` holds per-repository textual edges plus HARD cross-repo edges (`"xrepo": true`, `edge_types` such as `xrepo_contract`, `xrepo_pin`, `xrepo_pr_link`). `edges_soft` holds heuristic hints (for example time proximity): never enforced, and you may cut them.
+
+**Workspace rules**:
+- `src_loc` values are per-repository `src_loc` (that repository's source prefixes) summed over the milestone; give per-group `src_loc` the same way and judge the CV on the sum.
+- Group candidates must keep HARD cross-repo edges (`"xrepo": true`) inside one group; never split a contract change from its first consumer. Soft edges (`edges_soft`) are hints and may be cut.
+- A group or milestone that spans repositories must change at least 2 repositories, and no single repository's part alone may be a complete feature; report the `repos` of every proposed group.
+- Cycle checks use textual edges and hard xrepo edges only.
+
+---
+
 ## Analysis Steps
 
 ### Step 1: Build Internal Dependency Graph
@@ -59,8 +78,8 @@ For each strategy, define:
 {
   "strategy": "A",
   "groups": [
-    {"name": "group_1", "commits": ["sha1", "sha2"], "src_loc": 5000},
-    {"name": "group_2", "commits": ["sha3", "sha4"], "src_loc": 4500}
+    {"name": "group_1", "commits": ["sha1", "sha2"], "src_loc": 5000, "repos": ["contract", "sdk"]},
+    {"name": "group_2", "commits": ["sha3", "sha4"], "src_loc": 4500, "repos": ["sdk"]}
   ]
 }
 ```

@@ -29,6 +29,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+from ...multirepo.resolver import WorkspaceResolver
 from ...utils.data.commit_dag_loader import CommitDAGLoader
 from ...utils.data.data_loader import (
     load_dependency_graph,
@@ -88,6 +89,7 @@ class MilestoneDependencyAnalyzer:
         detect_redundant: bool = False,
         split_metadata_dir: Optional[str] = None,
         repo_path: Optional[str] = None,
+        resolver: Optional[WorkspaceResolver] = None,
     ):
         """
         初始化依赖分析器
@@ -99,7 +101,9 @@ class MilestoneDependencyAnalyzer:
             detect_redundant: 是否检测冗余的传递依赖（默认为 False）
             split_metadata_dir: split commit 元数据目录（可选，包含 split-* 子目录）
             repo_path: Git 仓库路径（可选，用于 split commit 的精确 blame 映射）
+            resolver: 多仓 WorkspaceResolver（可选）；multi 时 split commit 在其所属仓库内做 blame
         """
+        self.resolver = resolver
         self.commit_dag_path = Path(commit_dag_path)
         self.milestone_csv_path = Path(milestone_csv_path)
         self.dependencies_csv_path = Path(dependencies_csv_path) if dependencies_csv_path else None
@@ -122,6 +126,7 @@ class MilestoneDependencyAnalyzer:
                 split_metadata_dir,
                 repo_path=repo_path,
                 use_blame=repo_path is not None,
+                resolver=resolver,
             )
             if split_count > 0:
                 print(

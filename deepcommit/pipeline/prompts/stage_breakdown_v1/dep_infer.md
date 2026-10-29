@@ -9,12 +9,26 @@ This workflow infers the milestone dependency using LLM-based analysis. The goal
 
 In other words, `source` must be completed before `target` can start. Target builds upon source's work.
 
-**Core Principle**: `inferred_dependencies` (from commit DAG) are assumed correct.
+**Core Principle**: `inferred_dependencies` (from commit DAG) are assumed correct, except low-confidence cross-repo (xrepo) edges, which are validated like candidates (see the workspace rules below).
 
 **This workflow performs two tasks**:
 1. **Validate candidate dependencies**: Potentially missing edges → Should they be added? (Strong/Weak/INVALID)
 2. **Classify inferred dependencies**: Already valid edges → What's their strength? (Strong/Weak)
 
+### Workspace `{{workspace_id}}`
+
+This run covers a workspace of one or more repositories that are developed together:
+
+{{workspace_repos_table}}
+
+- Inspect code with `git -C repo_data/<repo> ...` (the `repo dir` column of the table; for a one-repo workspace that is `repo_data` itself). The MCP git tools route to the correct repository automatically.
+- Commit ids are bare 7-character SHAs, unique inside the workspace. A commit's repository is its `repo` field in the commit records or its entry in `commit_repos` (`commit_repos.json`). Never guess it from the SHA and never run `git` against the wrong repository.
+- With more than one repository, every file path in merged data is prefixed `<repo>/<path-in-repo>`; strip the prefix before passing a path to `git -C repo_data/<repo>`.
+- Edges in `commit_dag.json` come in two groups. `edges_dag` holds per-repository textual edges plus HARD cross-repo edges (`"xrepo": true`, `edge_types` such as `xrepo_contract`, `xrepo_pin`, `xrepo_pr_link`). `edges_soft` holds heuristic hints (for example time proximity): never enforced, and you may cut them.
+
+**Cross-repo rules**:
+- Edges between commits of different repositories are HARD xrepo edges in `edges_dag` (`"xrepo": true`, with a confidence score) or soft hints in `edges_soft`. Inferred xrepo edges with LOW confidence are NOT assumed correct: validate them with code evidence like any candidate edge, and prefer INVALID when uncertain. Soft edges are never assumed correct.
+- Dependency type **XREPO**: the source and target milestones are connected through a cross-repo edge (a contract change used by a consumer in another repository, a dependency pin bump across an interface change, or an explicit cross-repo PR link). Use XREPO instead of FUNC when the dependency crosses a repository boundary.
 ---
 
 ## Input Data
@@ -38,7 +52,7 @@ In other words, `source` must be completed before `target` can start. Target bui
    - `nodes`: Commit metadata (in/out degree, ancestors/descendants count)
    - `edges_dag`: Exact commit-level dependencies with edge types
 
-7. **Git Repository**: `{{repo_path}}`
+7. **Git Repositories**: one checkout per row of the repository table above (`repo_data/<repo>`)
    - For code inspection at specific commits
 
 ### Optional Resources (for Semantic/Logical Dependencies)
@@ -146,13 +160,13 @@ Use git commands when preprocessed patches are insufficient:
 
 ```bash
 # View file at commit
-git -C {{repo_path}} show <sha>:<filepath>
+git -C repo_data/<repo> show <sha>:<filepath>
 
 # Search for definitions
-git -C {{repo_path}} grep -n "def function_name" <sha>
+git -C repo_data/<repo> grep -n "def function_name" <sha>
 
 # Compare between commits
-git -C {{repo_path}} diff <sha1> <sha2> -- <filepath>
+git -C repo_data/<repo> diff <sha1> <sha2> -- <filepath>
 ```
 
 **Note**: Most analyses can be completed using preprocessed patches from Step 2.
@@ -199,6 +213,7 @@ Classify the dependency based on **code evidence** and **optional semantic/logic
 - **FUNC**: Functional dependency (target uses source's functionality via imports, API calls, inheritance, etc.)
 - **NFR**: Non-functional requirement dependency (version progression, security requirements, logical constraints)
 - **TEXT**: Textual-only dependency (target modifies source's code but does NOT use source's functionality)
+- **XREPO**: Cross-repository dependency (see the workspace rules above); takes precedence over FUNC when the source and target are in different repositories
 
 **Decision Logic**:
 1. Determine type based on Step 2 analysis:
@@ -223,7 +238,7 @@ Classify the dependency based on **code evidence** and **optional semantic/logic
       "source": "M006",
       "target": "M010",
       "decision": "Strong" | "Weak" | "INVALID",
-      "dependency_type": "FUNC" | "NFR" | "TEXT",
+      "dependency_type": "FUNC" | "NFR" | "TEXT" | "XREPO",
       "confidence": 0.95,
       "evidence": {
         "code_modification": [
@@ -368,7 +383,7 @@ Check **all commits mentioned in `evidence.code_examples`**:
 
 #### 2. CSV Export (`{{dependencies_csv}}`)
 
-**Columns**: `prerequisite_id`, `dependant_id`, `type` (FUNC/NFR/TEXT), `strength` (Strong/Weak), `rationale`, `confidence_score`
+**Columns**: `prerequisite_id`, `dependant_id`, `type` (FUNC/NFR/TEXT/XREPO), `strength` (Strong/Weak), `rationale`, `confidence_score`
 
 **Include**: All validated Strong/Weak dependencies (both candidate and inferred)
 

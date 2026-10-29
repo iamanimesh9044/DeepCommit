@@ -120,6 +120,7 @@ class DockerRunner:
         run_label: Optional[str] = None,
         idle_timeout_seconds: Optional[int] = None,
         idle_cpu_threshold_pct: float = 1.0,
+        network_none: bool = False,
     ):
         """
         Initialize DockerRunner.
@@ -141,7 +142,12 @@ class DockerRunner:
                                   multiprocessing futex deadlock) that escape the
                                   overall timeout. None = disabled (default).
             idle_cpu_threshold_pct: CPU percentage threshold for "idle" (default 1.0).
+            network_none: If True, run test containers with ``--network none`` (offline runtime; dependencies
+                          must already be resolved in the image). Incompatible with use_host_network.
         """
+        if network_none and use_host_network:
+            raise ValueError("network_none and use_host_network are mutually exclusive")
+        self.network_none = network_none
         self.image_name = image_name
         self.volumes = volumes or {}
         self.enable_docker_socket = enable_docker_socket
@@ -216,6 +222,8 @@ class DockerRunner:
         # Use host network if enabled (for testcontainers that spawn accessible containers)
         if self.use_host_network:
             cmd.extend(["--network", "host"])
+        elif self.network_none:
+            cmd.extend(["--network", "none"])
 
         # Mount Docker socket if enabled (for testcontainers/e2e tests)
         if self.enable_docker_socket:

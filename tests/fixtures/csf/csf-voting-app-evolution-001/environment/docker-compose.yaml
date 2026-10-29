@@ -1,0 +1,74 @@
+# CSF episode stack. Harbor supplies the "main" build; this file adds the system
+# under change. Every service joins "appnet" explicitly so services resolve by name.
+services:
+  main:
+    volumes:
+      - app-src:/app
+      - svc-logs:/var/log/services:ro
+    networks: [appnet]
+
+  vote:
+    build: ./services/vote
+    environment:
+      WAIT_FOR: /app/vote/app.py
+      CSF_RELOAD: manual
+    volumes:
+      - app-src:/app
+      - svc-logs:/var/log/services
+    depends_on:
+      main: {condition: service_started}
+      redis: {condition: service_healthy}
+    networks: [appnet]
+
+  worker:
+    build: ./services/worker
+    environment:
+      WAIT_FOR: /app/worker/Program.cs
+      CSF_RELOAD: manual
+    volumes:
+      - app-src:/app
+      - svc-logs:/var/log/services
+    depends_on:
+      main: {condition: service_started}
+      redis: {condition: service_healthy}
+      db: {condition: service_healthy}
+    networks: [appnet]
+
+  result:
+    build: ./services/result
+    environment:
+      WAIT_FOR: /app/result/server.js
+      CSF_RELOAD: manual
+    volumes:
+      - app-src:/app
+      - svc-logs:/var/log/services
+    depends_on:
+      main: {condition: service_started}
+      db: {condition: service_healthy}
+    networks: [appnet]
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+    networks: [appnet]
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      retries: 30
+    networks: [appnet]
+
+volumes:
+  app-src:
+  svc-logs:
+
+networks:
+  appnet:

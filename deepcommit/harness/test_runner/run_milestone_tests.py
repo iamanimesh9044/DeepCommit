@@ -112,8 +112,10 @@ from .core.report_parser import (
     FRAMEWORK_CONFIG,
     convert_to_summary,
     get_file_extension,
+    namespace_test_ids,
     parse_test_report,
 )
+from .core.test_executor import get_workspace_switch_cmd
 from .core.types import MilestoneTestConfig
 
 # Configure logging
@@ -946,6 +948,28 @@ def get_switch_cmd(state: str, milestone_id: str, base_commit: Optional[str] = N
         raise ValueError(f"Unknown state: {state}")
 
 
+def build_workspace_state_script(
+    state: str, milestone_id: str, repos: List[str], mode: Any, test_cmd: str, post_script: str = ""
+) -> str:
+    """Script for one (state, suite) run in a multi-root workspace image (all repos switched, suite runs in its workdir)."""
+    workdir = mode.workdir or f"/workspace/{mode.repo}"
+    return f"""
+set -e
+echo ">>> Switching all repos to {state} state..."
+{get_workspace_switch_cmd(state, milestone_id, repos)}
+# Apply compilation patches if script exists
+if [ -x /usr/local/bin/apply_patches.sh ]; then
+    echo ">>> Applying compilation patches..."
+    /usr/local/bin/apply_patches.sh
+fi
+cd {workdir}
+echo ">>> Running {mode.name} tests ({mode.repo}) for {state} state..."
+{test_cmd} || true
+echo ">>> Done with {state}/{mode.name}"
+{post_script}
+"""
+
+
 def get_default_test_cmd(
     workers: int,
     timeout: int,
@@ -1017,6 +1041,8 @@ def run_single_attempt(
     # Run each (state, mode) pair
     # Store tuples of (Path, framework) to support per-mode framework overrides
     state_mode_files: Dict[str, List[Tuple[Path, str]]] = {state: [] for state in all_states}
+    workspace_repos = config.workspace_repos() if config.is_workspace else []
+    file_repo: Dict[Path, Optional[str]] = {}  # report path -> suite repo (id namespace)
 
     # Determine file extension based on framework
     file_ext = get_file_extension(framework)
@@ -1026,6 +1052,8 @@ def run_single_attempt(
         mode_framework = mode.framework or framework
         mode_file_ext = get_file_extension(mode_framework)
         output_file = f"{state}_{mode.name}{mode_file_ext}"
+        if mode.report_file:
+            output_file = mode.report_file.format(state=state)
 
         # Build test command
         if mode.test_cmd:
@@ -1106,6 +1134,11 @@ echo ">>> Done with {state}/{mode.name}"
 {surefire_collect_script}
 """
 
+        if workspace_repos:
+            script = build_workspace_state_script(
+                state, milestone_id, workspace_repos, mode, test_cmd, surefire_collect_script
+            )
+
         # Run in container
         returncode, stdout, stderr = runner.run(
             script,
@@ -1119,9 +1152,15 @@ echo ">>> Done with {state}/{mode.name}"
         output_path = attempt_dir / output_file
         if output_path.exists():
             state_mode_files[state].append((output_path, mode_framework))
+            file_repo[output_path] = mode.repo
 
     # Run original state if configured (with default mode only)
-    if config.include_original and base_commit and "original" not in [s for s, m in config.get_all_state_mode_pairs()]:
+    if (
+        config.include_original
+        and base_commit
+        and not workspace_repos  # workspace mode: no per-repo "original" state
+        and "original" not in [s for s, m in config.get_all_state_mode_pairs()]
+    ):
         output_file = f"original_default{file_ext}"
         test_cmd = get_default_test_cmd(workers, timeout, output_file, framework)
         switch_cmd = get_switch_cmd("original", milestone_id, base_commit)
@@ -1168,7 +1207,7 @@ echo ">>> Done with original state"
                 # This is important for non-JSON frameworks (maven, cargo, etc.)
                 file_path, file_framework = mode_file_tuples[0]
                 try:
-                    parsed = parse_test_report(file_path, file_framework)
+                    parsed = namespace_test_ids(parse_test_report(file_path, file_framework), file_repo.get(file_path))
                     with open(merged_path, "w") as f:
                         json.dump(parsed, f, indent=2)
                 except Exception as e:
@@ -1183,7 +1222,9 @@ echo ">>> Done with original state"
 
                 for file_path, file_framework in mode_file_tuples:
                     try:
-                        parsed = parse_test_report(file_path, file_framework)
+                        parsed = namespace_test_ids(
+                            parse_test_report(file_path, file_framework), file_repo.get(file_path)
+                        )
                         all_parsed_tests.extend(parsed.get("tests", []))
                         total_duration += parsed.get("duration", 0)
                         for key in summary_totals:
@@ -1300,6 +1341,7 @@ def run_single_milestone(
     attempt_source: str = "pipeline",
     output_scope: str = OUTPUT_SCOPE_BENCHMARK,
     workers_override: Optional[int] = None,
+    no_network: bool = False,
 ) -> Dict[str, Any]:
     """
     Run tests for a single milestone using Docker with retry support.
@@ -1395,6 +1437,7 @@ def run_single_milestone(
             logger.warning(f"Invalid HARNESS_DOCKER_IDLE_TIMEOUT_SECONDS={idle_env!r}; ignoring")
     runner = DockerRunner(
         image_name,
+        network_none=no_network,
         enable_docker_socket=enable_docker_socket,
         use_host_network=enable_docker_socket,  # Use host network when testcontainers enabled
         extra_env={"TESTCONTAINERS_RYUK_DISABLED": "true"} if enable_docker_socket else {},
@@ -1686,6 +1729,11 @@ Examples:
     )
     parser.add_argument("--include-original", action="store_true", help="Also test at original state (base_commit)")
     parser.add_argument(
+        "--no-network",
+        action="store_true",
+        help="Run test containers with --network none (offline; deps must be resolved at image build time)",
+    )
+    parser.add_argument(
         "--force-rebuild-image",
         action="store_true",
         help="Force rebuild Docker image even if it already exists",
@@ -1855,6 +1903,7 @@ Examples:
                     attempt_source=args.attempt_source,
                     output_scope=args.output_scope,
                     workers_override=args.workers_override,
+                    no_network=args.no_network,
                 )
                 futures[future] = milestone_id
 
@@ -1893,6 +1942,7 @@ Examples:
                 attempt_source=args.attempt_source,
                 output_scope=args.output_scope,
                 workers_override=args.workers_override,
+                no_network=args.no_network,
             )
             all_results[milestone_id] = result
 

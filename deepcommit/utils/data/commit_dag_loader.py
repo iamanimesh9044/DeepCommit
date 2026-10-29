@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 # Import commit_utils for normalization
+from ...multirepo.resolver import WorkspaceResolver
 from ...tools.utils.commit_utils import normalize_commit_sha
 
 
@@ -71,6 +72,26 @@ class CommitDAGLoader:
         self._transitive_closure = None
         self._reverse_transitive_closure = None
 
+        # Multi-repo: hard cross-repo edges live in edges_dag (and are enforced like any other edge); soft edges
+        # are hints only and are never part of edges_map / path completeness.
+        self._soft_edges: List[Dict] = list(self.dag_data.get("edges_soft", []))
+        self._xrepo_edges: Set[Tuple[str, str]] = {
+            (e["source"][:7], e["target"][:7]) for e in self.dag_data.get("edges_dag", []) if e.get("xrepo")
+        }
+
+    def get_soft_edges(self) -> List[Dict]:
+        """Soft cross-repo hints (never enforced by dependency / path-completeness checks)."""
+        return self._soft_edges
+
+    def is_xrepo_edge(self, source_sha: str, target_sha: str) -> bool:
+        """True if the (hard) edge source -> target crosses repos."""
+        return (source_sha[:7], target_sha[:7]) in self._xrepo_edges
+
+    def repo_of(self, commit_sha: str) -> Optional[str]:
+        """Repo name stored on the node (multi-repo merged DAG); None for single-repo DAGs."""
+        info = self.get_commit_info(commit_sha)
+        return info.get("repo") if info else None
+
     def _load_dag(self) -> Dict:
         """
         加载 DAG JSON 文件 (Enhanced format from commit_dag_v3.py)
@@ -108,6 +129,7 @@ class CommitDAGLoader:
             "layers": enhanced_data.get("layers", {}),  # 保持原字段名和结构
             "topo_order": enhanced_data.get("topo_order", []),
             "meta": enhanced_data.get("meta", {}),
+            **({"edges_soft": enhanced_data["edges_soft"]} if "edges_soft" in enhanced_data else {}),
         }
 
     def _build_layer_index(self) -> Dict[str, int]:
@@ -143,7 +165,10 @@ class CommitDAGLoader:
             if target not in edges_map:
                 edges_map[target] = []
 
-            edges_map[target].append({"source": source, "files_ref": files_ref})
+            entry = {"source": source, "files_ref": files_ref}
+            if edge.get("xrepo"):
+                entry["xrepo"] = True
+            edges_map[target].append(entry)
 
         return edges_map
 
@@ -691,9 +716,13 @@ class CommitDAGLoader:
         follow_moves: bool = True,
         ignore_whitespace: bool = True,
         follow_depth: int = 2,
+        resolver: Optional[WorkspaceResolver] = None,
     ) -> int:
         """
         在线合并 split commit 的内部边到 DAG（不持久化）
+
+        Multi-repo: pass a multi-repo ``resolver``; each split is then applied with git run in the original
+        commit's own repo (``repo_path`` is ignored) while edge/file paths stay ``<repo>/<path>`` prefixed.
 
         当原始 commit O 被 split 成 sub-commits A, B, C 时：
         1. 添加 A, B, C 到 nodes
@@ -730,19 +759,33 @@ class CommitDAGLoader:
         if not metadata_files:
             return 0
 
-        if not repo_path or not use_blame:
+        multi = resolver is not None and resolver.multi
+        if not multi and (not repo_path or not use_blame):
             raise ValueError(
                 "Blame-based split mapping requires repo_path and use_blame=True (fallback file mapping is disabled)."
             )
 
+        def _make_helper(path: str) -> "_GitBlameHelper":
+            return _GitBlameHelper(
+                repo_path=Path(path),
+                context_lines=context_lines,
+                follow_moves=follow_moves,
+                ignore_whitespace=ignore_whitespace,
+                follow_depth=follow_depth,
+            )
+
         # 初始化 Git 操作辅助器（如果提供了 repo_path）
-        git_helper = _GitBlameHelper(
-            repo_path=Path(repo_path),
-            context_lines=context_lines,
-            follow_moves=follow_moves,
-            ignore_whitespace=ignore_whitespace,
-            follow_depth=follow_depth,
-        )
+        git_helper = None if multi else _make_helper(str(repo_path))
+        repo_helpers: Dict[str, "_RepoScopedGitHelper"] = {}
+
+        def _helper_for(metadata: Dict):
+            if not multi:
+                return git_helper
+            assert resolver is not None
+            name = resolver.repo_for(_split_original_ref(metadata))
+            if name not in repo_helpers:
+                repo_helpers[name] = _RepoScopedGitHelper(_make_helper(resolver.repos[name].checkout_path), name)
+            return repo_helpers[name]
 
         processed_count = 0
 
@@ -755,18 +798,23 @@ class CommitDAGLoader:
             with open(metadata_file, "r", encoding="utf-8") as f:
                 metadata = json.load(f)
 
-            self._prepare_split_metadata(metadata, git_helper, metadata_file)
+            self._prepare_split_metadata(metadata, _helper_for(metadata), metadata_file)
+            if multi:
+                prefix = _helper_for(metadata)._prefix
+                for sc in metadata["split_result"]["src_commits"]:
+                    sc["files"] = [f if f.startswith(prefix) else prefix + f for f in sc["files"]]
             metadata_entries.append((metadata, metadata_file))
 
         cache_dir = split_dir / ".deps_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         for metadata, _metadata_file in self._order_split_metadata_by_topo(metadata_entries):
+            helper = _helper_for(metadata)
             cache_data = self._load_split_cache(cache_dir, metadata)
             if cache_data:
-                self._apply_cached_split(metadata, cache_data, git_helper)
+                self._apply_cached_split(metadata, cache_data, helper)
             else:
-                cache_payload = self._apply_single_split(metadata, git_helper)
+                cache_payload = self._apply_single_split(metadata, helper)
                 self._write_split_cache(cache_dir, cache_payload)
             processed_count += 1
 
@@ -1096,6 +1144,7 @@ class CommitDAGLoader:
                 "out_degree": 0,
                 "ancestors_count": 0,
                 "descendants_count": 0,
+                **({"repo": original_node["repo"]} if "repo" in original_node else {}),
             }
 
     def _apply_cached_split(
@@ -1134,8 +1183,9 @@ class CommitDAGLoader:
                     [],
                 )
 
+            xrepo = self.is_xrepo_edge(source_sha, original_sha)
             for target_split_sha in target_splits:
-                self._add_edge(source_sha, target_split_sha, files_ref)
+                self._add_edge(source_sha, target_split_sha, files_ref, xrepo=xrepo)
 
         original_out_targets = self.reverse_edges_map.get(original_sha, [])
         hunk_mapping = None
@@ -1157,8 +1207,9 @@ class CommitDAGLoader:
                     [],
                 )
 
+            xrepo = self.is_xrepo_edge(original_sha, target_sha)
             for source_split_sha in source_splits:
-                self._add_edge(source_split_sha, target_sha, edge_files)
+                self._add_edge(source_split_sha, target_sha, edge_files, xrepo=xrepo)
 
         self._remove_commit(original_sha)
 
@@ -1219,8 +1270,9 @@ class CommitDAGLoader:
             )
 
             inbound_map.setdefault(source_sha[:7], set()).update(target_splits)
+            xrepo = self.is_xrepo_edge(source_sha, original_sha)
             for target_split_sha in target_splits:
-                self._add_edge(source_sha, target_split_sha, files_ref)
+                self._add_edge(source_sha, target_split_sha, files_ref, xrepo=xrepo)
 
         # 5. 重新映射出边 (original -> Y) => (split commits -> Y)
         # 使用 git blame 精确确定应该从哪些 split commits 出发
@@ -1245,8 +1297,9 @@ class CommitDAGLoader:
                 )
 
             outbound_map.setdefault(target_sha[:7], set()).update(source_splits)
+            xrepo = self.is_xrepo_edge(original_sha, target_sha)
             for source_split_sha in source_splits:
-                self._add_edge(source_split_sha, target_sha, edge_files)
+                self._add_edge(source_split_sha, target_sha, edge_files, xrepo=xrepo)
 
         # 6. 移除原 commit 的节点和边
         self._remove_commit(original_sha)
@@ -1663,16 +1716,21 @@ class CommitDAGLoader:
                 stack.append(neighbor)
         return False
 
-    def _add_edge(self, source_sha: str, target_sha: str, files_ref: List[str]) -> None:
+    def _add_edge(self, source_sha: str, target_sha: str, files_ref: List[str], xrepo: bool = False) -> None:
         """添加一条边到 DAG"""
         source_sha = source_sha[:7]
         target_sha = target_sha[:7]
+        if xrepo:
+            self._xrepo_edges.add((source_sha, target_sha))
 
         # 添加到 edges_map
         if target_sha not in self.edges_map:
             self.edges_map[target_sha] = []
         if not any(e["source"][:7] == source_sha for e in self.edges_map[target_sha]):
-            self.edges_map[target_sha].append({"source": source_sha, "files_ref": files_ref})
+            entry = {"source": source_sha, "files_ref": files_ref}
+            if xrepo:
+                entry["xrepo"] = True
+            self.edges_map[target_sha].append(entry)
 
         # 添加到 reverse_edges_map
         if source_sha not in self.reverse_edges_map:
@@ -1715,6 +1773,60 @@ class CommitDAGLoader:
             self.reverse_edges_map[source] = [t for t in self.reverse_edges_map[source] if t[:7] != sha]
             if not self.reverse_edges_map[source]:
                 del self.reverse_edges_map[source]
+
+
+def _split_original_ref(metadata: Dict) -> str:
+    """First usable ref of the split's original commit (any METADATA.json format), for repo routing."""
+    oc = metadata.get("original_commit") or {}
+    si = metadata.get("split_info") or {}
+    if isinstance(oc, str):
+        return oc
+    for ref in (
+        oc.get("short_hash"),
+        oc.get("short_sha"),
+        oc.get("hash"),
+        oc.get("sha"),
+        oc.get("full_hash"),
+        si.get("original_commit_sha"),
+    ):
+        if ref:
+            return str(ref)
+    raise RuntimeError("Split metadata has no original commit ref")
+
+
+class _RepoScopedGitHelper:
+    """Runs a per-repo ``_GitBlameHelper`` while the DAG keeps ``<repo>/<path>`` prefixed paths."""
+
+    def __init__(self, helper: "_GitBlameHelper", repo_name: str):
+        self._h = helper
+        self._prefix = f"{repo_name}/"
+
+    def _strip(self, path: str) -> str:
+        return path[len(self._prefix) :] if path.startswith(self._prefix) else path
+
+    def _pref(self, path: str) -> str:
+        return self._prefix + path
+
+    def resolve_commit_ref(self, ref: str) -> Optional[str]:
+        return self._h.resolve_commit_ref(ref)
+
+    def commit_exists(self, sha: str) -> bool:
+        return self._h.commit_exists(sha)
+
+    def get_changed_files(self, commit: str) -> List[str]:
+        return [self._pref(f) for f in self._h.get_changed_files(commit)]
+
+    def blame_file_range(self, commit: str, path: str, start: int, end: int) -> List[Tuple[int, str]]:
+        return self._h.blame_file_range(commit=commit, path=self._strip(path), start=start, end=end)
+
+    def get_old_line_ranges(self, commit: str, file_path: str) -> List[Tuple[int, int]]:
+        return self._h.get_old_line_ranges(commit, self._strip(file_path))
+
+    def get_diff_hunks(self, commit: str) -> Dict[str, List[Tuple[int, int]]]:
+        return {self._pref(f): r for f, r in self._h.get_diff_hunks(commit).items()}
+
+    def get_diff_hunks_for_commit(self, commit: str, file_path: str) -> List[Tuple[int, int]]:
+        return self._h.get_diff_hunks_for_commit(commit, self._strip(file_path))
 
 
 # =============================================================================

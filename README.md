@@ -45,6 +45,10 @@ DeepCommit runs as a four-phase pipeline. See
 [`docs/execution_guide.md`](docs/execution_guide.md) for the end-to-end walkthrough
 and how to run each phase.
 
+### Multi-repo workspaces
+
+Milestones can span several repositories (for example an API contract repo plus its SDKs). Describe the repos in a workspace manifest and use `deepcommit workspace <validate|preproc|merge|run> <manifest>`. Phases 1-2 are covered; Phases 3-4 are in progress. See [Multi-repo workspaces](docs/execution_guide.md#multi-repo-workspaces) and the examples in [`config/examples/`](config/examples/).
+
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) and our

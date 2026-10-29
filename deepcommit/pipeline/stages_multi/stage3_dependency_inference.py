@@ -224,6 +224,44 @@ class Stage3DependencyInference(BaseStage):
 
         return score, signals
 
+    @staticmethod
+    def _xrepo_milestone_edges(
+        commit_dag: Dict, milestone_commits: Dict[str, List[str]]
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """Lift commit-level cross-repo edges to milestone pairs.
+
+        Hard edges are ``edges_dag`` entries flagged ``xrepo``; soft ones are ``edges_soft`` (hints only).
+        A pair with a hard edge is never also reported as soft.
+
+        Returns:
+            (hard, soft) lists of {source_milestone, target_milestone, confidence, commit_edges, evidence}
+        """
+        commit_to_ms: Dict[str, str] = {}
+        for mid, cs in milestone_commits.items():
+            for c in cs:
+                commit_to_ms.setdefault(c[:7], mid)
+
+        def lift(edges: List[Dict]) -> Dict[Tuple[str, str], Dict]:
+            out: Dict[Tuple[str, str], Dict] = {}
+            for e in edges:
+                ms, mt = commit_to_ms.get(e["source"][:7]), commit_to_ms.get(e["target"][:7])
+                if not ms or not mt or ms == mt:
+                    continue
+                item = out.setdefault(
+                    (ms, mt),
+                    {"source_milestone": ms, "target_milestone": mt, "confidence": 0.0, "commit_edges": [], "evidence": []},
+                )
+                item["confidence"] = max(item["confidence"], float(e.get("confidence", 0.0) or 0.0))
+                item["commit_edges"].append([e["source"][:7], e["target"][:7]])
+                item["evidence"].extend(e.get("evidence", [])[:2])
+            return out
+
+        hard = lift([e for e in commit_dag.get("edges_dag", []) if e.get("xrepo")])
+        soft = lift(commit_dag.get("edges_soft", []))
+        for pair in hard:
+            soft.pop(pair, None)
+        return list(hard.values()), list(soft.values())
+
     def _save_pre_selected_candidates(self, optional_list: List[List[str]]) -> None:
         """Generate and save pre_selected_candidates.json with ranked optional dependencies.
 
@@ -313,8 +351,62 @@ class Stage3DependencyInference(BaseStage):
                 }
             )
 
-        # Sort by score (descending)
-        ranked_edges.sort(key=lambda x: x["score"], reverse=True)
+        # Multi-repo: hard cross-repo edges are pre-selected (top rank), soft hints are appended (bottom rank)
+        n_hard = n_soft = 0
+        if self.ctx.is_multi_repo:
+            with open(self.ctx.get_input("commit_dag")) as f:
+                commit_dag = json.load(f)
+            hard, soft = self._xrepo_milestone_edges(commit_dag, milestone_commits)
+            by_pair = {(e["source_milestone"], e["target_milestone"]): e for e in ranked_edges}
+            for x in hard:
+                edge = by_pair.get((x["source_milestone"], x["target_milestone"]))
+                if edge is None:
+                    edge = {
+                        "source_milestone": x["source_milestone"],
+                        "target_milestone": x["target_milestone"],
+                        "score": 0.0,
+                        "source_commits": [sha_prefix_map.get(c, c) for c in milestone_commits[x["source_milestone"]]],
+                        "target_commits": [sha_prefix_map.get(c, c) for c in milestone_commits[x["target_milestone"]]],
+                        "signals": {},
+                    }
+                    ranked_edges.append(edge)
+                edge.update(
+                    type="XREPO",
+                    inferred_from="xrepo",
+                    pre_selected=True,
+                    xrepo_confidence=x["confidence"],
+                    xrepo_commit_edges=x["commit_edges"],
+                    xrepo_evidence=x["evidence"][:4],
+                )
+                n_hard += 1
+            for x in soft:
+                if (x["source_milestone"], x["target_milestone"]) in by_pair:
+                    by_pair[(x["source_milestone"], x["target_milestone"])].setdefault("class", "soft")
+                    continue
+                ranked_edges.append(
+                    {
+                        "source_milestone": x["source_milestone"],
+                        "target_milestone": x["target_milestone"],
+                        "score": 0.0,
+                        "source_commits": [sha_prefix_map.get(c, c) for c in milestone_commits[x["source_milestone"]]],
+                        "target_commits": [sha_prefix_map.get(c, c) for c in milestone_commits[x["target_milestone"]]],
+                        "signals": {},
+                        "class": "soft",
+                        "inferred_from": "xrepo_soft",
+                        "xrepo_confidence": x["confidence"],
+                        "xrepo_commit_edges": x["commit_edges"],
+                        "xrepo_evidence": x["evidence"][:4],
+                    }
+                )
+                n_soft += 1
+
+        # Sort by score (descending); multi-repo tiers: hard xrepo first, soft hints last (N=1: plain score sort)
+        ranked_edges.sort(
+            key=lambda x: (
+                0 if x.get("pre_selected") else (2 if x.get("class") == "soft" else 1),
+                -x["score"],
+            )
+        )
 
         # Add rank
         for i, edge in enumerate(ranked_edges, 1):
@@ -336,6 +428,7 @@ class Stage3DependencyInference(BaseStage):
                 "input_edges": len(optional_list),
                 "ranked_edges": len(ranked_edges),
                 "source": "optional_dependencies (filtered, transitive removed)",
+                **({"xrepo_hard": n_hard, "xrepo_soft": n_soft} if self.ctx.is_multi_repo else {}),
             },
             "candidates": ranked_edges,
         }

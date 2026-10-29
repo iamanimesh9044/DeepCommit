@@ -48,7 +48,9 @@ Important base-image assumption:
 
 **Host workspace boundary**: never write to the host workspace's `testbed/` directory (the source of `COPY . /testbed/`). M1 owns that path; the milestone tags live there as committed history. Inspecting commit content via `git -C {{ repo_path }} show <ref>:<path>` (read-only) is fine, but any host-side `git checkout / git reset / git add / file write` against `testbed/` will be baked into every milestone's Docker image at `COPY` time and break subsequent in-container `git checkout milestone-{MID}-{start,end}` operations.
 
-**Required Dockerfile guard**: when your Dockerfile re-copies host testbed/ (the typical `RUN rm -rf /testbed` followed by `COPY . /testbed/`), the very next step MUST be `RUN cd /testbed && git reset --hard HEAD` to discard any host-side dirty state that may have leaked in. The base image follows this pattern; per-MS Dockerfiles must too. Without it, [ENV-PATCH] `git checkout` will abort on uncommitted-modification conflicts and the entire build fails.
+**Required Dockerfile guard**: when your Dockerfile re-copies host testbed/ (the typical `RUN rm -rf /testbed` followed by `COPY . /testbed/`), the very next step MUST be `RUN cd /testbed && git reset --hard HEAD` to discard any host-side dirty state that may have leaked in. The base image follows this pattern; per-MS Dockerfiles must too. Without it, [ENV-PATCH] `git checkout` will abort on uncommitted-modification conflicts and the entire build fails.{% if workspace_mode %}
+
+{% include "_partials/workspace_layout.md.j2" %}{% endif %}
 
 Your task is to handle git state management and compatibility patches only.
 

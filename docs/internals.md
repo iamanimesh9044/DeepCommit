@@ -179,3 +179,47 @@ milestone before it goes into the benchmark:
 - **Mark verified**: rename the version directory (e.g., `srs/v1/{MID}/` → `srs/v1_verified/{MID}/`) once reviewed. Unverified SRS should not be used for evaluation.
 
 Known gaps: automatic dry-run validation (an agent solving the task from the SRS alone, to catch missing or leaked information), iterative SRS refinement, and auto-propagation of SRS-unresolvable findings back to Phase 3 (DAG edits, milestone re-partitioning) are all TODO.
+
+## Multi-repo workspaces
+
+Goal: milestones that span repositories (contract plus consumers). Single-repo behaviour is the N=1 special case and stays byte-identical, including rendered prompts.
+
+### Design decisions
+
+- A workspace manifest names the member repos; each keeps its single-repo config, so Phase 1 runs per repo unchanged. `workspace merge` then builds the merged inputs Phase 2 reads.
+- Commit keys stay **bare 7-char SHAs**. They are globally unique inside a workspace; `merge` fails with a collision error if two repos share a 7-char SHA. The repo of a commit comes from `commit_repos.json` and the `repo` field of commit records.
+- Merged data paths are prefixed `<repo>/<path>`; on disk repos live at `repo_data/<repo>/`.
+- PRs and issues carry `repo` and `pr_key` (`<repo>#<n>`); commits carry `repo`, `committed_at`, `merged_via_pr_key`.
+
+### Hard vs soft edges
+
+Merged `commit_dag.json` has two edge lists:
+
+| List | Contents | Enforcement |
+|---|---|---|
+| `edges_dag` | per-repo textual edges, plus HARD cross-repo edges flagged `"xrepo": true` with `edge_types` `xrepo_contract` (contract identifier added then used by a consumer), `xrepo_pin` (pin bump across an interface change), `xrepo_pr_link` (explicit cross-repo PR/issue reference) | Path completeness applies |
+| `edges_soft` | heuristics (time proximity, release coupling, CI triggers) | Hints only, never enforced, LLM may cut them |
+
+### Prompt gating
+
+Phase 2 prompts contain `{{#if is_multi_repo}}...{{/if}}` blocks, handled by `render_template_string` in `deepcommit/pipeline/utils/template.py`. A block is dropped (with the newline after each tag) unless the variable is set and not one of `""`, `0`, `false`, `no`, `none`; blocks do not nest. Templates without the syntax render as before, and tests compare single-repo output with the original files. New variables: `is_multi_repo`, `workspace_id`, `workspace_repos_table`. Note: any renderer that does its own `{{var}}` substitution instead of calling `render_template_string` will leak the raw tags and must be switched to it.
+
+### Redefined rules per phase
+
+| Rule | Multi-repo form |
+|---|---|
+| 100% coverage, no overlap | over the union of commits; reported per repo and overall |
+| Path completeness | textual edges within a repo and hard xrepo edges only |
+| Seed grouping | seeds linked by hard xrepo edges share a group |
+| Seed count | about 20 per repo (soft) |
+| Balancing | `src_loc` per repo with that repo's prefixes, summed; CV on the sum; thresholds per workspace; never split a contract change from its first consumer |
+| `integration_test_commit` | one per repo |
+| Dependency types | adds `XREPO`; low-confidence xrepo edges are not assumed correct |
+| Cross-repo milestone validity | changes at least 2 repos; no single repo's part is a complete feature |
+| `milestones.csv` | new `repos` column (semicolon-separated) |
+
+Phase 3 (per-repo branches and tags, one image holding all toolchains, a suites list with `{repo}::` test ids, `milestone_patches/{MID}/{repo}.patch`, a single-repo-shortcut gate) and Phase 4 (per-repo diffs, "Interface contract" section, boundary vs internal name leak rule) are **in progress**.
+
+### Known limits
+
+Cross-repo edge heuristics are untested on real data; the split-commit compile check is skipped for cross-repo milestones; whether a validator enforces the seed target is unverified; offline-run dependency vendoring for Phase 3 is new work.

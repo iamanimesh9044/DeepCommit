@@ -19,10 +19,12 @@ if str(_parent_dir) not in sys.path:
 try:
     from ...utils.data.data_loader import load_main_commits, load_milestones
     from ..utils import resolve_repo_path_with_fallback
+    from ..utils.workspace_routing import RoutedGit, is_multi
 except ImportError:
     # For direct script execution
     from utils.data_loader import load_main_commits, load_milestones
     from utils.repo_utils import resolve_repo_path_with_fallback
+    from utils.workspace_routing import RoutedGit, is_multi
 
 
 @dataclass
@@ -474,8 +476,12 @@ def analyze_milestone_size_balance(
     output_dir: str = "",
     repo_src_dir: Optional[Union[str, List[str]]] = None,
     exclude_patterns: Optional[List[str]] = None,
+    resolver=None,
 ) -> Dict:
     """分析里程碑规模平衡性
+
+    resolver: 多仓 WorkspaceResolver；multi 时每个 commit 在自己的仓库里用该仓库的 src 目录/排除规则统计 LoC
+    （repo_path / repo_src_dir / exclude_patterns 被忽略）。
 
     Args:
         csv_file: 里程碑CSV文件路径
@@ -528,10 +534,14 @@ def analyze_milestone_size_balance(
             cv = std_dev / mean_size
 
         # 基于LoC的统计分析
-        if repo_path and Path(repo_path).exists():
+        if is_multi(resolver) or (repo_path and Path(repo_path).exists()):
             milestone_commits_list = [m["commits"] for m in milestones.values()]
             loc_stats = _calculate_loc_stats(
-                milestone_commits_list, repo_path, path_prefix=repo_src_dir, exclude_patterns=exclude_patterns
+                milestone_commits_list,
+                repo_path,
+                path_prefix=repo_src_dir,
+                exclude_patterns=exclude_patterns,
+                resolver=resolver,
             )
 
     # 返回分析结果
@@ -584,6 +594,7 @@ def _calculate_loc_stats(
     repo_path: str,
     path_prefix: Optional[Union[str, List[str]]] = None,
     exclude_patterns: Optional[List[str]] = None,
+    resolver=None,
 ) -> Dict[str, float]:
     """计算里程碑的LoC统计信息
 
@@ -604,7 +615,8 @@ def _calculate_loc_stats(
         - path_prefix: 如果指定了路径前缀，返回使用的前缀
         - exclude_patterns: 如果指定了排除模式，返回使用的模式
     """
-    if not repo_path or not Path(repo_path).exists():
+    multi = is_multi(resolver)
+    if not multi and (not repo_path or not Path(repo_path).exists()):
         return {}
 
     try:
@@ -614,7 +626,14 @@ def _calculate_loc_stats(
         sys.path.append(str(Path(__file__).parent.parent.parent))  # 添加deepcommit目录到路径
         from deepcommit.utils.git.local_git_repo import LocalGitRepo
 
-        repo = LocalGitRepo(repo_path)
+        if multi:
+            routed = RoutedGit(resolver)
+            path_prefix = resolver.prefixed_src_dirs() or None
+            exclude_patterns = [
+                f"{n}/{p}" for n, r in resolver.repos.items() for p in list(r.test_dirs) + list(r.exclude)
+            ] or None
+        else:
+            repo = LocalGitRepo(repo_path)
 
         # 计算每个里程碑的LoC
         milestone_locs = []
@@ -625,7 +644,10 @@ def _calculate_loc_stats(
 
             for commit in commits:
                 if commit:  # 确保commit不是空字符串
-                    loc_info = repo.get_commit_loc(commit, path_prefix=path_prefix, exclude_patterns=exclude_patterns)
+                    if multi:
+                        loc_info = routed.commit_loc(commit)
+                    else:
+                        loc_info = repo.get_commit_loc(commit, path_prefix=path_prefix, exclude_patterns=exclude_patterns)
 
                     # 检查commit是否存在
                     if loc_info.get("exists", False):

@@ -20,6 +20,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import yaml
 
 from deepcommit.harness.test_runner.core.classifier import CLASSIFICATION_CATEGORIES
+from deepcommit.harness.utils.xrepo_gates import compute_xrepo_gates
 
 DEFAULT_GATE_CONFIG_PATH = Path(__file__).with_name("gate_config.yaml")
 TRANSITION_KEYS = tuple(CLASSIFICATION_CATEGORIES)
@@ -1019,6 +1020,9 @@ def run_frozen_check(
             thresholds,
         )
     )
+
+    # Workspace (multi-repo) milestones only: extra X_* gates; adds nothing when no milestone has a `repos` column value.
+    gates.update(compute_xrepo_gates(workspace, milestones, candidate))
 
     failing_gates = [name for name, gate in gates.items() if not gate.get("passed")]
     report["gates"] = gates

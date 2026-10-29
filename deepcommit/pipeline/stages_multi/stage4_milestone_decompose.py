@@ -90,6 +90,13 @@ class Stage4MilestoneDecompose(BaseStage):
         self.logger.info(f"  ✓ milestones.csv: {milestone_csv}")
         self.logger.info(f"  ✓ dependencies.csv: {dependencies_csv}")
 
+        if self.ctx.is_multi_repo:
+            self.logger.info(
+                "  Multi-repo workspace: Docker compile verification is skipped "
+                "(no single base image/build command covers several repos); src_loc uses prefixed src dirs: "
+                f"{self.ctx.get_repo_src_dirs()}"
+            )
+
         # Log milestone statistics and calculate initial CV
         try:
             with open(milestone_csv, "r", encoding="utf-8") as f:
@@ -373,7 +380,8 @@ class Stage4MilestoneDecompose(BaseStage):
                     dependencies_csv_path=str(deps_csv_path),
                     detect_redundant=True,
                     split_metadata_dir=split_metadata_dir,
-                    repo_path=self.ctx.get_repo(),
+                    repo_path=None if self.ctx.is_multi_repo else self.ctx.get_repo(),
+                    resolver=self.ctx.get_resolver(),
                 )
 
                 dag_result = analyzer.enrich_dependencies()

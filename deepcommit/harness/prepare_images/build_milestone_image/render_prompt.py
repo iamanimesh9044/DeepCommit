@@ -125,6 +125,25 @@ def _render_repo_pack(
     return "", None
 
 
+def _workspace_repos(work_dir: Optional[Path]) -> list[dict[str, Any]]:
+    """Repos of a workspace testbed (``<work_dir>/testbed/manifest.json`` + ``<work_dir>/metadata.json``); [] for N=1."""
+    if work_dir is None:
+        return []
+    manifest = _maybe_read_json(Path(work_dir) / "testbed" / "manifest.json")
+    if not manifest or not manifest.get("repos"):
+        return []
+    meta = (_maybe_read_json(Path(work_dir) / "metadata.json") or {}).get("repos", {})
+    return [
+        {
+            "name": name,
+            "path": f"/workspace/{name}",
+            "role": meta.get(name, {}).get("role", "library"),
+            "repo_src_dirs": meta.get(name, {}).get("repo_src_dirs", []),
+        }
+        for name in manifest["repos"]
+    ]
+
+
 def _base_context(
     *,
     milestone_id: str,
@@ -168,7 +187,10 @@ def _base_context(
             f"Base baseline at {base_baseline_file} is missing an integer `collection.total_collected` field."
         )
 
+    workspace_repos = _workspace_repos(work_dir)
     return {
+        "workspace_mode": bool(workspace_repos),
+        "workspace_repos": workspace_repos,
         "m_id": milestone_id,
         "milestone_id": milestone_id,
         "milestone_commits": milestone_commits,

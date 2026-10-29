@@ -1,0 +1,117 @@
+# CSF sample task: one episode = 4 dependent milestones on a multi-service system.
+schema_version = "1.4"
+
+# The agent's code for each service. Collected from the agent environment after every
+# milestone and re-materialized whole in the clean verifier stack (directories are emptied
+# first, so files the agent deleted stay deleted). Build outputs are excluded.
+artifacts = [
+  { source = "/app/vote", exclude = ["__pycache__"] },
+  { source = "/app/worker", exclude = ["bin", "obj"] },
+  { source = "/app/result", exclude = ["node_modules"] },
+]
+
+# CSF reports every milestone separately; the trial-level reward is the per-key mean.
+multi_step_reward_strategy = "mean"
+
+[task]
+name = "csf/voting-app-evolution-001"
+version = "0.1.0"
+description = "CSF sample episode: evolve a 5-service voting system (Python vote, .NET worker, Node result, Redis, Postgres) through 4 dependent milestones: a cross-service field, a results API, a versioned message contract, and a database-failover incident."
+keywords = ["csf", "multi-service", "microservices", "continuous", "milestones"]
+
+[[task.authors]]
+name = "deccan.ai"
+email = "tasks@deccan.ai"
+
+[metadata]
+family = "end-to-end-feature"
+languages = ["python", "csharp", "javascript"]
+milestones_planned = 4
+milestones_built = 4
+author_name = "deccan.ai"
+author_email = "tasks@deccan.ai"
+category = "software_engineering"
+difficulty = "hard"
+tags = ["csf", "multi-service", "python", "dotnet", "nodejs", "redis", "postgres", "incident"]
+source_repo = "https://github.com/dockersamples/example-voting-app"
+source_commit = "63e9150ca17af4ed05880d4245e486481f73fcb4"
+source_license = "Apache-2.0"
+csf_task_source = "authored"
+csf_milestone_dag = "m1-vote-timestamps -> m2-results-api; m1 -> m3-message-contract; m2 + m3 -> m4-db-failover-incident"
+csf_services_per_milestone = "m1: vote,worker,db | m2: result,db | m3: vote,worker | m4: worker,result"
+expert_time_estimate_min = 180.0
+junior_time_estimate_min = 480.0
+
+[agent]
+timeout_sec = 3600.0
+
+[environment]
+build_timeout_sec = 1800.0
+cpus = 4
+memory_mb = 6144
+storage_mb = 10240
+
+# The agent controls the services itself through `harbor-svc` (requires Harbor with
+# service control: deccanai-org Harbor fork, branch csf/service-control). App services
+# run in CSF_RELOAD=manual mode, so code changes take effect on `harbor-svc restart`.
+[environment.service_control]
+enabled = true
+max_calls_per_minute = 120
+
+[environment.service_control.services.vote]
+allow = ["status", "logs", "restart", "stop", "start", "exec"]
+exec_workdir = "/app/vote"
+
+[environment.service_control.services.worker]
+allow = ["status", "logs", "restart", "stop", "start", "exec"]
+exec_workdir = "/app/worker"
+
+[environment.service_control.services.result]
+allow = ["status", "logs", "restart", "stop", "start", "exec"]
+exec_workdir = "/app/result"
+
+[environment.service_control.services.redis]
+allow = ["status", "logs", "restart"]
+
+[environment.service_control.services.db]
+allow = ["status", "logs", "restart"]
+
+# All five services must be up before the first milestone starts. The first .NET build is slow.
+[environment.healthcheck]
+command = "curl -sf http://vote/ >/dev/null && curl -sf http://result/ >/dev/null && grep -q 'Connected to db' /var/log/services/worker.log"
+interval_sec = 5.0
+timeout_sec = 10.0
+start_period_sec = 300.0
+retries = 12
+
+[[steps]]
+name = "m1-vote-timestamps"
+[steps.agent]
+timeout_sec = 1800.0
+[steps.verifier]
+timeout_sec = 900.0
+environment_mode = "separate"
+
+[[steps]]
+name = "m2-results-api"
+[steps.agent]
+timeout_sec = 1800.0
+[steps.verifier]
+timeout_sec = 900.0
+environment_mode = "separate"
+
+[[steps]]
+name = "m3-message-contract"
+[steps.agent]
+timeout_sec = 1800.0
+[steps.verifier]
+timeout_sec = 900.0
+environment_mode = "separate"
+
+[[steps]]
+name = "m4-db-failover-incident"
+[steps.agent]
+timeout_sec = 2400.0
+[steps.verifier]
+timeout_sec = 1200.0
+environment_mode = "separate"

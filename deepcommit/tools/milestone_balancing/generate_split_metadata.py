@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from deepcommit.harness.utils.src_filter import SrcFileFilter
+from deepcommit.multirepo.resolver import WorkspaceResolver
 
 
 def _extract_paths(raw: str) -> Tuple[str, ...]:
@@ -170,6 +171,7 @@ def generate_metadata(
     src_dirs: Optional[List[str]] = None,
     exclude_patterns: Optional[List[str]] = None,
     output_dir: Path | None = None,
+    resolver=None,
 ) -> dict:
     """Generate METADATA.json for a split commit branch.
 
@@ -179,7 +181,13 @@ def generate_metadata(
         src_dirs: List of source directories to include (default: ["src"])
         exclude_patterns: Glob patterns for files to exclude
         output_dir: Output directory for METADATA.json
+        resolver: Optional multi-repo WorkspaceResolver; the split branch then lives in (and is measured with the
+            src dirs / excludes of) the repo that owns the original commit, and ``repo_path`` is ignored
     """
+    if resolver is not None and resolver.multi and branch_name.startswith("split-"):
+        info = resolver.info_for(branch_name[6:])
+        repo_path, src_dirs = Path(info.checkout_path), info.src_dirs
+        exclude_patterns = list(info.test_dirs) + list(info.exclude)
     if src_dirs is None:
         src_dirs = ["src"]
     if exclude_patterns is None:
@@ -308,6 +316,13 @@ Examples:
     parser.add_argument("--repo-path", type=Path, required=True, help="Path to the Git repository")
 
     parser.add_argument(
+        "--workspace-dir",
+        type=Path,
+        default=None,
+        help="Multi-repo workspace dir (repos.json + commit_repos.json); the split's repo is picked from its sha",
+    )
+
+    parser.add_argument(
         "--branch-name",
         type=str,
         help="Name of the split branch (e.g., split-1812eac). If not provided, uses current branch.",
@@ -364,6 +379,7 @@ Examples:
         src_dirs=src_dirs,
         exclude_patterns=exclude_patterns,
         output_dir=args.output_dir,
+        resolver=WorkspaceResolver.from_dir(args.workspace_dir) if args.workspace_dir else None,
     )
 
 

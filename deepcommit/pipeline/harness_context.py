@@ -6,9 +6,10 @@ Provides a flat directory structure without multi-stage complexity.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field, computed_field, model_validator
 
@@ -44,6 +45,11 @@ class HarnessContext(BaseModel):
     base_image_name: Optional[str] = None
     build_command: Optional[str] = None
 
+    # Multi-repo workspace support (None => classic single-repo harness run, repo_id-based as before)
+    workspace_dir: Optional[str] = None  # dir with repos.json + commit_repos.json
+    workspace_id: Optional[str] = None
+    repos: Optional[Dict[str, Dict[str, Any]]] = None  # name -> {role, checkout, src_dirs, test_dirs, exclude, ...}
+
     # Compatibility with BaseStage (simulated multi-stage properties)
     current_stage_id: str = "harness"  # Fixed stage ID for harness pipeline
     is_multi_stage: bool = True  # Set to True to use get_mcp_tools() for MCP config
@@ -72,6 +78,47 @@ class HarnessContext(BaseModel):
         if isinstance(agents, str):
             data["agents"] = [a.strip() for a in agents.split(",") if a.strip()]
         return data
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.workspace_dir:
+            self._load_workspace()
+
+    def _load_workspace(self) -> None:
+        """Read ``repos.json`` of the workspace; in multi mode src/test/exclude become the prefixed lists."""
+        if self.repos is None:
+            raw = json.loads((Path(self.workspace_dir) / "repos.json").read_text(encoding="utf-8"))
+            self.repos = {
+                name: {
+                    "role": r.get("role", "library"),
+                    "checkout": r.get("checkout_path", ""),
+                    "start": r.get("start", ""),
+                    "end": r.get("end", ""),
+                    "src_dirs": r.get("repo_src_dirs", []),
+                    "test_dirs": r.get("test_dirs", []),
+                    "exclude": r.get("exclude", []),
+                    "prefixed_src_dirs": r.get("prefixed_src_dirs", []),
+                    "prefixed_test_dirs": r.get("prefixed_test_dirs", []),
+                    "prefixed_exclude": r.get("prefixed_exclude", []),
+                }
+                for name, r in raw.items()
+            }
+        if not self.workspace_id:
+            self.workspace_id = Path(self.workspace_dir).name
+        if self.is_multi_repo:
+            self.repo_src_dirs = [d for r in self.repos.values() for d in r["prefixed_src_dirs"]]
+            self.test_dirs = [g for r in self.repos.values() for g in r["prefixed_test_dirs"]]
+            self.exclude = [g for r in self.repos.values() for g in r["prefixed_exclude"]]
+
+    @property
+    def is_multi_repo(self) -> bool:
+        return bool(self.repos) and len(self.repos) > 1
+
+    def get_workspace_dir(self) -> Optional[str]:
+        return self.workspace_dir
+
+    def repo_names(self) -> List[str]:
+        """Workspace repo names; empty for a classic single-repo run."""
+        return list(self.repos) if self.is_multi_repo else []
 
     # -------- Computed paths --------
 
@@ -353,6 +400,10 @@ No prompt_file configured in stage config.
             "dependencies_csv_path": str(Path(self.workspace_root) / "dependencies.csv"),
             "config_path": str(Path(self.workspace_root) / "config" / f"{self.repo_range}.yaml"),
         }
+        if self.is_multi_repo:
+            # Only multi-repo runs get these; single-repo templates render exactly as before
+            template_vars["workspace_id"] = self.workspace_id
+            template_vars["repo_names"] = ", ".join(self.repo_names())
 
         # Render template
         template = Template(template_content)
@@ -407,4 +458,5 @@ No prompt_file configured in stage config.
             "status": global_status,
             "status_str": status_str,
             "log_dir": Path(self.logs_path).resolve(),
+            **({"workspace_id": self.workspace_id, "repos": self.repo_names()} if self.is_multi_repo else {}),
         }

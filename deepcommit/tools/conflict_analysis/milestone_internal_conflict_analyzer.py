@@ -32,17 +32,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import pygit2
 
+from deepcommit.multirepo.resolver import WorkspaceResolver
+from deepcommit.tools.utils.workspace_routing import RoutedGit, is_multi
 from deepcommit.utils.data.commit_dag_loader import CommitDAGLoader
 from deepcommit.utils.data.data_loader import load_dependency_graph, load_milestones
 from deepcommit.utils.git.local_git_repo import LocalGitRepo
 
 
-def sort_commits_by_time(repo: LocalGitRepo, commits: List[str]) -> List[str]:
-    """按时间排序 commits"""
+def sort_commits_by_time(repo: LocalGitRepo, commits: List[str], routed: Optional[RoutedGit] = None) -> List[str]:
+    """按时间排序 commits（multi-repo: 每个 commit 在所属仓库里取时间）"""
     commit_times = {}
     for commit_sha in commits:
         try:
-            commit = repo.repo.revparse_single(commit_sha[:7]).peel(pygit2.Commit)
+            git = routed.for_commit(commit_sha)[1] if routed else repo
+            commit = git.repo.revparse_single(commit_sha[:7]).peel(pygit2.Commit)
             commit_times[commit_sha] = commit.commit_time
         except:  # noqa: E722
             pass
@@ -290,6 +293,7 @@ def analyze_milestone_completeness(
     repo: LocalGitRepo,
     milestones: Dict[str, Dict],
     milestone_dependencies: Optional[Dict[str, set]] = None,
+    routed: Optional[RoutedGit] = None,
 ) -> Dict:
     """
     分析单个 milestone 的内部依赖完整性和 frontier prerequisites
@@ -317,7 +321,7 @@ def analyze_milestone_completeness(
         print(f"  ⚠️  Warning: {len(invalid_commits)} commits not found in DAG", file=sys.stderr)
 
     # 2. 按时间排序
-    sorted_commits = sort_commits_by_time(repo, valid_commits)
+    sorted_commits = sort_commits_by_time(repo, valid_commits, routed)
 
     # 3. 检查依赖路径完整性
     incomplete_chains = check_dependency_path_completeness(sorted_commits, dag)
@@ -363,6 +367,7 @@ def analyze_all_milestones(
     milestone_ids: Optional[List[str]] = None,
     main_branch: str = "main",
     split_metadata_dir: Optional[str] = None,
+    resolver: Optional[WorkspaceResolver] = None,
 ) -> Dict:
     """
     分析所有或指定的 milestones
@@ -375,6 +380,7 @@ def analyze_all_milestones(
         milestone_ids: 要分析的 milestone IDs，None 表示分析所有
         dependencies_csv_path: milestone dependencies CSV 文件路径（可选）
         split_metadata_dir: split commit 元数据目录（可选，包含 split-* 子目录）
+        resolver: 多仓 WorkspaceResolver（可选）；multi 时 git 操作按 commit 路由到所属仓库（repo_path 被忽略）
 
     Returns:
         完整的分析结果
@@ -391,6 +397,7 @@ def analyze_all_milestones(
             split_metadata_dir,
             repo_path=repo_path,
             use_blame=True,
+            resolver=resolver,
         )
         if split_count > 0:
             print(
@@ -409,7 +416,8 @@ def analyze_all_milestones(
         milestone_dependencies = load_dependency_graph(dependencies_csv_path)
 
     print("🔧 Initializing repository...", file=sys.stderr)
-    repo = LocalGitRepo(repo_path, main_branch)
+    routed = RoutedGit(resolver, main_branch) if is_multi(resolver) else None
+    repo = None if routed else LocalGitRepo(repo_path, main_branch)
 
     # 确定要分析的 milestones
     if milestone_ids is None:
@@ -433,7 +441,7 @@ def analyze_all_milestones(
             continue
 
         result = analyze_milestone_completeness(
-            milestone_id, milestones[milestone_id], dag, repo, milestones, milestone_dependencies
+            milestone_id, milestones[milestone_id], dag, repo, milestones, milestone_dependencies, routed
         )
 
         results[milestone_id] = result

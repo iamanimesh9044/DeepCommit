@@ -22,6 +22,97 @@ from ..context import TrialContext
 from ..types import StageResult
 
 
+def analyze_multirepo(
+    milestones_csv: Union[str, Path],
+    workspace_dir: Union[str, Path],
+    main_commits_file: Optional[Union[str, Path]] = None,
+    commit_dag_path: Optional[Union[str, Path]] = None,
+) -> Dict[str, Any]:
+    """Per-repo coverage over the union of merged commits plus multi-repo milestone validity warnings.
+
+    Warnings (not failures): a milestone that touches exactly one repo while a hard cross-repo edge connects one
+    of its commits to a commit of another repo that belongs to a different milestone.
+    """
+    import csv
+    import json
+
+    commit_repo: Dict[str, str] = json.loads((Path(workspace_dir) / "commit_repos.json").read_text(encoding="utf-8"))
+    repo_names = sorted(set(commit_repo.values()))
+
+    commit_to_ms: Dict[str, str] = {}
+    ms_commits: Dict[str, list] = {}
+    with open(milestones_csv, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            mid = row.get("id", "")
+            commits = [c.strip()[:7].lower() for c in (row.get("commits") or "").split(";") if c.strip()]
+            ms_commits[mid] = commits
+            for c in commits:
+                commit_to_ms.setdefault(c, mid)
+
+    all_commits = set(commit_repo)
+    if main_commits_file and Path(main_commits_file).exists():
+        rows = [json.loads(line) for line in Path(main_commits_file).read_text(encoding="utf-8").splitlines() if line]
+        all_commits = {r["sha"][:7].lower() for r in rows if r.get("sha")}
+
+    per_repo: Dict[str, Dict[str, Any]] = {}
+    for name in repo_names:
+        members = {c for c in all_commits if commit_repo.get(c) == name}
+        covered = {c for c in members if c in commit_to_ms}
+        per_repo[name] = {
+            "total": len(members),
+            "covered": len(covered),
+            "percentage": (len(covered) / len(members) * 100) if members else None,
+            "uncovered": sorted(members - covered),
+        }
+    union_covered = sum(v["covered"] for v in per_repo.values())
+    union_total = sum(v["total"] for v in per_repo.values())
+
+    ms_repos = {mid: sorted({commit_repo[c] for c in cs if c in commit_repo}) for mid, cs in ms_commits.items()}
+
+    warnings: list = []
+    if commit_dag_path and Path(commit_dag_path).exists():
+        dag = json.loads(Path(commit_dag_path).read_text(encoding="utf-8"))
+        seen = set()
+        for e in dag.get("edges_dag", []):
+            if not e.get("xrepo"):
+                continue
+            src, tgt = e["source"][:7].lower(), e["target"][:7].lower()
+            m_src, m_tgt = commit_to_ms.get(src), commit_to_ms.get(tgt)
+            if not m_src or not m_tgt or m_src == m_tgt:
+                continue
+            for mid, own, other_m, other_c in ((m_src, src, m_tgt, tgt), (m_tgt, tgt, m_src, src)):
+                if len(ms_repos.get(mid, [])) == 1 and commit_repo.get(other_c) != commit_repo.get(own):
+                    key = (mid, other_m)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    warnings.append(
+                        {
+                            "milestone": mid,
+                            "repo": ms_repos[mid][0],
+                            "edge": [e["source"], e["target"]],
+                            "other_milestone": other_m,
+                            "other_repo": commit_repo.get(other_c),
+                            "message": (
+                                f"{mid} touches only repo {ms_repos[mid][0]!r} but a hard cross-repo edge "
+                                f"{e['source']}->{e['target']} links it to {other_m} ({commit_repo.get(other_c)})"
+                            ),
+                        }
+                    )
+
+    return {
+        "repos": repo_names,
+        "per_repo_coverage": per_repo,
+        "union_coverage": {
+            "total": union_total,
+            "covered": union_covered,
+            "percentage": (union_covered / union_total * 100) if union_total else None,
+        },
+        "milestone_repos": ms_repos,
+        "warnings": warnings,
+    }
+
+
 def run_comprehensive_analysis(
     milestones_csv: Union[str, Path],
     dependencies_csv: Union[str, Path],
@@ -38,6 +129,7 @@ def run_comprehensive_analysis(
     split_metadata_dir: Optional[Union[str, Path]] = None,
     repo_src_dirs: Optional[list[str]] = None,
     exclude_patterns: Optional[list[str]] = None,
+    workspace_dir: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
     """Run comprehensive analysis on milestones and DAG.
 
@@ -59,6 +151,9 @@ def run_comprehensive_analysis(
         split_metadata_dir: Path to split commit metadata directory (optional, for split commit DAG edge support)
         repo_src_dirs: Source directories for LOC calculation (e.g., ["src", "lib"])
         exclude_patterns: Exclude patterns for filtering (e.g., ["**/test/**"])
+        workspace_dir: Multi-repo workspace dir (repos.json + commit_repos.json). When set, coverage is over the
+            union of merged commits, a per-repo breakdown and the multi-repo milestone checks are added, and the
+            git-based analyses (which need a single checkout) are skipped.
 
     Returns:
         Dict containing all analysis results
@@ -113,6 +208,9 @@ def run_comprehensive_analysis(
     milestones_csv = Path(milestones_csv).resolve()
     dependencies_csv = Path(dependencies_csv).resolve()
     repo_path = Path(repo_path).resolve() if repo_path else ""
+    if workspace_dir:
+        logger.info("Multi-repo workspace: git-based analyses need a single checkout and are skipped")
+        repo_path = ""
     preprocessed_path = Path(preprocessed_path).resolve() if preprocessed_path else ""
 
     # Determine output directory
@@ -238,6 +336,28 @@ def run_comprehensive_analysis(
         logger.warning("Skipping commit coverage analysis (no preprocessed_path provided)")
         all_results["analyses"]["commit_coverage"] = {"skipped": "No preprocessed_path provided"}
         analysis_status.append(("commit_coverage", "skipped"))
+
+    # ====== 1b. Multi-repo checks (per-repo coverage breakdown, milestone validity warnings) ======
+    if workspace_dir:
+        try:
+            main_commits_file = Path(preprocessed_path) / "main_commits.jsonl" if preprocessed_path else None
+            multi = analyze_multirepo(
+                milestones_csv=milestones_csv,
+                workspace_dir=workspace_dir,
+                main_commits_file=main_commits_file,
+                commit_dag_path=_resolve_commit_dag_path(),
+            )
+            all_results["analyses"]["multirepo"] = multi
+            cov = all_results["analyses"].get("commit_coverage")
+            if isinstance(cov, dict) and "error" not in cov:
+                cov.setdefault("meta", {})["per_repo"] = multi["per_repo_coverage"]
+            for w in multi["warnings"]:
+                logger.warning("[MultiRepo] %s", w["message"])
+            analysis_status.append(("multirepo", "ok"))
+        except Exception as e:
+            logger.error("✗ Multi-repo analysis failed: %s", str(e))
+            all_results["analyses"]["multirepo"] = {"error": str(e)}
+            analysis_status.append(("multirepo", "error"))
 
     # ====== 2. Milestone Size Balance Analysis ======
     logger.info("Running milestone size balance analysis...")
@@ -609,6 +729,7 @@ def analyze_outputs(ctx: TrialContext, logger: logging.Logger) -> StageResult:
         skip_if_exists=False,  # Pipeline always runs analysis
         logger=logger,
         split_metadata_dir=split_metadata_dir,
+        workspace_dir=ctx.get_workspace_dir() if ctx.is_multi_repo else None,
     )
 
     # Handle skip case

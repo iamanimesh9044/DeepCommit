@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from .classifier import TestClassifier
 from .docker import DockerRunner
 from .report_parser import FRAMEWORK_CONFIG, convert_to_summary, get_file_extension
-from .test_executor import build_test_cmd, materialize_report, run_test
+from .test_executor import build_test_cmd, get_workspace_switch_cmd, materialize_report, run_test
 from .types import MilestoneTestConfig
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,15 @@ echo ">>> Switching to {state} state..."
 {APPLY_PATCHES_SCRIPT}
 {CARGO_CACHE_CLEANUP_SCRIPT}
 echo ">>> Running {mode.name} tests for {state} state..."
+"""
+        if config.is_workspace:
+            pre_script = f"""
+set -e
+echo ">>> Switching all repos to {state} state..."
+{get_workspace_switch_cmd(state, milestone_id, config.workspace_repos())}
+{APPLY_PATCHES_SCRIPT}
+cd {mode.workdir or f"/workspace/{mode.repo}"}
+echo ">>> Running {mode.name} tests ({mode.repo}) for {state} state..."
 """
         post_script = f"""
 echo ">>> Done with {state}/{mode.name}"
@@ -339,7 +348,7 @@ def run_single_state_tests(
     Returns:
         Path to the merged standardized JSON report: `{output_dir}/{output_prefix}.json`.
     """
-    from .report_parser import parse_test_report
+    from .report_parser import namespace_test_ids, parse_test_report
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -356,6 +365,7 @@ def run_single_state_tests(
 
     # Track (output_path, framework) tuples for per-mode parsing
     mode_reports: List[tuple] = []
+    mode_repo: Dict[Path, Optional[str]] = {}  # workspace mode: report -> suite repo (test id namespace)
 
     for mode in config.modes:
         # Use per-mode framework if specified, otherwise use default
@@ -387,7 +397,7 @@ def run_single_state_tests(
         pre_script = f"""
 set -e
 mkdir -p /output
-cd {workdir}
+cd {mode.workdir or workdir}
 echo ">>> Running {mode.name} tests (framework={mode_framework})..."
 """
         post_script = f"""
@@ -411,6 +421,7 @@ echo ">>> Done with {mode.name}"
         output_path = output_dir / output_file
         if output_path.exists():
             mode_reports.append((output_path, mode_framework))
+            mode_repo[output_path] = mode.repo
 
     if not mode_reports:
         raise RuntimeError(f"No valid test report files generated under {output_dir}")
@@ -421,7 +432,7 @@ echo ">>> Done with {mode.name}"
 
     for report_path, fw in mode_reports:
         try:
-            parsed = parse_test_report(report_path, fw)
+            parsed = namespace_test_ids(parse_test_report(report_path, fw), mode_repo.get(report_path))
             if parsed and "tests" in parsed:
                 merged_tests.extend(parsed["tests"])
                 summary = parsed.get("summary", {})

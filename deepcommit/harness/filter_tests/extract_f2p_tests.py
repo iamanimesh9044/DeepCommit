@@ -41,14 +41,28 @@ class TestIDParser:
     """Parse pytest test ID into components."""
 
     @staticmethod
-    def parse(test_id: str) -> Dict[str, Optional[str]]:
+    def parse(test_id: str, repos: Optional[List[str]] = None) -> Dict[str, Optional[str]]:
         """
         Parse test ID like 'test/path/file.py::ClassName::test_method'
 
+        Args:
+            repos: Workspace mode only: repo names; a leading ``{repo}::`` namespace is stripped and returned as
+                ``repo`` (native ids need not be pytest-shaped, e.g. a bare Go ``TestX``).
+
         Returns:
-            Dict with keys: file_path, class_name, function_name
+            Dict with keys: file_path, class_name, function_name (plus ``repo`` in workspace mode)
         """
         parts = test_id.split("::")
+
+        if repos is not None:
+            repo = parts[0] if len(parts) > 1 and parts[0] in repos else ""
+            rest = parts[1:] if repo else parts
+            return {
+                "repo": repo,
+                "file_path": rest[0] if len(rest) > 1 else None,
+                "class_name": rest[1] if len(rest) == 3 else None,
+                "function_name": rest[-1],
+            }
 
         result = {
             "file_path": parts[0],
@@ -529,6 +543,14 @@ class FailToPassExtractor:
         self.testbed_path = self.work_dir / "testbed"
         self.output_dir = self.benchmark_dir / "f2p_tests"
 
+        # Workspace (multi-repo) mode: testbed/manifest.json lists the repos; test ids are `{repo}::{native id}`
+        manifest_path = self.testbed_path / "manifest.json"
+        self.repos: Optional[List[str]] = (
+            list(json.loads(manifest_path.read_text(encoding="utf-8")).get("repos", {}))
+            if manifest_path.exists()
+            else None
+        )
+
         # Validate paths
         self._validate_paths()
 
@@ -539,7 +561,7 @@ class FailToPassExtractor:
             raise FileNotFoundError(f"Classification file not found: {self.classification_path}")
 
         # Config/metadata and testbed only required for code extraction
-        if self.extract_code:
+        if self.extract_code and self.repos is None:
             if not self.config_path.exists() and not self.metadata_path.exists():
                 raise FileNotFoundError(
                     f"Neither config file ({self.config_path}) nor metadata file ({self.metadata_path}) found"
@@ -754,7 +776,7 @@ class FailToPassExtractor:
                 final_outcome = "passed"
 
             # Parse test ID
-            parsed = TestIDParser.parse(test_id)
+            parsed = TestIDParser.parse(test_id, self.repos)
 
             # Prepare test metadata entry (IDs only)
             test_metadata = {
@@ -765,6 +787,8 @@ class FailToPassExtractor:
                 "class_name": parsed["class_name"],
                 "function_name": parsed["function_name"],
             }
+            if self.repos is not None:
+                test_metadata["repo"] = parsed["repo"]
 
             metadata["tests"].append(test_metadata)
 
@@ -904,7 +928,11 @@ class FailToPassExtractor:
 
         Routes to appropriate extraction method based on extract_code flag.
         """
-        if self.extract_code:
+        if self.extract_code and self.repos is not None:
+            # Code extraction is Python/pytest-only; workspace repos can be any language -> ids only
+            print("Mode: workspace testbed detected, falling back to test IDs only (no per-language code extractor)")
+            self.extract_test_ids_only()
+        elif self.extract_code:
             print("Mode: Extracting test code (requires git checkout)")
             self.extract_with_code()
         else:

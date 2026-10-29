@@ -2,10 +2,28 @@
 
 ## Task Overview
 
-Analyze commits for {{repo_name}} (version {{version_range}}) and identify **milestone seeds** - commits that represent the starting points of major development milestones.
+Analyze commits for the workspace repositories {{repo_name}} (version {{version_range}}) and identify **milestone seeds** - commits that represent the starting points of major development milestones.
 
-You are an LLM judge with access to rich commit data including DAG topology statistics. Use your semantic understanding combined with structural metrics to identify milestone seeds (target: < 20). Ultrathink
+You are an LLM judge with access to rich commit data including DAG topology statistics. Use your semantic understanding combined with structural metrics to identify milestone seeds (target: about 20 per repository, soft). Ultrathink
 
+### Workspace `{{workspace_id}}`
+
+This run covers a workspace of one or more repositories that are developed together:
+
+{{workspace_repos_table}}
+
+- Inspect code with `git -C repo_data/<repo> ...` (the `repo dir` column of the table; for a one-repo workspace that is `repo_data` itself). The MCP git tools route to the correct repository automatically.
+- Commit ids are bare 7-character SHAs, unique inside the workspace. A commit's repository is its `repo` field in the commit records or its entry in `commit_repos` (`commit_repos.json`). Never guess it from the SHA and never run `git` against the wrong repository.
+- With more than one repository, every file path in merged data is prefixed `<repo>/<path-in-repo>`; strip the prefix before passing a path to `git -C repo_data/<repo>`.
+- Edges in `commit_dag.json` come in two groups. `edges_dag` holds per-repository textual edges plus HARD cross-repo edges (`"xrepo": true`, `edge_types` such as `xrepo_contract`, `xrepo_pin`, `xrepo_pr_link`). `edges_soft` holds heuristic hints (for example time proximity): never enforced, and you may cut them.
+
+**Seed rules**:
+- The seed pool spans all repositories. Soft target: about 20 seeds **per repository**, not 20 in total.
+- A contract change (for example a `.proto` or OpenAPI change) and its first consumer in another repository are normally one feature. Use the HARD `xrepo` edges in `edges_dag` to spot such pairs, and choose seeds so that both can end up in the same milestone.
+- Do not treat an `edges_soft` link as evidence that two seeds belong together.
+- Every seed line carries a `repo` field (the repository of the seed commit).
+
+---
 ---
 
 ## Critical Data Sources
@@ -99,9 +117,9 @@ Contains pre-computed evolutionary metrics. Structure:
   - Understand release milestones
   - Commits near releases may be important
 
-- **Original Repository** (via git CLI): `{{repo_path}}`
-  - You can use git commands to explore the repository
-  - Example: `git -C {{repo_path}} show <sha>`
+- **Original Repositories** (via git CLI): one checkout per row of the repository table above
+  - You can use git commands to explore each repository
+  - Example: `git -C repo_data/<repo> show <sha>`
 
 ---
 
@@ -139,7 +157,7 @@ Use these signals together—no single metric decides a seed.
 
 ### Step 3: Select Seeds
 
-**Target**: < 20 seeds. Choose commits that open a new development theme for a phase (not incremental work). Aim for diversity across milestone types.
+**Target**: about 20 seeds per repository (soft). Choose commits that open a new development theme for a phase (not incremental work). Aim for diversity across milestone types.
 
 ---
 
@@ -165,11 +183,12 @@ Classify each seed into one of these types:
 Each line should contain:
 
 ```json
-{ "sha": "1812eac7", "confidence_score": 0.95, "milestone_type": "platform_support", "title": "Add Native Emscripten/WebAssembly Support", "churn_context": "+1100 lines, multiple new files in contrib/emscripten/. High entity churn concentrated in few commits.", "rationale": "Anchors the Emscripten milestone phase. Layer 0, 16 descendants; strong impact despite node-level DAG scope." }
+{ "sha": "1812eac7", "repo": "urllib3", "confidence_score": 0.95, "milestone_type": "platform_support", "title": "Add Native Emscripten/WebAssembly Support", "churn_context": "+1100 lines, multiple new files in contrib/emscripten/. High entity churn concentrated in few commits.", "rationale": "Anchors the Emscripten milestone phase. Layer 0, 16 descendants; strong impact despite node-level DAG scope." }
 ```
 
 **Required Fields**:
 - **sha**: Short SHA (7 chars)
+- **repo**: Repository name (the `name` column of the repository table) that the seed commit belongs to
 - **confidence_score**: 0.0-1.0 (how confident you are this is a seed)
 - **milestone_type**: One of the types listed above
 - **title**: Concise milestone title (what this milestone delivers)
@@ -184,7 +203,7 @@ Your analysis should:
 
 1. Read all commits from `{{main_commits}}`
 2. Use DAG stats, semantics, and evolutionary patterns together
-3. Identify < 20 seeds; provide clear rationales
+3. Identify about 20 seeds per repository; provide clear rationales
 4. Cover diverse milestone types
 5. Save outputs to `{{result_path}}` (primary: `{{milestone_seeds}}`)
 

@@ -44,9 +44,27 @@ Then your proposals should partition commits such that:
 - Proposal A gets core protocol commits
 - Proposal B gets refactoring commits
 - Proposal C gets request body commits
-- **No commit appears in both A and B, or B and C, or A and C** (zero overlap)
+- **No commit appears in both A and B, or B and C, or A and C** (zero overlap, over the union of commits of all repositories)
 - If a commit could belong to multiple proposals, assign it based on strongest code evidence
 
+### Workspace `{{workspace_id}}`
+
+This run covers a workspace of one or more repositories that are developed together:
+
+{{workspace_repos_table}}
+
+- Inspect code with `git -C repo_data/<repo> ...` (the `repo dir` column of the table; for a one-repo workspace that is `repo_data` itself). The MCP git tools route to the correct repository automatically.
+- Commit ids are bare 7-character SHAs, unique inside the workspace. A commit's repository is its `repo` field in the commit records or its entry in `commit_repos` (`commit_repos.json`). Never guess it from the SHA and never run `git` against the wrong repository.
+- With more than one repository, every file path in merged data is prefixed `<repo>/<path-in-repo>`; strip the prefix before passing a path to `git -C repo_data/<repo>`.
+- Edges in `commit_dag.json` come in two groups. `edges_dag` holds per-repository textual edges plus HARD cross-repo edges (`"xrepo": true`, `edge_types` such as `xrepo_contract`, `xrepo_pin`, `xrepo_pr_link`). `edges_soft` holds heuristic hints (for example time proximity): never enforced, and you may cut them.
+
+**Cross-repo rules**:
+1. **Cross-repo proposals**: a proposal MAY contain commits from several repositories, and should whenever hard xrepo edges link them (for example a contract change plus its first consumer). Never split a contract change from its first consumer. Seeds in your batch that are linked by a hard xrepo edge must end up in the same proposal.
+2. **Validity**: a proposal that spans repositories must change at least 2 repositories, and no single repository's part ALONE may be a complete feature; otherwise split it per repository.
+3. **Coverage and overlap** are measured over the union of all repositories' commits.
+4. **CSV**: every proposal has a `repos` column (see Output Format).
+
+---
 ---
 
 ## Critical Data Sources
@@ -85,11 +103,11 @@ Commit Info:
 
 **What it represents**: Textual commit dependency DAG where **`source → target`** means **target depends on source**.
 
-Dependencies are detected with a **3-line context tolerance**: if commit B modifies code within 3 lines of code changed by commit A, an edge A→B is created.
+Textual dependencies are detected per repository with a **3-line context tolerance**: if commit B modifies code within 3 lines of code changed by commit A, an edge A→B is created. HARD cross-repo edges (`"xrepo": true`) link commits of different repositories (contract change -> first consumer); heuristic `edges_soft` hints are stored separately.
 
 **Subgraph contains**: metadata, nodes, layers, and `edges_dag` with:
 - `files_ref`: File paths that triggered this dependency
-- `edge_types`: Dependency types (can be multiple): `modify_overlap`, `extend`, `delete`, `rename_dependency`
+- `edge_types`: Dependency types (can be multiple): `modify_overlap`, `extend`, `delete`, `rename_dependency`, and for cross-repo edges `xrepo_contract`, `xrepo_pin`, `xrepo_pr_link`
 
 **DAG limitations**:
 - This DAG captures necessary but not sufficient relationships
@@ -100,7 +118,7 @@ Dependencies are detected with a **3-line context tolerance**: if commit B modif
 
 **Path completeness constraint**:
 
-If commits A and B are both included in your milestone, then **all commits on any path between A and B in the commit DAG must also be included**.
+If commits A and B are both included in your milestone, then **all commits on any path between A and B in the commit DAG must also be included**. Paths are made of textual edges inside each repository and HARD cross-repo edges (`"xrepo": true`) only. Soft edges (`edges_soft`) are hints: you may cut them, and they never force extra commits into your proposal.
 
 This is a **hard constraint**—violations invalidate the proposal.
 
@@ -149,7 +167,7 @@ Start with lightweight signals and drill down only when needed. Begin with commi
 
 #### 5.2 Original Repository Access (Full Context — Use When Needed)
 
-**Repository Path**: `{{repo_path}}`
+**Repository paths**: one per row of the repository table above (`repo_data/<repo>`)
 
 **When to Use**:
 - When patch alone is insufficient (need to understand full file structure)
@@ -159,16 +177,16 @@ Start with lightweight signals and drill down only when needed. Begin with commi
 **Recommend Commands** (read-only, concurrency-safe):
 ```bash
 # View entire file at specific commit
-git -C {{repo_path}} show <sha>:<filepath>
+git -C repo_data/<repo> show <sha>:<filepath>
 
 # Search for function/class definition at specific commit
-git -C {{repo_path}} grep -n "def function_name" <sha>
+git -C repo_data/<repo> grep -n "def function_name" <sha>
 
 # Show file history
-git -C {{repo_path}} log --oneline -- <filepath>
+git -C repo_data/<repo> log --oneline -- <filepath>
 
 # Compare file between commits
-git -C {{repo_path}} diff <sha1> <sha2> -- <filepath>
+git -C repo_data/<repo> diff <sha1> <sha2> -- <filepath>
 ```
 
 **Restrictions**:
@@ -355,6 +373,7 @@ Before finalizing, verify that **no commit appears in multiple proposals** withi
 - **mini_srs**: Requirement description (3-5 sentences, single paragraph)
 - **confidence_score**: 0.0-1.0 (your confidence in this milestone definition)
 - **expansion_rationale**: 2-3 sentences explaining why these commits were selected. Must reference specific evidence: patch file names, line numbers, PR discussions, issue numbers.
+- **repos**: Semicolon-separated names of the repositories that the proposal's commits belong to, for example `contract;sdk` (a single name when the proposal touches one repository)
 - **merge_suggestion**: If Option C, fill with target seed SHA (7 characters) to merge into; otherwise empty
 
 ---
@@ -363,10 +382,11 @@ Before finalizing, verify that **no commit appears in multiple proposals** withi
 
 ### Hard Constraints (Must Pass)
 
-✅ **Zero intra-batch overlap**: No commit appears in multiple milestone proposals within your batch
+✅ **Zero intra-batch overlap**: No commit appears in multiple milestone proposals within your batch (over the union of all repositories)
 
-✅ **Path completeness**: Each proposal passes `{{analyze_milestone_conflicts}}` (conflict_count=0, invalid_commits=[])
+✅ **Path completeness**: Each proposal passes `{{analyze_milestone_conflicts}}` (conflict_count=0, invalid_commits=[]); enforced on textual edges and hard xrepo edges only
 
+✅ **Repos column**: every `repos` value is filled and matches the repositories of the listed commits
 ✅ **Full partition**: All validated commits are assigned to exactly one proposal (no orphaned commits)
 
 ### Quality Criteria (Recommended)

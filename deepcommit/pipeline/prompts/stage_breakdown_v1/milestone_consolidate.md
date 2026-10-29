@@ -17,6 +17,24 @@ You are the milestone consolidation main agent orchestrating a three-stage pipel
 
 **Your approach**: Evidence-driven, iterative improvement with LLM-as-Judge reasoning to synthesize multiple signals (DAG topology, semantic themes, code evidence) and make informed decisions.
 
+### Workspace `{{workspace_id}}`
+
+This run covers a workspace of one or more repositories that are developed together:
+
+{{workspace_repos_table}}
+
+- Inspect code with `git -C repo_data/<repo> ...` (the `repo dir` column of the table; for a one-repo workspace that is `repo_data` itself). The MCP git tools route to the correct repository automatically.
+- Commit ids are bare 7-character SHAs, unique inside the workspace. A commit's repository is its `repo` field in the commit records or its entry in `commit_repos` (`commit_repos.json`). Never guess it from the SHA and never run `git` against the wrong repository.
+- With more than one repository, every file path in merged data is prefixed `<repo>/<path-in-repo>`; strip the prefix before passing a path to `git -C repo_data/<repo>`.
+- Edges in `commit_dag.json` come in two groups. `edges_dag` holds per-repository textual edges plus HARD cross-repo edges (`"xrepo": true`, `edge_types` such as `xrepo_contract`, `xrepo_pin`, `xrepo_pr_link`). `edges_soft` holds heuristic hints (for example time proximity): never enforced, and you may cut them.
+
+**Hard rules** (they apply everywhere below):
+1. **Coverage and partition**: 100% coverage, zero overlap and zero invalid commits are measured over the UNION of all commits of all repositories, and reported per repository as well as overall.
+2. **Path completeness**: enforced on textual edges inside each repository and on HARD cross-repo edges (`"xrepo": true` in `edges_dag`) only. Soft edges (`edges_soft`) are hints: you may cut them, and they never require extra commits in a milestone.
+3. **Seed grouping**: seeds linked by a hard xrepo edge MUST be placed in the same group, so a group may contain seeds of several repositories (still 2-5 seeds per group).
+4. **Cross-repo milestones**: a milestone MAY contain commits from several repositories, and should whenever hard xrepo edges connect them (for example a contract change plus its first consumer). Never split a contract change from its first consumer. The `repos` column of the milestone CSV holds the semicolon-separated repository names of the milestone's commits (for example `contract;sdk`; one name for a single-repo milestone).
+5. **Validity of a cross-repo milestone**: it must change at least 2 repositories, and no single repository's part ALONE may be a complete feature. If one repository's part is already a complete feature, split the milestone per repository.
+6. **Dependencies**: a milestone dependency that follows a hard xrepo edge is a cross-repo (`XREPO`) dependency; name the edge in its `rationale`.
 ---
 
 ## PHASE 1: SEED GROUPING & ORCHESTRATION
@@ -29,7 +47,7 @@ Partition all milestone seeds into semantically coherent groups to enable effici
 
 #### Step 1: Load All Seed Evidence
 
-Load complete information for all seeds (typically <20 seeds total):
+Load complete information for all seeds (typically about 20 seeds per repository):
 
 **1. Core seed information (Required)**:
    - **File**: `{{milestone_seeds}}`
@@ -155,7 +173,7 @@ Use to verify textual dependencies and detect cycles.
 
 **Patches**: `{{patches}}/{sha}.patch` - Read patches to understand commit changes for conflict resolution
 
-**Repository**: `{{repo_path}}` - Use git commands for deeper code analysis if needed
+**Repositories**: one checkout per row of the repository table above (`git -C repo_data/<repo> ...`) - Use git commands for deeper code analysis if needed
 
 #### 4. Semantic Context (Query as needed)
 
@@ -169,7 +187,7 @@ Query minimally when commit messages and patches are insufficient.
 
 #### Step 1: Initialize Global State
 
-1. Create empty `{{milestone_csv}}` with headers: `id`, `title`, `category`, `commits`, `mini_srs`, `confidence_score`
+1. Create empty `{{milestone_csv}}` with headers: `id`, `title`, `category`, `commits`, `mini_srs`, `confidence_score`, `repos`
 2. Initialize tracking structures:
    - `commit_to_milestone`: Map tracking which commits are assigned to which milestone
    - `processed_batches`: Track which batch groups have been integrated
@@ -255,6 +273,8 @@ Note: use params with absolute paths
 | **Path Completeness** | `{{analyze_milestone_conflicts}}({{milestone_csv}})` | All milestones: `conflict_count = 0`, `invalid_commits = []`<br>*Concept: If A, B in same milestone, all commits on any A↔B path must be included* |
 | **No Cycles** | `{{validate_milestone_partitioning}}({{milestone_csv}})` | `is_valid_partitioning = true`<br>`cycles_count = 0`<br>*Concept: Milestones must form valid DAG* |
 
+The three validations are evaluated over the union of all repositories; read `main_coverage`, `overlapping_commits` and `invalid_commits` per repository as well as overall. A path-completeness conflict that exists only because of a soft xrepo edge is not a failure: cut that edge instead of adding commits. Also check that every milestone listing 2 or more repositories in `repos` satisfies the cross-repo validity rule.
+
 **If validation fails**, fix using these strategies (update `{{milestone_csv}}` after each fix):
 
 | Issue | Fix Strategy |
@@ -270,7 +290,7 @@ Note: use params with absolute paths
 
 **Output Directory**: `{{result_path}}/`
 
-1. **{{milestone_csv}}**: Final validated milestones with fields: `id`, `title`, `category`, `commits`, `mini_srs`, `confidence_score`
+1. **{{milestone_csv}}**: Final validated milestones with fields: `id`, `title`, `category`, `commits`, `mini_srs`, `confidence_score`, `repos`
 2. **{{dependency_proposals_csv}}**: High-confidence milestone dependencies with fields: `prerequisite_id`, `dependant_id`, `rationale`
 3. **consolidation_report.md**: Summary of grouping decisions, conflict resolutions, validation results
 
@@ -279,7 +299,7 @@ Note: use params with absolute paths
 ## Success Criteria
 
 **Final Deliverables**:
-- `{{milestone_csv}}` with all milestones (fields: `id`, `title`, `category`, `commits`, `mini_srs`, `confidence_score`)
+- `{{milestone_csv}}` with all milestones (fields: `id`, `title`, `category`, `commits`, `mini_srs`, `confidence_score`, `repos`)
 - `{{dependency_proposals_csv}}` with dependencies (fields: `prerequisite_id`, `dependant_id`, `rationale`)
 - `consolidation_report.md` with execution summary
 

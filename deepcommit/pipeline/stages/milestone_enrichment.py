@@ -12,6 +12,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from pipeline.utils.pipeline_logger import PipelineLoggerAdapter
 
 from deepcommit.harness.utils.src_filter import SrcFileFilter
+from deepcommit.multirepo.resolver import UnknownCommit, WorkspaceResolver
 
 from ..context import TrialContext
 from ..types import StageResult
@@ -83,8 +84,11 @@ class CommitAnalyzer:
         repo_src_dirs: Optional[List[str]] = None,
         exclude_patterns: Optional[List[str]] = None,
         test_patterns: Optional[List[str]] = None,
+        resolver: Optional["WorkspaceResolver"] = None,
     ):
         self._repo_path = repo_path
+        # multi-repo: pick the checkout per commit and prefix paths with the repo name (merged-tree paths)
+        self._resolver = resolver if resolver is not None and resolver.multi else None
         self._logger = logger
         self._cache: Dict[str, CommitStats] = {}
         # Use provided source directories or fallback to ["src"]
@@ -109,10 +113,20 @@ class CommitAnalyzer:
         return stats
 
     def _compute(self, commit: str) -> Optional[CommitStats]:
+        repo_path = self._repo_path
+        path_prefix = ""
+        if self._resolver is not None:
+            try:
+                repo_name = self._resolver.repo_for(commit)
+            except UnknownCommit:
+                self._logger.error("Commit %s is not in any workspace repo", commit)
+                return None
+            repo_path = self._resolver.repos[repo_name].checkout_path
+            path_prefix = f"{repo_name}/"
         cmd = [
             "git",
             "-C",
-            str(self._repo_path),
+            str(repo_path),
             "show",
             commit,
             "--numstat",
@@ -168,7 +182,9 @@ class CommitAnalyzer:
             deletions = _safe_int(removed_raw)
             path_candidates = _extract_paths(path_raw)
             normalized_candidates = [
-                normalized for candidate in path_candidates if (normalized := _normalize_path(candidate))
+                path_prefix + normalized
+                for candidate in path_candidates
+                if (normalized := _normalize_path(candidate))
             ]
 
             # IMPORTANT: Detect test files BEFORE exclude check
@@ -289,6 +305,17 @@ def _setup_logger(logger: Optional[logging.Logger]) -> logging.Logger:
     return logger
 
 
+def milestone_repos(commits: List[str], resolver: WorkspaceResolver) -> Set[str]:
+    """Repo names touched by a list of commits (unknown commits are ignored)."""
+    out: Set[str] = set()
+    for c in commits:
+        try:
+            out.add(resolver.repo_for(c))
+        except UnknownCommit:
+            continue
+    return out
+
+
 def run_milestone_enrichment(
     milestones_csv: Path | str,
     repo_path: Path | str,
@@ -296,6 +323,7 @@ def run_milestone_enrichment(
     repo_src_dirs: Optional[List[str]] = None,
     exclude_patterns: Optional[List[str]] = None,
     test_patterns: Optional[List[str]] = None,
+    resolver: Optional[WorkspaceResolver] = None,
 ) -> Dict[str, object]:
     """Augment milestones.csv in-place with timing, size, and file coverage metrics.
 
@@ -333,7 +361,9 @@ def run_milestone_enrichment(
         repo_src_dirs=repo_src_dirs,
         exclude_patterns=exclude_patterns,
         test_patterns=test_patterns,
+        resolver=resolver,
     )
+    multi = resolver is not None and resolver.multi
     updated_rows: List[Dict[str, str]] = []
     commit_misses: List[str] = []
 
@@ -344,6 +374,8 @@ def run_milestone_enrichment(
             logger.error(msg)
             return {"status": "error", "error": msg}
         fieldnames = _ensure_field_order(list(reader.fieldnames))
+        if multi and "repos" not in fieldnames:
+            fieldnames.append("repos")
 
         for row in reader:
             commits_raw = row.get("commits", "") or ""
@@ -382,6 +414,9 @@ def run_milestone_enrichment(
             else:
                 row["start_time"] = ""
                 row["end_time"] = ""
+
+            if multi:
+                row["repos"] = ";".join(sorted(milestone_repos(commits, resolver)))
 
             row["loc"] = str(total_loc)
             row["src_loc"] = str(total_src_loc)
@@ -442,6 +477,7 @@ def enrich_milestones(ctx: TrialContext, logger: logging.Logger) -> StageResult:
         repo_src_dirs=ctx.get_repo_src_dirs(),
         exclude_patterns=ctx.get_repo_exclude_patterns(),
         test_patterns=ctx.test_dirs,  # Use test_dirs for test file detection
+        resolver=WorkspaceResolver.from_dir(ctx.workspace_dir) if ctx.is_multi_repo else None,
     )
     if result.get("status") != "ok":
         return StageResult(status="error", error=str(result.get("error", "Unknown enrichment error")))

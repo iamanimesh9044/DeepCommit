@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from deepcommit.harness.utils.src_filter import SrcFileFilter
+from deepcommit.multirepo.resolver import UnknownCommit, WorkspaceResolver
 
 
 def _extract_paths(raw: str) -> Tuple[str, ...]:
@@ -48,9 +49,13 @@ def get_commit_src_loc(
     commit_sha: str,
     src_dirs: Optional[List[str]] = None,
     exclude_patterns: Optional[List[str]] = None,
+    resolver: Optional[WorkspaceResolver] = None,
 ) -> int:
     """
     Get source LOC (additions + deletions) for a commit.
+
+    With a multi-repo ``resolver`` the commit is measured in its own repo with that repo's src dirs / excludes
+    (``repo_path``, ``src_dirs`` and ``exclude_patterns`` are ignored); -1 if the commit is in no workspace repo.
 
     Args:
         repo_path: Path to git repository
@@ -61,6 +66,13 @@ def get_commit_src_loc(
     Returns:
         Total LOC (additions + deletions) for source files
     """
+    if resolver is not None and resolver.multi:
+        try:
+            info = resolver.info_for(commit_sha)
+        except UnknownCommit:
+            return -1
+        repo_path, src_dirs = Path(info.checkout_path), info.src_dirs
+        exclude_patterns = list(info.test_dirs) + list(info.exclude)
     if src_dirs is None:
         src_dirs = ["src"]
     if exclude_patterns is None:
@@ -113,6 +125,7 @@ def load_commit_data_from_repo(
     commits: List[str],
     src_dirs: Optional[List[str]] = None,
     exclude_patterns: Optional[List[str]] = None,
+    resolver: Optional[WorkspaceResolver] = None,
 ) -> Dict[str, int]:
     """
     Load commit LOC data directly from Git repository.
@@ -129,7 +142,7 @@ def load_commit_data_from_repo(
     commit_loc = {}
 
     for commit in commits:
-        loc = get_commit_src_loc(repo_path, commit, src_dirs, exclude_patterns)
+        loc = get_commit_src_loc(repo_path, commit, src_dirs, exclude_patterns, resolver)
         if loc >= 0:
             commit_loc[commit] = loc
         else:
@@ -231,6 +244,7 @@ def update_milestone_src_loc(
     repo_path: Path,
     src_dirs: Optional[List[str]] = None,
     exclude_patterns: Optional[List[str]] = None,
+    resolver: Optional[WorkspaceResolver] = None,
 ) -> List[Dict]:
     """
     Update src_loc field in milestones.csv and collect milestone data for analysis.
@@ -283,7 +297,7 @@ def update_milestone_src_loc(
             missing_commits = []
 
             for commit in commits:
-                loc = get_commit_src_loc(repo_path, commit, src_dirs, exclude_patterns)
+                loc = get_commit_src_loc(repo_path, commit, src_dirs, exclude_patterns, resolver)
                 if loc >= 0:
                     total_src_loc += loc
                     commit_src_locs[commit] = loc
@@ -334,6 +348,12 @@ def main():
         help="Parent directory containing milestones.csv (default: output)",
     )
     parser.add_argument("--repo-path", type=str, required=True, help="Path to git repository (required)")
+    parser.add_argument(
+        "--workspace-dir",
+        type=str,
+        default=None,
+        help="Multi-repo workspace dir (repos.json + commit_repos.json); commits are then measured in their own repo",
+    )
     parser.add_argument(
         "--repo-src-dirs",
         type=str,
@@ -393,7 +413,8 @@ def main():
     print()
 
     print("Updating milestone src_loc from Git repository...")
-    milestone_data = update_milestone_src_loc(csv_path, repo_path, src_dirs, exclude_patterns)
+    resolver = WorkspaceResolver.from_dir(args.workspace_dir) if args.workspace_dir else None
+    milestone_data = update_milestone_src_loc(csv_path, repo_path, src_dirs, exclude_patterns, resolver)
 
     print("\nAnalyzing milestone size distribution...")
     extreme_milestones, stats = identify_extreme_milestones(milestone_data, k=args.k_value, identify_small=args.small)

@@ -1,0 +1,42 @@
+schema_version = "1.4"
+multi_step_reward_strategy = "mean"
+
+[task]
+name = "csf/chatwoot-automation-001"
+version = "0.1.0"
+description = "Rebuild Chatwoot's automation rules milestone by milestone: rule records and admin API, then condition matching. Pilot slice: the first 2 of 8 planned milestones."
+keywords = ["csf", "feature-evolution", "chatwoot", "rails", "multi-step"]
+
+[metadata]
+family = "feature-evolution"
+source_repo = "https://github.com/chatwoot/chatwoot"
+source_commit = "3564ec1e961fdfafad8a3d502f352849fb69303d"
+proposal = "data/261024-chatwoot-proposals/proposals/req6-loc0-r3-iso3-tc0-roadmap/automation-rules-roadmap.md"
+milestones_planned = 8
+milestones_built = 2
+languages = ["ruby", "javascript"]
+
+[environment]
+build_timeout_sec = 1800
+cpus = 4
+memory_mb = 8192
+workdir = "/app"
+
+[agent]
+timeout_sec = 7200
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 1800
+
+# Runs in the agent's container after each step and writes /logs/artifacts/model.patch, the agent's changes since
+# the base state. Harbor copies it into the separate verifier, where tests/test.sh applies it.
+[[verifier.collect]]
+command = "csf-collect"
+timeout_sec = 300
+
+[[steps]]
+name = "m1-automation-rules-api"
+
+[[steps]]
+name = "m2-automation-condition-matching"

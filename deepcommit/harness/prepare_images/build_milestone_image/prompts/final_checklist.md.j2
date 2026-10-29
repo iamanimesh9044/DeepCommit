@@ -21,7 +21,8 @@ Pipeline-verified items:
 Process-only items:
 
 - [ ] Phase 0 detected language and test framework from repository files. `[process only]`
-- [ ] Testbed replacement is present: `RUN rm -rf /testbed` and `COPY . /testbed/`. `[process only]`
+- [ ] Testbed replacement is present: `RUN rm -rf /testbed` and `COPY . /testbed/`. `[process only]`{% if workspace_mode %}
+- [ ] Workspace replacement is present instead: `RUN rm -rf /workspace` and `COPY . /workspace/`, every repo at `/workspace/<repo>/`, and `test_config.json` is a list of per-repo suites. `[process only]`{% endif %}
 - [ ] Both START and END states pass test collection locally. `[process only]`
 - [ ] `test_config.json` was generated at `{{ output_dir }}/test_config.json` with the correct command for the detected framework. `[process only]`
 - [ ] Full tests were run using the test runner with detected `--language` and `--test-framework`. `[process only]`

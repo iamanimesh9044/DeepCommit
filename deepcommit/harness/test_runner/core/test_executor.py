@@ -134,3 +134,12 @@ def materialize_report(
             return False
 
     return merge_test_reports(report_files, output_path, framework, verbose)
+
+
+def get_workspace_switch_cmd(state: str, milestone_id: str, repos: List[str]) -> str:
+    """Workspace mode: ``git checkout -f milestone-{MID}-{state}`` in every ``/workspace/<repo>``."""
+    if state not in ("start", "end"):
+        raise ValueError(f"Unsupported state for workspace mode: {state}")
+    return "\n".join(
+        f"(cd /workspace/{repo} && git checkout -f milestone-{milestone_id}-{state})" for repo in repos
+    )

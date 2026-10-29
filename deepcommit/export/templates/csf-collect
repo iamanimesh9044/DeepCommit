@@ -1,0 +1,17 @@
+#!/bin/sh
+# Harbor [[verifier.collect]] hook. Runs in the agent's container after every step and writes, for every repo,
+# everything the agent changed under /app/<repo> since the base state to /logs/artifacts/model.<repo>.patch
+# (+ model.<repo>.files). An untouched repo gives an empty patch file. Harbor copies these files into the separate
+# verifier container, where tests/test.sh applies them to a clean base tree.
+#
+# Each repo is diffed against /opt/csf/base/<repo>.git, a one-commit copy of the base tree kept outside /app, so
+# whatever the agent does with /app/<repo>/.git (new commits, branches, a deleted repo) does not change what is graded.
+set -eu
+out=/logs/artifacts
+mkdir -p "$out"
+for repo in @REPOS@; do
+  export GIT_DIR="/opt/csf/base/$repo.git" GIT_WORK_TREE="/app/$repo"
+  git add -A
+  git diff --cached --binary --no-color --no-renames HEAD > "$out/model.$repo.patch"
+  git diff --cached --name-status --no-renames HEAD > "$out/model.$repo.files"
+done

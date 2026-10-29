@@ -317,6 +317,85 @@ def _handle_pipeline_multi_commands(args: argparse.Namespace) -> int:
     return 1
 
 
+def _handle_workspace_commands(args: argparse.Namespace) -> int:
+    from . import workspace
+
+    if args.workspace_cmd == "check-task":
+        return workspace.run_check_task(args.task_dir, allow_missing_steps=args.allow_missing_steps)
+    if args.workspace_cmd == "finalize-task":
+        from ..export.finalize import finalize
+
+        final = finalize(
+            Path(args.task_dir).expanduser(),
+            Path(args.src).expanduser() if args.src else None,
+            image=args.image,
+            runs=args.runs,
+            skip_build=args.skip_build,
+            instructions=not args.no_instructions,
+            model=args.model,
+        )
+        for c in final:
+            print(f"{c.step}: f2p {len(c.f2p)} p2p {len(c.p2p)} {c.note}")
+        return 0 if all(c.usable for c in final) else 1
+    data_root = get_data_root(args.data_root)
+    try:
+        if args.workspace_cmd == "validate":
+            return workspace.run_validate(args.manifest, data_root)
+        if args.workspace_cmd == "merge":
+            workspace.run_merge(args.manifest, data_root)
+            return 0
+        if args.workspace_cmd == "bundle":
+            summary = workspace.run_bundle(
+                args.manifest,
+                args.trial_name,
+                data_root,
+                dry_run=args.dry_run,
+                min_share=args.min_share,
+                max_commits=args.max_commits,
+                max_repos=args.max_repos,
+            )
+            print(
+                f"bundle: {summary['before']} -> {summary['after']} milestones, "
+                f"{len(summary['multi_repo_milestones'])} span several repos, "
+                f"{len(summary['leftover_links'])} unmerged cross-repo links"
+            )
+            return 0
+        if args.workspace_cmd == "export-task":
+            report = workspace.run_export_task(
+                args.manifest,
+                args.trial_name,
+                data_root,
+                out_dir=Path(args.out).expanduser().resolve() if args.out else None,
+                task_id=args.task_id,
+                min_repos=args.min_repos,
+                milestones_csv=args.milestones_csv,
+                dependencies_csv=args.dependencies_csv,
+            )
+            return 0 if report.built else 1
+        if args.workspace_cmd == "preproc":
+            return workspace.run_preproc(args.manifest, data_root, overwrite=args.overwrite, verbose=args.verbose)
+        if args.workspace_cmd == "run":
+            workspace.run_workspace_trial(
+                args.manifest,
+                args.trial_name,
+                data_root,
+                config_file=args.config_file,
+                agents=args.agents,
+                max_retries=args.max_retries,
+                result_root_override=Path(args.result_root).expanduser().resolve() if args.result_root else None,
+                refresh_views=args.refresh_views,
+                allow_rerun=args.allow_rerun,
+                rerun_from_stage=args.rerun_from_stage,
+                rerun_postproc=args.rerun_postproc,
+            )
+            return 0
+    except Exception as exc:  # pragma: no cover
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Unknown workspace command: {args.workspace_cmd}", file=sys.stderr)
+    return 1
+
+
 def _handle_harness_commands(args: argparse.Namespace) -> int:
     """Handle harness pipeline commands."""
     data_root = get_data_root(args.data_root)
@@ -659,6 +738,67 @@ def _parse_pipeline_multi_args(argv: list[str]) -> argparse.Namespace:
         help="Rerun Phase 3, 4, 5 (postprocessing) after Phase 2 completion. Requires Phase 2 to be fully completed. Uses same trial name.",
     )
     _add_data_root_argument(run_parser)
+
+    return parser.parse_args(argv)
+
+
+def _parse_workspace_args(argv: list[str]) -> argparse.Namespace:
+    """Build parser for multi-repo workspace commands."""
+    parser = argparse.ArgumentParser(prog="deepcommit workspace", description="Multi-repo workspace commands")
+    subparsers = parser.add_subparsers(dest="workspace_cmd", required=True)
+
+    for name, help_text in (
+        ("validate", "Parse a workspace manifest and report problems"),
+        ("preproc", "Run Phase 1 for every member repo, then merge"),
+        ("merge", "Merge member Phase-1 outputs into the workspace dataset"),
+        ("run", "Run a multi-stage trial on a merged workspace"),
+        ("bundle", "Merge single-repo stage-2 milestones into cross-repo milestones"),
+        ("export-task", "Export a trial's milestones as a CSF cross-repo task folder"),
+    ):
+        p = subparsers.add_parser(name, help=help_text)
+        p.add_argument("manifest", help="Workspace manifest (config/<workspace_id>.workspace.yaml)")
+        _add_data_root_argument(p)
+        if name == "preproc":
+            _add_verbose_argument(p)
+            p.add_argument("--overwrite", action="store_true", help="Overwrite existing member outputs")
+        if name == "bundle":
+            _add_trial_name_option(p)
+            p.add_argument("--dry-run", action="store_true", help="Report only; do not rewrite milestones.csv")
+            p.add_argument("--min-share", type=float, default=0.4, help="Minimum mutual cross-repo evidence share")
+            p.add_argument("--max-commits", type=int, default=40)
+            p.add_argument("--max-repos", type=int, default=3)
+        if name == "export-task":
+            _add_trial_name_option(p)
+            p.add_argument("--out", help="Family folder to write <task-id>/ into (default: DATA/csf_tasks/cross-repo-change)")
+            p.add_argument("--task-id", help="Task id (default: csf-<workspace>-NNN)")
+            p.add_argument("--min-repos", type=int, default=1, help="Leave out steps whose gold spans fewer repos")
+            p.add_argument("--milestones-csv", help="Use this milestones table instead of the trial's newest one")
+            p.add_argument("--dependencies-csv", help="Use this dependencies table instead of the trial's newest one")
+        if name == "run":
+            p.add_argument("--config-file", default="multi_stage_pipeline.yaml")
+            _add_trial_name_option(p)
+            _add_agents_argument(p)
+            _add_max_retries_argument(p)
+            _add_result_root_argument(p)
+            _add_refresh_views_argument(p)
+            p.add_argument("--allow-rerun", action="store_true")
+            p.add_argument("--rerun-from-stage", type=str)
+            p.add_argument("--rerun-postproc", action="store_true")
+
+    check = subparsers.add_parser("check-task", help="Validate a CSF task folder against the task format")
+    check.add_argument("task_dir", help="Task folder (contains task.toml)")
+    check.add_argument("--allow-missing-steps", action="store_true", help="Accept a task whose steps/ is not rendered")
+
+    fin = subparsers.add_parser(
+        "finalize-task", help="Measure tests in the task image, curate F2P/P2P ids, fold ungradable steps, write instructions"
+    )
+    fin.add_argument("task_dir", help="Exported task folder (contains task.toml, environment/Dockerfile)")
+    fin.add_argument("--src", help="Authoring folder for measurements and backups (default: ../_src/<task-id>)")
+    fin.add_argument("--image", default="csf-task-base", help="Docker tag for the task image")
+    fin.add_argument("--runs", type=int, default=2, help="Full suite runs per state; a test must pass in all")
+    fin.add_argument("--skip-build", action="store_true", help="Reuse the existing image")
+    fin.add_argument("--no-instructions", action="store_true", help="Keep the exporter's instructions")
+    fin.add_argument("--model", default="sonnet", help="Model for the instruction rewrite (claude CLI)")
 
     return parser.parse_args(argv)
 
@@ -1157,16 +1297,17 @@ def main(argv: list[str] | None = None) -> None:
 
     # Handle top-level help (no command or help flag without command)
     if len(argv) == 0 or argv[0] in ("-h", "--help"):
-        print("usage: deepcommit [-h] {trial,postprocess,db,preproc,pipeline-multi,harness} ...\n")
+        print("usage: deepcommit [-h] {trial,postprocess,db,preproc,pipeline-multi,harness,workspace} ...\n")
         print("DeepCommit CLI utilities\n")
         print("positional arguments:")
-        print("  {trial,postprocess,db,preproc,pipeline-multi,harness}")
+        print("  {trial,postprocess,db,preproc,pipeline-multi,harness,workspace}")
         print("    trial           Trial management commands")
         print("    postprocess     Run post-processing (enrichment + analysis)")
         print("    db              Database utilities")
         print("    preproc         Preprocessing commands")
         print("    pipeline-multi  Multi-stage pipeline commands")
-        print("    harness         Harness pipeline commands\n")
+        print("    harness         Harness pipeline commands")
+        print("    workspace       Multi-repo workspace commands (validate/preproc/merge/run/bundle/export-task/check-task/finalize-task)\n")
         print("options:")
         print("  -h, --help        show this help message and exit")
         raise SystemExit(0)
@@ -1178,7 +1319,7 @@ def main(argv: list[str] | None = None) -> None:
         add_help=False,
     )
     top_parser.add_argument(
-        "command", choices=["trial", "postprocess", "db", "preproc", "pipeline-multi", "harness"], help="Command to run"
+        "command", choices=["trial", "postprocess", "db", "preproc", "pipeline-multi", "harness", "workspace"], help="Command to run"
     )
 
     # Parse just the command (first argument)
@@ -1200,6 +1341,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "preproc":
         sub_args = _parse_preproc_args(remaining)
         code = _handle_preproc_commands(sub_args)
+    elif args.command == "workspace":
+        sub_args = _parse_workspace_args(remaining)
+        code = _handle_workspace_commands(sub_args)
     elif args.command == "harness":
         sub_args = _parse_harness_args(remaining)
         code = _handle_harness_commands(sub_args)

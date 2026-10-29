@@ -1,0 +1,23 @@
+# Core regression specs run as pass-to-pass at every step. They cover the code the base state cuts into:
+# reauthorization, the event dispatcher and Action Cable listener, accounts and users, activity messages,
+# the shared filter engine and action service, and the Captain judge the automation conditions reuse.
+spec/models/channel/email_spec.rb
+spec/models/channel/facebook_page_spec.rb
+spec/models/channel/instagram_spec.rb
+spec/models/channel/whatsapp_spec.rb
+spec/models/integrations/hook_spec.rb
+spec/models/account_spec.rb
+spec/models/user_spec.rb
+spec/models/conversation_spec.rb
+spec/models/message_spec.rb
+spec/models/custom_attribute_definition_spec.rb
+spec/jobs/action_cable_handoff_assignment_spec.rb
+spec/jobs/trigger_scheduled_items_job_spec.rb
+spec/listeners/action_cable_listener_spec.rb
+spec/dispatchers/async_dispatcher_spec.rb
+spec/mailers/administrator_notifications/account_notification_mailer_spec.rb
+spec/services/action_service_spec.rb
+spec/services/conversations/filter_service_spec.rb
+spec/services/contacts/filter_service_spec.rb
+spec/services/captain/automation_condition_service_spec.rb
+spec/builders/messages/message_builder_spec.rb

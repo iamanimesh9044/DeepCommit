@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Set, Tuple, Union
@@ -38,6 +37,12 @@ class TrialContext(BaseModel):
     # Build environment configuration (for commit splitting verification)
     base_image_name: Optional[str] = None  # Docker base image (e.g., "navidrome-test:v0.57.0")
     build_command: Optional[str] = None  # Build command (e.g., "go build ./cmd/...", "npm run build")
+
+    # Multi-repo workspace support (None => classic single-repo trial)
+    workspace_dir: Optional[str] = None  # dir with repos.json + commit_repos.json (DEEPCOMMIT_WORKSPACE_DIR)
+    workspace_id: Optional[str] = None
+    # name -> {role, checkout, src_dirs, test_dirs, exclude, ...}; loaded from repos.json
+    repos: Optional[Dict[str, Dict[str, Any]]] = None
 
     # Multi-stage pipeline support
     is_multi_stage: bool = False
@@ -102,8 +107,66 @@ class TrialContext(BaseModel):
 
         Loads all configuration files if in multi-stage mode.
         """
+        if self.workspace_dir:
+            self._load_workspace()
         if self.is_multi_stage:
             self._load_all_configs()
+
+    def _load_workspace(self) -> None:
+        """Load repos.json of the workspace; in multi mode src/test/exclude become the prefixed lists."""
+        import json
+
+        if self.repos is None:
+            raw = json.loads((Path(self.workspace_dir) / "repos.json").read_text(encoding="utf-8"))
+            self.repos = {
+                name: {
+                    "role": r.get("role", "library"),
+                    "owner": r.get("owner", ""),
+                    "repo": r.get("repo", ""),
+                    "start": r.get("start", ""),
+                    "end": r.get("end", ""),
+                    "checkout": r.get("checkout_path", ""),
+                    "src_dirs": r.get("repo_src_dirs", []),
+                    "test_dirs": r.get("test_dirs", []),
+                    "exclude": r.get("exclude", []),
+                    "prefixed_src_dirs": r.get("prefixed_src_dirs", []),
+                    "prefixed_test_dirs": r.get("prefixed_test_dirs", []),
+                    "prefixed_exclude": r.get("prefixed_exclude", []),
+                }
+                for name, r in raw.items()
+            }
+        if not self.workspace_id:
+            self.workspace_id = Path(self.workspace_dir).name
+        if self.is_multi_repo:
+            self.repo_src_dirs = [d for r in self.repos.values() for d in r["prefixed_src_dirs"]]
+            self.test_dirs = [g for r in self.repos.values() for g in r["prefixed_test_dirs"]]
+            self.exclude = [g for r in self.repos.values() for g in r["prefixed_exclude"]]
+
+    @property
+    def is_multi_repo(self) -> bool:
+        return bool(self.repos) and len(self.repos) > 1
+
+    def get_workspace_dir(self) -> Optional[str]:
+        return self.workspace_dir
+
+    def get_resolver(self):
+        """Commit -> repo resolver for a multi-repo trial; None for a single-repo trial."""
+        if not self.is_multi_repo:
+            return None
+        from deepcommit.multirepo.resolver import WorkspaceResolver
+
+        return WorkspaceResolver.from_dir(self.workspace_dir)
+
+    def workspace_repos_table(self) -> str:
+        lines = ["| name | role | repo dir | src dirs |", "| --- | --- | --- | --- |"]
+        for name, r in (self.repos or {}).items():
+            src = ", ".join(f"`{d}`" for d in r["prefixed_src_dirs"])
+            lines.append(f"| {name} | {r['role']} | `{self._repo_dir}/{name}` | {src} |")
+        if not self.repos:  # legacy single-repo trial: one-row table, checkout is repo_data itself
+            name = (self.repo_id.split(":")[0] if ":" in self.repo_id else self.repo_id).replace("_", "/", 1)
+            src = ", ".join(f"`{d}`" for d in self.get_repo_src_dirs())
+            lines.append(f"| {name} | library | `{self._repo_dir}` | {src} |")
+        return "\n".join(lines)
 
     def _load_all_configs(self) -> None:
         """Load all configuration files for multi-stage pipeline.
@@ -231,6 +294,7 @@ class TrialContext(BaseModel):
             "trial": self.trial_name,
             "workspace_root": self.workspace_root,
             "repo_id": self.repo_id,
+            **({"workspace_id": self.workspace_id} if self.workspace_id else {}),
             "config_file": self.prompt_file,
             "agents": ",".join(self.agents),
             "code_commit_sha": self.code_commit_sha,
@@ -757,9 +821,9 @@ class TrialContext(BaseModel):
         mapping["exclude_patterns"] = ",".join(self.get_repo_exclude_patterns())
 
         # Add build environment configuration (for commit splitting verification)
-        if self.base_image_name:
+        if self.base_image_name and not self.is_multi_repo:  # multi-repo: compile verification is skipped
             mapping["base_image_name"] = self.base_image_name
-        if self.build_command:
+        if self.build_command and not self.is_multi_repo:
             mapping["build_command"] = self.build_command
 
         # Add scripts paths from stage config
@@ -768,16 +832,27 @@ class TrialContext(BaseModel):
             for script_name, script_path in scripts.items():
                 mapping[script_name] = str(script_path)
 
+        # Multi-repo workspace variables (always defined so prompts can reference them)
+        mapping["is_multi_repo"] = "true" if self.is_multi_repo else "false"
+        mapping["workspace_id"] = self.workspace_id or self.repo_id.replace(":", "_")
+        mapping["workspace_repos_table"] = self.workspace_repos_table()
+
         # Add repo metadata
-        if ":" in self.repo_id:
+        if self.is_multi_repo:
+            mapping["start_tag"] = ", ".join(f"{n}: {r['start']}" for n, r in self.repos.items())
+            mapping["end_tag"] = ", ".join(f"{n}: {r['end']}" for n, r in self.repos.items())
+            mapping["version_range"] = "; ".join(f"{n}: {r['start']} to {r['end']}" for n, r in self.repos.items())
+            mapping["repo_name"] = ", ".join(f"{r['owner']}/{r['repo']}" for r in self.repos.values())
+        elif ":" in self.repo_id:
             parts = self.repo_id.split(":", 1)[1].split("_")
             if len(parts) >= 2:
                 mapping["start_tag"] = parts[0]
                 mapping["end_tag"] = parts[1]
                 mapping["version_range"] = f"{parts[0]} to {parts[1]}"
 
-        repo_name = self.repo_id.split(":")[0] if ":" in self.repo_id else self.repo_id
-        mapping["repo_name"] = repo_name.replace("_", "/", 1)  # Replace first underscore only
+        if not self.is_multi_repo:
+            repo_name = self.repo_id.split(":")[0] if ":" in self.repo_id else self.repo_id
+            mapping["repo_name"] = repo_name.replace("_", "/", 1)  # Replace first underscore only
 
         # Add aliases for backward compatibility
         if "main_commits" in mapping:
@@ -814,11 +889,9 @@ class TrialContext(BaseModel):
 
         template_content = template_path.read_text(encoding="utf-8")
 
-        def replace_var(match):
-            var_name = match.group(1).strip()
-            return str(path_mapping.get(var_name, match.group(0)))
+        from .utils.template import render_template_string
 
-        return re.sub(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", replace_var, template_content)
+        return render_template_string(template_content, path_mapping)
 
     # -------- Helper methods --------
 

@@ -78,6 +78,11 @@ class Stage1BuildTestbed(BaseStage):
         else:
             self.logger.warning("  ✗ Missing: source_repo/")
 
+    def _workspace_repo_dirs(self, testbed_path: Path) -> List[Path]:
+        """``testbed/<repo>`` dirs for a multi-repo workspace run; [] for single-repo (testbed itself is the repo)."""
+        names = self.ctx.repo_names()
+        return [testbed_path / n for n in names]
+
     def _validate_outputs(self) -> Optional[str]:
         """Validate build testbed stage outputs.
 
@@ -94,9 +99,16 @@ class Stage1BuildTestbed(BaseStage):
         workspace = Path(self.ctx.workspace_root)
         errors = []
 
-        # Check testbed directory
+        # Check testbed directory (workspace mode: testbed/<repo>/ are the git repos, testbed/manifest.json lists them)
         testbed_path = workspace / "testbed"
-        if not testbed_path.exists():
+        repo_dirs = self._workspace_repo_dirs(testbed_path)
+        if repo_dirs:
+            if not (testbed_path / "manifest.json").exists():
+                errors.append("testbed/manifest.json not found")
+            for rd in repo_dirs:
+                if not (rd / ".git").exists():
+                    errors.append(f"testbed/{rd.name}/ is not a git repository")
+        elif not testbed_path.exists():
             errors.append("testbed/ directory not found")
         elif not (testbed_path / ".git").exists():
             errors.append("testbed/ is not a git repository")
@@ -145,27 +157,30 @@ class Stage1BuildTestbed(BaseStage):
             errors.append("dependencies.csv not found")
 
         # Validate milestone tags in testbed repository
-        if testbed_path.exists() and (testbed_path / ".git").exists() and milestone_ids:
+        tag_roots = repo_dirs or ([testbed_path] if testbed_path.exists() and (testbed_path / ".git").exists() else [])
+        if tag_roots and milestone_ids:
             try:
-                # Get all tags from testbed repo
-                result = subprocess.run(
-                    ["git", "tag"],
-                    cwd=testbed_path,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                existing_tags = set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
-
-                # Check each milestone has both start and end tags
                 missing_tags = []
-                for mid in milestone_ids:
-                    start_tag = f"milestone-{mid}-start"
-                    end_tag = f"milestone-{mid}-end"
-                    if start_tag not in existing_tags:
-                        missing_tags.append(start_tag)
-                    if end_tag not in existing_tags:
-                        missing_tags.append(end_tag)
+                for root in tag_roots:
+                    # Get all tags from this (repo) testbed
+                    result = subprocess.run(
+                        ["git", "tag"],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                    existing_tags = set(result.stdout.strip().split("\n")) if result.stdout.strip() else set()
+
+                    # Check each milestone has both start and end tags (in EVERY repo in workspace mode)
+                    label = f"{root.name}:" if repo_dirs else ""
+                    for mid in milestone_ids:
+                        start_tag = f"milestone-{mid}-start"
+                        end_tag = f"milestone-{mid}-end"
+                        if start_tag not in existing_tags:
+                            missing_tags.append(f"{label}{start_tag}")
+                        if end_tag not in existing_tags:
+                            missing_tags.append(f"{label}{end_tag}")
 
                 if missing_tags:
                     errors.append(

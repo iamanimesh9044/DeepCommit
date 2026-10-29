@@ -37,16 +37,16 @@ Your goal is to **reverse-engineer** a comprehensive, production-quality SRS tha
 
 **How to Access Code in Container:**
 
-The milestone container has the complete git repository (working directory: `/testbed`) already checked out to commit `{{ end_commit }}`.
+The milestone container has the milestone's {{ repos | length }} git {{ "repository" if repos | length == 1 else "repositories" }} already checked out to commit `{{ end_commit }}`: {% for r in repos %}`{{ r.name }}` at `{{ r.path }}`{% if not loop.last %}, {% endif %}{% endfor %}. The git range below exists as tags in EACH repository.
 
 To view files in the container:
 ```bash
-docker exec {{ milestone_container }} cat <file_path>
+docker exec {{ milestone_container }} cat <repo_path>/<file_path>
 ```
 
-To run git commands:
+To run git commands (per repository):
 ```bash
-docker exec {{ milestone_container }} git <git-command>
+docker exec {{ milestone_container }} git -C <repo_path> <git-command>
 ```
 
 ---
@@ -58,14 +58,18 @@ This represents the **curated** implementation changes for this milestone:
 
 **Use this to**: Understand the core functional implementation relevant to requirements.
 
-**How to view**: Run `docker exec {{ milestone_container }} git diff {{ start_commit }}..{{ end_commit }}`
+**How to view**: Run `docker exec {{ milestone_container }} git -C <repo_path> diff {{ start_commit }}..{{ end_commit }}` once per repository. A repository's diff may be empty when the milestone does not touch it.
 
 
 ## INPUT 3: Full Commit History ({{ commit_count }} commits)
 
 This is the **complete** development record for context:
-{%- for commit in commits %}
+{%- for r in repos %}
+
+**{{ r.name }}** (`{{ r.path }}`, {{ r.commits | length }} commits):
+{%- for commit in r.commits %}
 - `{{ commit.sha }}` - {{ commit.subject }}
+{%- endfor %}
 {%- endfor %}
 
 Includes all original commits with:
@@ -144,6 +148,16 @@ Every SRS must include:
 
 1. **Overview Section**: High-level summary of all requirements
 2. **Requirements Sections**: Individual functional requirements (FR1, FR2, ...)
+3. **Interface contract** (REQUIRED when the milestone changes more than one repository): one subsection per repository boundary, see "Interface Contract Section" below
+
+### Interface Contract Section
+
+When the milestone changes several repositories that interoperate (a one-repository milestone has no boundary and skips this section), an engineer working in one repo can only succeed if the cross-repo surface is specified. Add a section titled `## Interface contract` with one subsection per boundary (e.g. "server -> sdk"). In each subsection state, in prose and tables, the **boundary names**: the externally observable names that the acceptance tests or the other repo rely on across the repo boundary, such as message/field names and types, RPC or endpoint names, wire formats, error codes, config keys, and public method/function names that tests in another repo call. State semantics (when set, allowed values, compatibility with old peers), not code.
+
+**Boundary-name rule** (the only exception to the "no function/variable names" rule):
+- ALLOWED and REQUIRED: boundary names as defined above. Without them the milestone is unsolvable because tests cannot find the surface.
+- FORBIDDEN: internal names. Private helpers, internal types, file paths, module layout, local variable names, and anything the tests do not touch across a boundary. If a name appears only inside one repo's implementation, do not mention it.
+- Test: for each name you write, ask "does a test or the other repo reference this name?" If not, remove it.
 
 ### Individual Requirement Format
 
@@ -217,6 +231,7 @@ Every SRS must include:
 - Historical context (e.g., "accidentally broken during refactoring")
 - Issue/PR/Changelog references (e.g., "Issue #1234", "PR #5678")
 - **External links that reveal implementation** (e.g., upstream bug trackers, reference implementations)
+- Internal names (see the boundary-name rule in the Interface Contract Section); boundary names ARE allowed there
 
 ❌ **Do NOT add separate sections**:
 - "Background", "Root Cause", "Technical Context"

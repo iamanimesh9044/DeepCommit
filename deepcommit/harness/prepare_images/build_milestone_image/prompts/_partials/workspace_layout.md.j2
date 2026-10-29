@@ -1,0 +1,31 @@
+## Multi-root workspace layout (this milestone spans {{ workspace_repos | length }} repos)
+
+This milestone is built from a **workspace** of independent git repositories, not a single repo. The instructions above that say `/testbed` apply **per repo** with these substitutions:
+
+| Single-repo wording | Workspace equivalent |
+|---|---|
+| Repository at `/testbed` | Repo `<repo>` at `/workspace/<repo>/` (one git repo each) |
+| `RUN rm -rf /testbed` + `COPY . /testbed/` | `RUN rm -rf /workspace` + `COPY . /workspace/` (the host build context `{{ repo_path }}` holds one directory per repo plus `manifest.json`) |
+| `RUN cd /testbed && git reset --hard HEAD` | `RUN for d in /workspace/*/; do git -C "$d" reset --hard HEAD; done` |
+| `git checkout {{ base_state }}` / `{{ end_state }}` | the same tag names exist in **every** repo; switch all repos together: `for d in /workspace/*/; do git -C "$d" checkout -f <TAG>; done` |
+| `git -C {{ repo_path }} rev-parse <tag>` | `git -C {{ repo_path }}/<repo> rev-parse <tag>` (a repo untouched by this milestone has identical start and end trees) |
+
+Repos in this workspace:
+
+| Repo | In-image path | Role | Source dirs |
+|---|---|---|---|
+{% for r in workspace_repos -%}
+| `{{ r.name }}` | `/workspace/{{ r.name }}` | {{ r.role }} | {{ r.repo_src_dirs | join(", ") }} |
+{% endfor %}
+The base image carries every repo's toolchain. Resolve ALL dependencies during `docker build` (vendor / module cache / lockfile install): test runs may use `--no-network`, so nothing may be downloaded at run time.
+
+`test_config.json` must be a JSON **list of suites**, one per repo/test kind, each with:
+
+- `repo` — repo name from the table (test ids are namespaced `{repo}::{native id}` by the runner)
+- `workdir` — directory the command runs in (e.g. `/workspace/<repo>`)
+- `language`, `framework` — pick the matching parser (`pytest`, `go_test`, `cargo`, `jest`, ...)
+- `run_cmd` (or `test_cmd`) — the test command; must write its report to `/output/{output_file}`
+- `report_file` — optional output file name (`{state}` is substituted)
+- `kind` — optional, `integration` for cross-repo/e2e suites
+
+Do not merge repos into one tree and do not invent a combined `/testbed`.

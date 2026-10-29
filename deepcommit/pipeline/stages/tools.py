@@ -84,6 +84,10 @@ def configure_tools(ctx: TrialContext, logger: "PipelineLoggerAdapter") -> Stage
 
             # Render template variables
             server_config = render_template_recursive(server_config, server_template_vars)
+            # Multi-repo: tell the MCP server where repos.json / commit_repos.json live (absent for single repo)
+            workspace_dir = getattr(ctx, "workspace_dir", None)
+            if workspace_dir:
+                server_config.setdefault("env", {})["DEEPCOMMIT_WORKSPACE_DIR"] = str(workspace_dir)
             mcp_servers[server_name] = server_config
 
         except Exception as exc:

@@ -528,6 +528,7 @@ def collect_github_data(
     test_dirs: Optional[List[str]] = None,
     exclude: Optional[List[str]] = None,
     verbose: bool = False,
+    main_branch: Optional[str] = None,
 ) -> int:
     """Collect GitHub data (releases, PRs, issues) for a repository.
 
@@ -649,6 +650,9 @@ def collect_github_data(
 
     if local_repo:
         cmd.extend(["--local-repo", str(local_repo)])
+
+    if main_branch:
+        cmd.extend(["--main-branch", main_branch])
 
     if repo_src_dirs:
         cmd.append("--repo-src-dirs")
@@ -1027,6 +1031,7 @@ def run_all_preprocessing(
             test_dirs=test_dirs,
             exclude=exclude,
             verbose=verbose,
+            main_branch=main_branch,
         )
         if result != 0:
             print("✗ Data collection failed", file=sys.stderr)

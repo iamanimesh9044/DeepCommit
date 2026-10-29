@@ -1216,6 +1216,22 @@ def parse_nushell_script_report(report_path: Path) -> Dict[str, Any]:
     }
 
 
+def namespace_test_ids(parsed: Dict[str, Any], repo: Optional[str]) -> Dict[str, Any]:
+    """Prefix every test id with ``{repo}::`` (workspace mode) so suites merge into ONE dict without collisions.
+
+    No-op when ``repo`` is falsy (single repo) and idempotent for already-prefixed ids.
+    """
+    if not repo:
+        return parsed
+    prefix = f"{repo}::"
+    for key in ("tests", "collectors"):
+        for item in parsed.get(key) or []:
+            nid = item.get("nodeid") if isinstance(item, dict) else None
+            if nid and not nid.startswith(prefix):
+                item["nodeid"] = prefix + nid
+    return parsed
+
+
 def parse_test_report(report_path: Path, framework: str = "pytest") -> Dict[str, Any]:
     """
     Parse a test report file from any supported framework.

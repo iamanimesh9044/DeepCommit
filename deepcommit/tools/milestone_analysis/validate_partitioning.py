@@ -11,6 +11,7 @@ def validate_milestone_partitioning(
     commit_dag_path: str,
     split_metadata_dir: str = None,
     repo_path: str = None,
+    resolver=None,
 ) -> Dict[str, Any]:
     """Validate milestone partitioning by inferring dependencies from commit DAG and detecting cycles.
 
@@ -24,6 +25,7 @@ def validate_milestone_partitioning(
         commit_dag_path: Path to commit DAG JSON file
         split_metadata_dir: Optional path to split commit metadata directory
         repo_path: Optional Git repository path for precise blame-based edge mapping
+        resolver: Optional multi-repo WorkspaceResolver (split blame runs in each commit's own repo)
 
     Returns:
         Dictionary containing:
@@ -42,6 +44,7 @@ def validate_milestone_partitioning(
         dependencies_csv_path=None,  # No existing dependencies needed
         split_metadata_dir=split_metadata_dir,
         repo_path=repo_path,
+        resolver=resolver,
     )
 
     # Infer dependencies from commit DAG

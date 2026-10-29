@@ -10,6 +10,36 @@ This document provides comprehensive descriptions of the MCP (Model Context Prot
 
 ---
 
+## Multi-repo workspaces
+
+When `DEEPCOMMIT_WORKSPACE_DIR` points at a workspace directory (`repos.json` + `commit_repos.json`, written by the
+merge step) the server routes every git call by commit. Without it (one repo) nothing below applies and every tool
+behaves, and is advertised, exactly as before.
+
+- **Commit keys** stay the bare 7-char SHA; `commit_repos.json` maps each SHA to its repo.
+- **Paths** in merged data and in tool output are `<repo>/<path>`. Each call runs git in that repo's checkout
+  (`checkout_path` from `repos.json`) with that repo's own, unprefixed src dirs / test dirs / excludes, then re-prefixes
+  returned file paths. Tools that take paths strip the prefix to pick the repo.
+- **`repo` field**: single-repo results (`get_commit_context`, `get_commits_diff`, `get_release_context`,
+  issue/PR context) gain a top-level `repo`; `commits` list entries, `search_entities` commit hits and
+  `calculate_commits_src_loc` per-commit records carry `repo` too.
+- **`get_commit_context(sha)`, `calculate_commits_src_loc(commits)`**: routed by SHA. Commit lists may mix repos; they
+  are measured per repo (that repo's src dirs and excludes) and summed. Reported `path_prefix` is the prefixed union.
+- **`get_commits_diff`**: repo comes from an explicit `repo` argument, a `<repo>:<ref>` prefix on a ref, or the commit
+  SHAs. `paths_glob` entries may start with `<repo>/`.
+- **`get_release_context`**: `repo` argument, `<repo>:<tag>` prefix, or inferred when the tag exists in one repo only.
+- **`get_issue_context` / `get_pr_context`**: numbers are per repo, so `repo` is required.
+- **`search_entities`**: commit hits are collected per repo and merged (re-sorted, truncated to `limit`); PR / issue /
+  release hits come from the merged data dir (each row already tagged with its repo).
+- The optional `repo` argument is only present in the tool schema in multi-repo mode.
+- **Milestone / DAG tools** (`analyze_milestone_conflicts`, `analyze_dag_conflicts`, `validate_milestone_partitioning`,
+  `analyze_milestone_size_balance`, `check_dependency`): the commit DAG is the merged one. `edges_dag` holds per-repo
+  edges plus HARD cross-repo edges (`"xrepo": true`), and those are enforced like any other edge (path completeness,
+  inferred milestone dependencies). `edges_soft` are hints only and are never read by these tools. Split commits
+  (`split-<sha>` metadata) are blamed in the original commit's own repo. LoC statistics use per-commit repo src dirs.
+
+---
+
 ## 1. DAG Analysis Tools
 
 ### 1.1 `validate_dag`

@@ -1,0 +1,48 @@
+# Example workspace: Qdrant server (API contract) + two hand-written clients.
+# Parsed by deepcommit.multirepo.load_workspace. Fields marked UNSURE need checking against the real repos.
+workspace_id: qdrant_clients_v1
+repos:
+  - name: qdrant
+    owner: qdrant
+    repo: qdrant
+    role: contract            # the gRPC/REST API definitions are the contract the clients consume
+    start: v1.18.0            # UNSURE: confirm both tags exist
+    end: v1.20.0              # UNSURE: v1.20.0 may not be released yet; check `git tag`
+    main_branch: master       # UNSURE: qdrant/qdrant default branch (master vs main)
+    repo_src_dirs: [lib/, src/]   # literal path prefixes, not globs
+    test_dirs: [tests/, lib/api/tests/]   # UNSURE
+    exclude: []
+    contract_paths:
+      - "lib/api/src/grpc/proto/**/*.proto"
+      - "docs/redoc/master/openapi.json"
+  - name: rust-client
+    owner: qdrant
+    repo: rust-client
+    role: sdk
+    start: v1.18.0            # UNSURE: client tag names may not match server tags
+    end: v1.20.0
+    main_branch: master       # UNSURE
+    repo_src_dirs: [src/]
+    test_dirs: [tests/]
+    exclude: []
+  - name: qdrant-client
+    owner: qdrant
+    repo: qdrant-client
+    role: sdk
+    start: v1.18.0            # UNSURE: Python client tags
+    end: v1.20.0
+    main_branch: master       # UNSURE
+    repo_src_dirs: [qdrant_client/]
+    test_dirs: [tests/]
+    exclude: []
+xrepo:
+  pin_files: [Cargo.toml, pyproject.toml]
+  link_confidence_threshold: 0.7
+  time_window_days: 3
+  generated_globs:
+    - "**/*.pb.rs"
+    - "**/*_pb2.py"
+    - "**/*_pb2_grpc.py"
+    - "**/*_pb2.pyi"
+    - "qdrant_client/grpc/**"        # UNSURE
+    - "src/qdrant.rs"                # UNSURE: tonic-generated file in rust-client

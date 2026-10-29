@@ -64,7 +64,13 @@ def upload_results(
         # After writing meta.json, upsert into SQLite DB and ingest CSVs.
         try:
             db_path = os.path.realpath(os.path.join(ctx.result_path, "..", "trials.sqlite"))
-            _upsert_to_sqlite(db_path=db_path, meta=meta, result_dir=Path(ctx.result_path), logger=logger)
+            _upsert_to_sqlite(
+                db_path=db_path,
+                meta=meta,
+                result_dir=Path(ctx.result_path),
+                logger=logger,
+                workspace_dir=ctx.workspace_dir if ctx.is_multi_repo else None,
+            )
             artifacts = {"meta_path": out_path, "db_path": db_path}
             return StageResult(status="ok", artifacts=artifacts)
         except Exception as db_err:
@@ -170,6 +176,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # Schema migration: multi-repo adds an optional milestones.repos column (semicolon-separated repo names).
+    ms_cols = {row[1] for row in cur.execute("PRAGMA table_info(milestones)").fetchall()}
+    if "repos" not in ms_cols:
+        cur.execute("ALTER TABLE milestones ADD COLUMN repos TEXT")
     conn.commit()
 
 
@@ -236,11 +246,11 @@ def _ingest_milestones_and_dependencies(conn: sqlite3.Connection, meta: dict, re
                 continue
             conn.execute(
                 """
-                INSERT INTO milestones (trial, milestone_id, title)
-                VALUES (?, ?, ?)
-                ON CONFLICT(trial, milestone_id) DO UPDATE SET title=excluded.title
+                INSERT INTO milestones (trial, milestone_id, title, repos)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(trial, milestone_id) DO UPDATE SET title=excluded.title, repos=excluded.repos
                 """,
-                (trial, milestone_id, title),
+                (trial, milestone_id, title, row.get("repos") or None),
             )
             ms_count += 1
 
@@ -265,9 +275,15 @@ def _ingest_milestones_and_dependencies(conn: sqlite3.Connection, meta: dict, re
     return ms_count, dep_count
 
 
-def _ingest_milestone_commits_optional(conn: sqlite3.Connection, meta: dict, result_dir: Path) -> int:
+def _ingest_milestone_commits_optional(
+    conn: sqlite3.Connection, meta: dict, result_dir: Path, workspace_dir: str | Path | None = None
+) -> int:
     trial = meta.get("trial")
     repo_id = meta.get("repo_id")
+    # multi-repo: each commit carries its own repo (name) instead of the single trial repo_id
+    commit_repo: dict = {}
+    if workspace_dir:
+        commit_repo = json.loads((Path(workspace_dir) / "commit_repos.json").read_text(encoding="utf-8"))
     mc_csv = result_dir / "milestone_commits.csv"
     mc_count = 0
     if not mc_csv.is_file():
@@ -283,14 +299,19 @@ def _ingest_milestone_commits_optional(conn: sqlite3.Connection, meta: dict, res
             VALUES (?, ?, ?, ?)
             ON CONFLICT(trial, milestone_id, commit_sha) DO NOTHING
             """,
-            (trial, repo_id, ms_id, sha),
+            (trial, commit_repo.get(sha[:7].lower(), row.get("repo") or repo_id) if commit_repo else repo_id, ms_id, sha),
         )
         mc_count += 1
     return mc_count
 
 
 def _upsert_to_sqlite(
-    *, db_path: str, meta: dict, result_dir: Path, logger: logging.Logger | PipelineLoggerAdapter
+    *,
+    db_path: str,
+    meta: dict,
+    result_dir: Path,
+    logger: logging.Logger | PipelineLoggerAdapter,
+    workspace_dir: str | Path | None = None,
 ) -> None:
     # Light retry loop in case of transient locks
     attempts = 0
@@ -302,7 +323,7 @@ def _upsert_to_sqlite(
                 _ensure_schema(conn)
                 _upsert_experiment(conn, meta)
                 ms_count, dep_count = _ingest_milestones_and_dependencies(conn, meta, result_dir)
-                mc_count = _ingest_milestone_commits_optional(conn, meta, result_dir)
+                mc_count = _ingest_milestone_commits_optional(conn, meta, result_dir, workspace_dir)
                 # Update counts based on actual ingested rows
                 conn.execute(
                     "UPDATE experiments SET milestones_count=?, dependencies_count=? WHERE trial=?",

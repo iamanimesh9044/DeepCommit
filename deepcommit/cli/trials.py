@@ -407,6 +407,38 @@ def _clean_postprocess_outputs(result_root: Path, logger) -> None:
         logger("  No postprocess output files to clean")
 
 
+def _link_workspace_trial_data(ws, ws_dir: Path, data_root: Path, workspace_root: Path, *, reuse: bool) -> None:
+    """Lay out a multi-repo trial: repo_data/<name> clones, proc_data -> merged, trial-local workspace_meta."""
+    repo_dest_root = workspace_root / "repo_data"
+    repo_dest_root.mkdir(parents=True, exist_ok=True)
+    repos = json.loads((ws_dir / "repos.json").read_text(encoding="utf-8"))
+    for spec in ws.repos:
+        src = find_repo_path(spec.repo_id, data_root)
+        if not src:
+            raise FileNotFoundError(f"Repository not found: {data_root / 'github_data' / 'repos' / spec.repo_id}")
+        dest = repo_dest_root / spec.name
+        if dest.exists() and reuse:
+            _print_info(f"Reusing existing repo_data/{spec.name} (rerun mode)")
+        else:
+            clone_repo_local(src, dest)
+            _print_info(f"Cloned repo_data/{spec.name} <- {src}")
+        repos[spec.name]["checkout_path"] = str(dest)
+
+    meta = workspace_root / "workspace_meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "repos.json").write_text(json.dumps(repos, indent=2), encoding="utf-8")
+    (meta / "commit_repos.json").write_text((ws_dir / "commit_repos.json").read_text(encoding="utf-8"))
+    (meta / "workspace.json").write_text((ws_dir / "workspace.json").read_text(encoding="utf-8"))
+
+    merged = ws_dir / "merged"
+    if not merged.exists():
+        raise FileNotFoundError(f"Merged data not found: {merged}")
+    link = workspace_root / "proc_data"
+    remove_path(link)
+    link.symlink_to(merged)
+    _print_info(f"Linked proc_data -> {merged}")
+
+
 def run_multi_stage_trial(
     *,
     config_file: str,
@@ -420,6 +452,7 @@ def run_multi_stage_trial(
     allow_rerun: bool = False,
     rerun_from_stage: str | None = None,
     rerun_postproc: bool = False,
+    workspace_manifest: Path | None = None,
 ) -> None:
     """Run a multi-stage pipeline trial.
 
@@ -437,11 +470,24 @@ def run_multi_stage_trial(
                          Creates new workspace with completed stages copied from source.
         rerun_postproc: Rerun Phase 3, 4, 5 (postprocessing) after Phase 2 completion.
                        Requires Phase 2 to be fully completed. Uses same trial name.
+        workspace_manifest: Multi-repo workspace manifest. When set, repo_id is ignored and the trial is keyed by
+                       workspace_id (merge_workspace must have been run already).
     """
     project_root = get_project_root()
     data_root = data_root.expanduser().resolve()
     if not data_root.exists():
         raise FileNotFoundError(f"DATA root not found: {data_root}")
+
+    ws = None
+    ws_dir = None
+    if workspace_manifest is not None:
+        from deepcommit.multirepo import load_workspace, workspace_dir
+
+        ws = load_workspace(workspace_manifest)
+        ws_dir = workspace_dir(data_root, ws.workspace_id)
+        if not (ws_dir / "repos.json").exists():
+            raise FileNotFoundError(f"Workspace not merged: {ws_dir / 'repos.json'} (run `workspace merge` first)")
+        repo_id = ws.workspace_id
 
     # Load pipeline config to get stage info
     config_path = project_root / "deepcommit" / "pipeline" / "configs" / config_file
@@ -462,8 +508,12 @@ def run_multi_stage_trial(
 
     # Auto-prefix trial_name with repo_range if not already present
     # e.g., repo_id="django_django:4.2_5.2", trial_name="v1_002" -> "django_django_4.2_5.2_v1_002"
-    repo_id_parsed, time_span = parse_repo_spec(repo_id)
-    repo_range = f"{repo_id_parsed}_{time_span}"
+    if ws is not None:
+        repo_id_parsed, time_span = ws.workspace_id, ""
+        repo_range = ws.workspace_id
+    else:
+        repo_id_parsed, time_span = parse_repo_spec(repo_id)
+        repo_range = f"{repo_id_parsed}_{time_span}"
     if not trial_name.startswith(repo_range):
         trial_name = f"{repo_range}_{trial_name}"
 
@@ -590,31 +640,34 @@ def run_multi_stage_trial(
     if not github_data_root.exists():
         raise FileNotFoundError(f"GitHub data directory not found: {github_data_root}")
 
-    repo_id_parsed, time_span = parse_repo_spec(repo_id)
-
-    repo_src = find_repo_path(repo_id_parsed, data_root)
-    if not repo_src:
-        expected = github_data_root / "repos" / repo_id_parsed
-        raise FileNotFoundError(f"Repository not found: {expected} (or {expected}.git)")
-
-    repo_dest = workspace_root / "repo_data"  # Changed from "repo" to "repo_data"
-    # Skip clone if repo_data already exists (rerun modes: --allow-rerun, --rerun-postproc)
-    # This preserves split branches created by stage4
-    if repo_dest.exists() and (allow_rerun or rerun_postproc):
-        _print_info("Reusing existing repo_data (rerun mode)")
+    if ws is not None:
+        _link_workspace_trial_data(ws, ws_dir, data_root, workspace_root, reuse=allow_rerun or rerun_postproc)
     else:
-        clone_repo_local(repo_src, repo_dest)
-        _print_info(f"Cloned repo_data <- {repo_src}")
+        repo_id_parsed, time_span = parse_repo_spec(repo_id)
 
-    # Create preprocessed symlink to specific preprocessed data
-    preprocessed_src = find_preprocessed_path(repo_id_parsed, time_span, data_root)
-    if not preprocessed_src.exists():
-        raise FileNotFoundError(f"Preprocessed data not found: {preprocessed_src}")
+        repo_src = find_repo_path(repo_id_parsed, data_root)
+        if not repo_src:
+            expected = github_data_root / "repos" / repo_id_parsed
+            raise FileNotFoundError(f"Repository not found: {expected} (or {expected}.git)")
 
-    preprocessed_link = workspace_root / "proc_data"  # Changed from "preprocessed" to "proc_data"
-    remove_path(preprocessed_link)
-    preprocessed_link.symlink_to(preprocessed_src)
-    _print_info(f"Linked proc_data -> {preprocessed_src}")
+        repo_dest = workspace_root / "repo_data"  # Changed from "repo" to "repo_data"
+        # Skip clone if repo_data already exists (rerun modes: --allow-rerun, --rerun-postproc)
+        # This preserves split branches created by stage4
+        if repo_dest.exists() and (allow_rerun or rerun_postproc):
+            _print_info("Reusing existing repo_data (rerun mode)")
+        else:
+            clone_repo_local(repo_src, repo_dest)
+            _print_info(f"Cloned repo_data <- {repo_src}")
+
+        # Create preprocessed symlink to specific preprocessed data
+        preprocessed_src = find_preprocessed_path(repo_id_parsed, time_span, data_root)
+        if not preprocessed_src.exists():
+            raise FileNotFoundError(f"Preprocessed data not found: {preprocessed_src}")
+
+        preprocessed_link = workspace_root / "proc_data"  # Changed from "preprocessed" to "proc_data"
+        remove_path(preprocessed_link)
+        preprocessed_link.symlink_to(preprocessed_src)
+        _print_info(f"Linked proc_data -> {preprocessed_src}")
 
     result_link = workspace_root / "result"
     remove_path(result_link)
@@ -663,6 +716,8 @@ def run_multi_stage_trial(
     try:
         # Load config from project root
         config_path = project_root / "config" / f"{repo_id_parsed}_{time_span}.yaml"
+        if ws is not None:
+            config_path = Path("/nonexistent")  # workspace members carry their filters in repos.json
 
         repo_src_dirs = None
         test_dirs = None
@@ -731,6 +786,15 @@ def run_multi_stage_trial(
     ]
 
     run_env = python_env.copy()
+
+    if ws is not None:
+        # prefixed lists; DEEPCOMMIT_WORKSPACE_DIR is the trial-local dir (checkouts rewritten to repo_data/<name>)
+        trial_ws_dir = workspace_root / "workspace_meta"
+        run_env["DEEPCOMMIT_WORKSPACE_DIR"] = str(trial_ws_dir)
+        repo_src_dirs = ws.prefixed_src_dirs()
+        test_dirs = ws.prefixed_test_dirs() or None
+        exclude = ws.prefixed_exclude() or None
+        _print_info(f"Setting DEEPCOMMIT_WORKSPACE_DIR: {trial_ws_dir}")
 
     # Pass repo_src_dirs via environment variable
     if repo_src_dirs:

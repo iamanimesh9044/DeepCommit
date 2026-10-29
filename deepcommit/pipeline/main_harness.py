@@ -109,6 +109,12 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--code-commit-sha", type=str, required=True)
     p.add_argument("--max-retries", type=int, default=2, help="Maximum retries per stage")
     p.add_argument(
+        "--workspace-dir",
+        type=str,
+        default=None,
+        help="Multi-repo workspace dir (repos.json + commit_repos.json). Defaults to $DEEPCOMMIT_WORKSPACE_DIR.",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         help="Only test setup (prompt rendering, directory structure) without executing agent",
@@ -166,6 +172,7 @@ def main(argv: List[str] | None = None) -> int:
         exclude=exclude,
         base_image_name=base_image_name,
         build_command=build_command,
+        workspace_dir=ns.workspace_dir or os.environ.get("DEEPCOMMIT_WORKSPACE_DIR") or None,
     )
 
     # Setup logs directory

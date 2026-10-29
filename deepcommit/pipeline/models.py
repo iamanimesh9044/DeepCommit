@@ -32,6 +32,7 @@ class MilestoneModel(BaseModel):
     integration_test_commit: str = Field(
         default="", description="SHA of integration test commit (only for first sub-milestone after split)"
     )
+    repos: str = Field(default="", description="Semicolon-separated repo names touched (multi-repo workspaces only)")
 
 
 class DependencyEdgeModel(BaseModel):
@@ -56,7 +57,7 @@ class DependencyEdgeModel(BaseModel):
         alias="target_id",  # accept legacy column name in CSV / JSON input
         description="Dependant milestone ID (downstream, depends on prerequisite)",
     )
-    type: str = Field(default="", description="Dependency type: FUNC/NFR/TEXT")
+    type: str = Field(default="", description="Dependency type: FUNC/NFR/TEXT/XREPO")
     strength: str = Field(default="", description="Dependency strength: Strong/Weak")
     rationale: str = Field(default="", description="Reasoning for the dependency")
     confidence_score: Union[str, float] = Field(default="", description="Confidence score (0.0-1.0)")
@@ -69,8 +70,8 @@ class DependencyEdgeModel(BaseModel):
 
     @model_validator(mode="after")
     def _validate_type(self) -> "DependencyEdgeModel":
-        if self.type and self.type not in ["FUNC", "NFR", "TEXT", ""]:
-            raise ValueError(f"type must be FUNC, NFR, or TEXT, got: {self.type}")
+        if self.type and self.type not in ["FUNC", "NFR", "TEXT", "XREPO", ""]:
+            raise ValueError(f"type must be FUNC, NFR, TEXT, or XREPO, got: {self.type}")
         return self
 
     @model_validator(mode="after")

@@ -2924,6 +2924,7 @@ class BranchCreator:
         self,
         milestones: Dict[str, MilestoneData],
         output_dir: Path,
+        repo_name: Optional[str] = None,
     ) -> None:
         """
         Generate patch files for each milestone (diff between start and end tags).
@@ -2931,6 +2932,7 @@ class BranchCreator:
         Args:
             milestones: Dictionary of milestone data
             output_dir: Output directory (will create milestone_patches subdirectory)
+            repo_name: Workspace mode only: write ``milestone_patches/{MID}/{repo_name}.patch``
         """
         profile_started = time.perf_counter()
         patches_dir = output_dir / "milestone_patches"
@@ -2943,7 +2945,11 @@ class BranchCreator:
         for m_id in milestones:
             tag_start = f"milestone-{m_id}-start"
             tag_end = f"milestone-{m_id}-end"
-            patch_file = patches_dir / f"{m_id}.patch"
+            if repo_name:
+                (patches_dir / m_id).mkdir(parents=True, exist_ok=True)
+                patch_file = patches_dir / m_id / f"{repo_name}.patch"
+            else:
+                patch_file = patches_dir / f"{m_id}.patch"
 
             print(f"   Generating patch for {m_id}...")
             patch_started = time.perf_counter()
@@ -3447,7 +3453,39 @@ def main():
         help="Record individual git commands slower than this many seconds in build_profile.json.",
     )
 
+    parser.add_argument(
+        "--workspace-dir",
+        type=Path,
+        default=None,
+        help="Multi-repo mode: DATA/github_data/workspaces/<workspace_id>/ (repos.json + commit_repos.json). "
+        "Builds testbed/<repo>/ per repo with per-repo tags + testbed/manifest.json. "
+        "Requires --milestone-csv, --dependencies-csv and --output-dir.",
+    )
+
     args = parser.parse_args()
+
+    if args.workspace_dir is not None:
+        from deepcommit.harness.prepare_repo.multirepo_testbed import build_workspace_testbed
+
+        if args.milestone_csv is None or args.dependencies_csv is None:
+            parser.error("--workspace-dir requires --milestone-csv and --dependencies-csv")
+        out = build_workspace_testbed(
+            workspace_dir=args.workspace_dir,
+            milestone_csv=args.milestone_csv,
+            dependencies_csv=args.dependencies_csv,
+            output_dir=args.output_dir,
+            work_dir_name=args.work_dir,
+            force_rebuild=args.force_rebuild,
+            continue_on_error=args.continue_on_error,
+            preserve_commit_order=args.preserve_commit_order,
+            rename_threshold=args.rename_threshold if args.rename_threshold is not None else 20,
+            verbose=args.verbose,
+            workspace_id=args.workspace_dir.name,
+        )
+        if out["failed"]:
+            print(f"\n⚠️  {len(out['failed'])} milestone(s) failed. See build_report.json for diagnostics.")
+            sys.exit(2)
+        return
 
     # Resolve --trial shortcut
     if args.trial:

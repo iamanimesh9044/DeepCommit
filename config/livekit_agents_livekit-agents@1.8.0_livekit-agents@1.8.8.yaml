@@ -1,0 +1,13 @@
+repo_src_dirs:
+  - livekit-agents/livekit/agents
+
+test_dirs:
+  - "tests/**"
+  - "**/test_*.py"
+  - "**/*_test.py"
+  - "**/conftest.py"
+
+exclude:
+  - "livekit-agents/livekit/agents/resources/**"
+
+main_branch: main

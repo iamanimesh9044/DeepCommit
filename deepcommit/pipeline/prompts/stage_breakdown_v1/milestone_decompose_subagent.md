@@ -13,20 +13,36 @@ This prompt is designed for an autonomous agent to split a large squashed git co
 
 You are tasked with splitting a large git commit into multiple smaller, logical commits that are easier to review and understand.
 
+### Workspace `{{workspace_id}}`
+
+This run covers a workspace of one or more repositories that are developed together:
+
+{{workspace_repos_table}}
+
+- Inspect code with `git -C repo_data/<repo> ...` (the `repo dir` column of the table; for a one-repo workspace that is `repo_data` itself). The MCP git tools route to the correct repository automatically.
+- Commit ids are bare 7-character SHAs, unique inside the workspace. A commit's repository is its `repo` field in the commit records or its entry in `commit_repos` (`commit_repos.json`). Never guess it from the SHA and never run `git` against the wrong repository.
+- With more than one repository, every file path in merged data is prefixed `<repo>/<path-in-repo>`; strip the prefix before passing a path to `git -C repo_data/<repo>`.
+- Edges in `commit_dag.json` come in two groups. `edges_dag` holds per-repository textual edges plus HARD cross-repo edges (`"xrepo": true`, `edge_types` such as `xrepo_contract`, `xrepo_pin`, `xrepo_pr_link`). `edges_soft` holds heuristic hints (for example time proximity): never enforced, and you may cut them.
+
+**Workspace rules**:
+- The commit you split belongs to exactly one repository (its `repo` field or `commit_repos`): the **split repository**, checked out at `repo_data/<repo>`. All git work (`cd`, `git -C`, `docker cp`, script `--repo-path`) happens in that directory, so run the commands below from it; `<repo dir>` below means it.
+- Never split a contract change from what its first consumer uses: a commit that is the contract side of a HARD cross-repo edge must be split so that the contract change stays in one piece.
+- `integration_test_commit` belongs to the same repository as the split commit; there is at most one per split commit.
+- Compilation verification (Phase 5) applies only to a one-repo workspace with a configured base image and build command; with several repositories skip it and record `skipped (multi-repo workspace)` in the metadata notes.
 ---
 
 ##### Input Parameters
 
 The following parameters will be provided when this prompt is invoked:
 
-- **Repository Path**: `{{repo_path}}` - The git repository location (e.g., `/path/to/trial_space/project/repo_data`)
+- **Repository Root**: `{{repo_path}}` - Directory holding the repository checkouts (e.g., `/path/to/trial_space/project/repo_data`); the split repository is `<repo dir>` as defined above
 - **Target Commit**: `{{target_commit}}` - The commit SHA to be split (7-char or full SHA)
 - **Number of Commits**: `{{num_commits}}` - Target number of feature commits to create from src/ directory (e.g., 3-5)
-- **Src Directories**: `{{repo_src_dirs}}` - Comma-separated source directories to include (e.g., "src,lib")
+- **Src Directories**: `{{repo_src_dirs}}` - Comma-separated source directories to include (e.g., "src,lib"); with several repositories they are prefixed `<repo>/`, so keep only the split repository's entries and strip the prefix before using them inside `<repo dir>`
 - **Exclude Patterns**: `{{exclude_patterns}}` - Comma-separated glob patterns for files to exclude (e.g., "tests/**,**/test_*.py")
 - **Working Branch**: `{{working_branch}}` - The branch name for split commits (**MUST be `split-<commit_sha>`**, e.g., `split-5b9adb0`)
-- **Base Image Name**: `{{base_image_name}}` - Docker image with compilation environment (e.g., `navidrome-test:v0.57.0`)
-- **Build Command**: `{{build_command}}` - Command to compile the project (e.g., `go build ./cmd/...`, `npm run build`)
+- **Base Image Name**: `{{base_image_name}}` (only set for a one-repo workspace) - Docker image with compilation environment (e.g., `navidrome-test:v0.57.0`)
+- **Build Command**: `{{build_command}}` (only set for a one-repo workspace) - Command to compile the project (e.g., `go build ./cmd/...`, `npm run build`)
 
 **Output Location** (hardcoded, NOT a parameter):
 - Output directory: `WORKSPACE_ROOT/stage4_decomp/output/commit_splits/{{working_branch}}/`
@@ -186,7 +202,7 @@ Execute the split operation carefully:
 
 **a) Setup**:
    ```bash
-   cd {{repo_path}}
+   cd <repo dir>
    git checkout {{target_commit}}
    git checkout -b {{working_branch}}
    ```
@@ -360,7 +376,7 @@ After completing all commits, validate the results:
 
 ###### 5. Compilation Verification Phase
 
-After validating tree SHA match, verify that each split commit s successfully when patches are applied sequentially.
+Skipped when the workspace has several repositories (see the workspace rules). Otherwise, after validating tree SHA match, verify that each split commit s successfully when patches are applied sequentially.
 
 **a) Setup container (once)**:
    ```bash
@@ -372,7 +388,7 @@ After validating tree SHA match, verify that each split commit s successfully wh
 
    # Copy repository
    docker exec verify-split-{{target_commit}} rm -rf /testbed
-   docker cp {{repo_path}} verify-split-{{target_commit}}:/testbed
+   docker cp <repo dir> verify-split-{{target_commit}}:/testbed
    docker exec verify-split-{{target_commit}} git config --global --add safe.directory /testbed
    docker exec verify-split-{{target_commit}} git config --global user.email "verify@test.local"
    docker exec verify-split-{{target_commit}} git config --global user.name "Verify Bot"
@@ -392,7 +408,7 @@ After validating tree SHA match, verify that each split commit s successfully wh
 
    # Generate patches from host
    mkdir -p "$OUTPUT_DIR/patches"
-   cd "{{repo_path}}"
+   cd "<repo dir>"
    COMMITS=($(git rev-list --reverse {{target_commit}}^..{{working_branch}}))
    for commit in "${COMMITS[@]}"; do
        commit_short=$(git rev-parse --short "$commit")
@@ -441,7 +457,7 @@ After validating tree SHA match, verify that each split commit s successfully wh
 Container stays running for fast iteration. When a patch fails:
 
 1. **Note the error** - record which patch failed and the compilation error
-2. **Fix on host** - return to `{{repo_path}}` and modify commits on `{{working_branch}}`:
+2. **Fix on host** - return to `<repo dir>` and modify commits on `{{working_branch}}`:
    - **Re-partition code** between commits to resolve dependencies
    - **Merge commits** that have tightly coupled changes (`git rebase -i`)
    - **Reorder commits** to ensure definitions appear before usages
@@ -555,8 +571,8 @@ Use the automated script to generate structured metadata:
 
 ```bash
 # Use the same absolute path approach
-REPO_PATH="{{repo_path}}"
-WORKSPACE_ROOT="$(dirname "$REPO_PATH")"
+WORKSPACE_ROOT="$(dirname "{{repo_path}}")"
+REPO_PATH="<repo dir>"   # the split repository
 OUTPUT_DIR="$WORKSPACE_ROOT/stage4_decomp/output/commit_splits/{{working_branch}}"
 
 cd "$REPO_PATH"
@@ -685,7 +701,7 @@ vim "$OUTPUT_DIR/METADATA.json"
 ##### Success Criteria
 
 ✅ All changes from the original commit are preserved (tree SHA match)
-✅ All patches compile successfully when applied sequentially
+✅ All patches compile successfully when applied sequentially (when compilation verification applies)
 ✅ Created {{num_commits}} feature commits with balanced src/ LOC
 ✅ Each commit has clear, focused purpose (indicated in message)
 ✅ Src/ directory LOC is relatively balanced across feature commits

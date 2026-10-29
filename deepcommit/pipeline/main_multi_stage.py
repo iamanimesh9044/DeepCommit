@@ -77,6 +77,15 @@ def _restore_global_files_from_stages(result_root: Path, workspace_root: Path, l
                 break
 
 
+def _workspace_resolver(ctx: TrialContext):
+    """Resolver for a multi-repo trial, None for a classic single-repo trial."""
+    if not ctx.is_multi_repo:
+        return None
+    from deepcommit.multirepo.resolver import WorkspaceResolver
+
+    return WorkspaceResolver.from_dir(ctx.get_workspace_dir())
+
+
 def _module_name_to_class_name(module_name: str) -> str:
     """Convert module name to expected class name.
 
@@ -327,6 +336,8 @@ def main(argv: List[str] | None = None) -> int:
         exclude=exclude,
         base_image_name=base_image_name,
         build_command=build_command,
+        workspace_dir=os.environ.get("DEEPCOMMIT_WORKSPACE_DIR") or None,
+        workspace_id=ns.repo_id if os.environ.get("DEEPCOMMIT_WORKSPACE_DIR") else None,
     )
 
     # Setup global logs directory (result_path already created by CLI)
@@ -509,6 +520,7 @@ def main(argv: List[str] | None = None) -> int:
                     logger=logger,
                     repo_src_dirs=repo_src_dirs_value,
                     exclude_patterns=exclude_patterns_value,
+                    resolver=_workspace_resolver(ctx),
                 )
                 if enrich_result.get("status") == "ok":
                     checkpoint.mark_phase_completed("phase3_enrichment")
@@ -561,6 +573,7 @@ def main(argv: List[str] | None = None) -> int:
                     compact_metrics=True,
                     logger=logger,
                     split_metadata_dir=split_metadata_dir,
+                    workspace_dir=ctx.get_workspace_dir() if ctx.is_multi_repo else None,
                 )
                 if analysis_results.get("status") == "ok":
                     checkpoint.mark_phase_completed("phase4_analysis")
@@ -657,7 +670,7 @@ def main(argv: List[str] | None = None) -> int:
                         commit_dag_path=commit_dag_path,
                         logger=logger,
                         split_metadata_dir=split_metadata_dir,
-                        repo_path=ctx.get_repo(),
+                        repo_path=None if ctx.is_multi_repo else ctx.get_repo(),
                     )
                     if filled > 0:
                         logger.info(f"  ✓ Added {filled} missing dependencies")
@@ -670,7 +683,7 @@ def main(argv: List[str] | None = None) -> int:
                         commit_dag_path=commit_dag_path,
                         logger=logger,
                         split_metadata_dir=split_metadata_dir,
-                        repo_path=ctx.get_repo(),
+                        repo_path=None if ctx.is_multi_repo else ctx.get_repo(),
                     )
                     if removed > 0:
                         logger.info(f"  ✓ Removed {removed} redundant dependencies")

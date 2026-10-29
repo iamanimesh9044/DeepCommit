@@ -318,14 +318,17 @@ class CommitSplitVerifier:
         return {"additions": additions, "deletions": deletions}
 
 
-def verify_commit_split_equivalence(repo_path: str, original_commit: str, split_commits: List[str]) -> Dict:
+def verify_commit_split_equivalence(
+    repo_path: str, original_commit: str, split_commits: List[str], resolver=None
+) -> Dict:
     """
     便捷函数：验证 commit 拆分的等价性
 
     Args:
-        repo_path: Git 仓库路径
+        repo_path: Git 仓库路径（multi-repo resolver 下被忽略）
         original_commit: 原始 commit SHA
         split_commits: 拆分后的 commits 列表（按顺序）
+        resolver: 可选的多仓 WorkspaceResolver；multi 时在原始 commit 所属仓库里验证
 
     Returns:
         验证结果字典（详见 CommitSplitVerifier.verify_split_equivalence）
@@ -340,6 +343,8 @@ def verify_commit_split_equivalence(repo_path: str, original_commit: str, split_
         if result["is_equivalent"]:
             print("✅ 验证通过")
     """
+    if resolver is not None and resolver.multi:
+        repo_path = resolver.repo_path_for(original_commit)
     verifier = CommitSplitVerifier(repo_path)
     return verifier.verify_split_equivalence(original_commit, split_commits)
 

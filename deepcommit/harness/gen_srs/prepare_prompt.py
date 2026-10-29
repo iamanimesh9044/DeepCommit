@@ -102,6 +102,16 @@ class SRSPromptPreparer:
         # Validate paths
         self._validate_paths()
 
+        # Workspace (multi-repo) mode: testbed/manifest.json exists -> testbed/<repo>/ are the git repos
+        self.manifest: Optional[Dict] = None
+        self._sha_repo: Dict[str, str] = {}
+        manifest_path = self.testbed_path / "manifest.json"
+        if manifest_path.exists():
+            self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for repo, entry in self.manifest.get("milestones", {}).get(milestone_id, {}).items():
+                for sha in entry.get("commits", []):
+                    self._sha_repo[sha[:7]] = repo
+
         # Initialize f2p data attributes (populated by generate_output)
         self.f2p_tests: List[Dict] = []
         self.f2p_tests_list_file: Optional[Path] = None
@@ -115,6 +125,18 @@ class SRSPromptPreparer:
             raise FileNotFoundError(f"Testbed directory not found: {self.testbed_path}")
         if not self.template_path.exists():
             raise FileNotFoundError(f"Template file not found: {self.template_path}")
+
+    @property
+    def workspace_mode(self) -> bool:
+        return self.manifest is not None
+
+    def _repo_for_commit(self, commit_sha: str) -> Optional[str]:
+        return self._sha_repo.get(commit_sha[:7]) if self.workspace_mode else None
+
+    def _git_cwd(self, commit_sha: str) -> Path:
+        """Directory to run git in: the commit's repo checkout in workspace mode, else the testbed."""
+        repo = self._repo_for_commit(commit_sha)
+        return self.testbed_path / repo if repo else self.testbed_path
 
     def _read_milestone_from_csv(self) -> Dict:
         """Read milestone information from milestones.csv."""
@@ -176,7 +198,7 @@ class SRSPromptPreparer:
             # Get commit metadata
             result = subprocess.run(
                 ["git", "show", "--no-patch", "--format=%H%n%an <%ae>%n%ai%n%s%n%b", commit_sha],
-                cwd=self.testbed_path,
+                cwd=self._git_cwd(commit_sha),
                 capture_output=True,
                 text=True,
                 check=True,
@@ -212,6 +234,7 @@ class SRSPromptPreparer:
                 "subject": subject,
                 "message": full_message,
                 "has_patch": has_patch,
+                "repo": self._repo_for_commit(commit_sha) or "",
             }
 
         except subprocess.CalledProcessError as e:
@@ -227,7 +250,7 @@ class SRSPromptPreparer:
             if self.filter_src_only:
                 cmd.extend(["--", "src/"])
 
-            result = subprocess.run(cmd, cwd=self.testbed_path, capture_output=True, text=True, check=True)
+            result = subprocess.run(cmd, cwd=self._git_cwd(commit_sha), capture_output=True, text=True, check=True)
 
             patch = result.stdout.strip()
             return patch if patch else None
@@ -316,9 +339,26 @@ class SRSPromptPreparer:
 
         # Convert test IDs to structured format
         tests = []
+        repo_names = list(self.manifest.get("repos", {})) if self.manifest else []
         for test_id in stable_f2p_tests:
             # Parse test ID format: file_path::ClassName::method_name or file_path::function_name
             parts = test_id.split("::")
+
+            if repo_names:
+                # Workspace mode: ids are `{repo}::{native id}`; native ids may be non-pytest (e.g. Go `TestX`)
+                repo = parts[0] if parts[0] in repo_names else ""
+                rest = parts[1:] if repo else parts
+                tests.append(
+                    {
+                        "test_id": test_id,
+                        "repo": repo,
+                        "source_file": rest[0] if len(rest) > 1 else None,
+                        "class_name": rest[1] if len(rest) == 3 else None,
+                        "function_name": rest[-1],
+                        "extracted_file": None,
+                    }
+                )
+                continue
 
             if len(parts) == 3:
                 # Class-based test: file::Class::method
@@ -434,8 +474,19 @@ class SRSPromptPreparer:
         except ValueError:
             f2p_tests_list_file_rel = f2p_tests_list_file
 
+        # One entry per repo of the workspace (a legacy testbed without manifest is a one-repo workspace at /testbed)
+        repos: List[Dict] = []
+        if self.workspace_mode:
+            for repo in self.manifest.get("repos", {}):
+                in_repo = [c for c in commits if c["repo"] == repo]
+                if in_repo:
+                    repos.append({"name": repo, "path": f"/workspace/{repo}", "commits": in_repo})
+        else:
+            repos.append({"name": "repo", "path": "/testbed", "commits": commits})
+
         # Render complete prompt (data + guidelines in one template)
         prompt = template.render(
+            repos=repos,
             milestone_id=self.milestone_id,
             title=metadata["title"],
             mini_srs=mini_srs,

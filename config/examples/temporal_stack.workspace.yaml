@@ -1,0 +1,45 @@
+# Example workspace: Temporal API protos + server + Rust core SDK.
+# Parsed by deepcommit.multirepo.load_workspace. Fields marked UNSURE need checking against the real repos.
+workspace_id: temporal_stack_v1
+repos:
+  - name: api
+    owner: temporalio
+    repo: api
+    role: contract
+    start: v1.40.0            # UNSURE: pick tags that bracket the same period in all three repos
+    end: v1.43.0              # UNSURE
+    main_branch: master       # UNSURE
+    repo_src_dirs: [temporal/api/]
+    test_dirs: []
+    exclude: []
+    contract_paths:
+      - "temporal/api/**/*.proto"
+      - "openapi/*.json"      # UNSURE
+  - name: temporal
+    owner: temporalio
+    repo: temporal
+    role: server
+    start: v1.26.2            # UNSURE
+    end: v1.28.0              # UNSURE
+    main_branch: main
+    repo_src_dirs: [service/, common/, api/]
+    test_dirs: [tests/]
+    exclude: []
+  - name: sdk-core
+    owner: temporalio
+    repo: sdk-core
+    role: sdk
+    start: v0.1.0-alpha.1     # UNSURE: sdk-core tags are sparse; consider since/until timestamps instead
+    end: v0.1.0-alpha.2       # UNSURE
+    main_branch: master
+    repo_src_dirs: [core/src/, client/src/, sdk/src/]
+    test_dirs: [tests/, core/tests/]
+    exclude: []
+xrepo:
+  pin_files: [go.mod, Cargo.toml, .gitmodules]
+  link_confidence_threshold: 0.7
+  time_window_days: 3
+  generated_globs:
+    - "**/*.pb.go"
+    - "**/*.pb.rs"
+    - "**/*_grpc.pb.go"

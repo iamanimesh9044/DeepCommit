@@ -3,6 +3,7 @@
 MCP Server for DeepCommit Repository Analysis Tools
 """
 
+import inspect
 import json
 import os
 import sys
@@ -14,7 +15,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # Import MCP FastMCP SDK
 from mcp.server.fastmcp import FastMCP
 
-from deepcommit.tools.commit_analysis import calculate_commits_src_loc
+from deepcommit.multirepo.resolver import WorkspaceResolver
+from deepcommit.tools.commit_analysis import calculate_commits_src_loc as _calculate_commits_src_loc_impl
 from deepcommit.tools.conflict_analysis.milestone_dependency_analyzer import (
     MilestoneDependencyAnalyzer,
 )
@@ -23,16 +25,17 @@ from deepcommit.tools.conflict_analysis.milestone_internal_conflict_analyzer imp
 )
 from deepcommit.tools.dag_analysis import dag_analyzer
 from deepcommit.tools.milestone_analysis import (
-    analyze_commit_coverage,
-    analyze_milestone_size_balance,
+    analyze_commit_coverage as _analyze_commit_coverage_impl,
+)
+from deepcommit.tools.milestone_analysis import (
+    analyze_milestone_size_balance as _analyze_milestone_size_balance_impl,
 )
 from deepcommit.tools.milestone_analysis import (
     validate_milestone_partitioning as validate_milestone_partitioning_impl,
 )
 
 # Import analysis tools
-from deepcommit.tools.repo_entity import repo_entity_retriever as analysis
-from deepcommit.tools.repo_entity.search_entity import search_entities as _search_entities_impl
+from deepcommit.tools.repo_entity.routed import RoutedEntityTools
 
 AGENTBENCH_REPO_DIR = os.getenv("DEEPCOMMIT_REPO_DIR", os.getenv("AGENTBENCH_REPO_DIR", "repo"))
 AGENTBENCH_PREPROC_DIR = os.getenv("DEEPCOMMIT_PREPROC_DIR", os.getenv("AGENTBENCH_PREPROC_DIR", "preprocessed"))
@@ -53,6 +56,21 @@ try:
 except json.JSONDecodeError:
     # Fallback: treat as a plain string (backward compatibility)
     REPO_SRC_DIRS = [_repo_src_dirs_env]
+
+# Commit -> repo routing. Single repo (no DEEPCOMMIT_WORKSPACE_DIR): passthrough to AGENTBENCH_REPO_DIR / REPO_SRC_DIRS.
+# Multi repo: every git call runs in the commit's own checkout with that repo's (unprefixed) src dirs, and returned
+# file paths are re-prefixed `<repo>/` to match the merged data.
+RESOLVER = WorkspaceResolver.from_env(fallback_repo_path=AGENTBENCH_REPO_DIR, fallback_src_dirs=REPO_SRC_DIRS)
+ENTITY_TOOLS = RoutedEntityTools(RESOLVER, AGENTBENCH_PREPROC_DIR)
+
+
+def _repo_arg_only_if_multi(fn):
+    """Expose the optional `repo` tool argument only in multi-repo mode (single-repo tool schema is unchanged)."""
+    if not RESOLVER.multi:
+        sig = inspect.signature(fn)
+        fn.__signature__ = sig.replace(parameters=[p for n, p in sig.parameters.items() if n != "repo"])
+    return fn
+
 
 # Parse REPO_TEST_DIRS and REPO_EXCLUDE from environment variables
 _repo_test_dirs_env = os.getenv("REPO_TEST_DIRS", "")
@@ -394,8 +412,10 @@ TOOL_DEFINITIONS = {
 if "get_issue_context" in ENABLED_TOOLS:
 
     @mcp.tool()
+    @_repo_arg_only_if_multi
     def get_issue_context(
         issue_number: int,
+        repo: Optional[str] = None,
         expand: Optional[List[str]] = None,
         include_body: bool = True,
         body_limit_chars: int = 8192,
@@ -410,6 +430,7 @@ if "get_issue_context" in ENABLED_TOOLS:
 
         Args:
             issue_number: Issue number
+            repo: Repo name (multi-repo workspaces only; issue numbers are per repo)
             expand: Optional expansions ["conversation", "events", "closing_prs"]
             include_body: Whether to include issue body
             body_limit_chars: Max characters for body before truncation
@@ -419,10 +440,9 @@ if "get_issue_context" in ENABLED_TOOLS:
             limit: Page size for list expansions
             cursor: Pagination cursor
         """
-        return analysis.get_issue_context(
-            repo_path=AGENTBENCH_REPO_DIR,
-            data_dir=AGENTBENCH_PREPROC_DIR,
+        return ENTITY_TOOLS.get_issue_context(
             issue_number=issue_number,
+            repo=repo,
             expand=expand,
             include_body=include_body,
             body_limit_chars=body_limit_chars,
@@ -437,8 +457,10 @@ if "get_issue_context" in ENABLED_TOOLS:
 if "get_pr_context" in ENABLED_TOOLS:
 
     @mcp.tool()
+    @_repo_arg_only_if_multi
     def get_pr_context(
         pr_number: int,
+        repo: Optional[str] = None,
         expand: Optional[List[str]] = None,
         include_body: bool = True,
         body_limit_chars: int = 8192,
@@ -452,6 +474,7 @@ if "get_pr_context" in ENABLED_TOOLS:
 
         Args:
             pr_number: Pull Request number
+            repo: Repo name (multi-repo workspaces only; PR numbers are per repo)
             expand: Optional expansions ["pr_commits", "files", "timeline", "comments", "checks", "linked_issues"]
             include_body: Whether to include PR body
             body_limit_chars: Max characters for body before truncation
@@ -460,10 +483,9 @@ if "get_pr_context" in ENABLED_TOOLS:
             limit: Page size for list expansions
             cursor: Pagination cursor
         """
-        return analysis.get_pr_context(
-            repo_path=AGENTBENCH_REPO_DIR,
-            data_dir=AGENTBENCH_PREPROC_DIR,
+        return ENTITY_TOOLS.get_pr_context(
             pr_number=pr_number,
+            repo=repo,
             expand=expand,
             include_body=include_body,
             body_limit_chars=body_limit_chars,
@@ -495,8 +517,6 @@ if "get_commit_context" in ENABLED_TOOLS:
             cursor: Pagination cursor for file list
         """
         params = {
-            "repo_path": AGENTBENCH_REPO_DIR,
-            "data_dir": AGENTBENCH_PREPROC_DIR,
             "sha": sha,
             "expand": expand,
             "diff_limit_lines": diff_limit_lines,
@@ -507,14 +527,16 @@ if "get_commit_context" in ENABLED_TOOLS:
         # Remove 'include_renames' from params since it's not in the original function signature
         params.pop("include_renames", None)
 
-        return analysis.get_commit_context(**params)
+        return ENTITY_TOOLS.get_commit_context(**params)
 
 
 if "get_release_context" in ENABLED_TOOLS:
 
     @mcp.tool()
+    @_repo_arg_only_if_multi
     def get_release_context(
         tag: str,
+        repo: Optional[str] = None,
         include_notes: bool = True,
         notes_limit_chars: int = 8192,
         include_merges: bool = True,
@@ -526,7 +548,8 @@ if "get_release_context" in ENABLED_TOOLS:
         Return release metadata (with optional notes) and index-level change lists for a tag, using the previous tag as baseline.
 
         Args:
-            tag: Target release tag to inspect
+            tag: Target release tag to inspect (multi-repo: may be '<repo>:<tag>')
+            repo: Repo name (multi-repo workspaces only; inferred when the tag exists in exactly one repo)
             include_notes: Whether to include release notes
             notes_limit_chars: Max characters for notes before truncation
             include_merges: Include merge commits in commits list
@@ -534,10 +557,9 @@ if "get_release_context" in ENABLED_TOOLS:
             limit: Max items per expanded list page
             cursor: Pagination cursor
         """
-        return analysis.get_release_context(
-            repo_path=AGENTBENCH_REPO_DIR,
-            data_dir=AGENTBENCH_PREPROC_DIR,
+        return ENTITY_TOOLS.get_release_context(
             tag=tag,
+            repo=repo,
             include_notes=include_notes,
             notes_limit_chars=notes_limit_chars,
             include_merges=include_merges,
@@ -550,9 +572,11 @@ if "get_release_context" in ENABLED_TOOLS:
 if "get_commits_diff" in ENABLED_TOOLS:
 
     @mcp.tool()
+    @_repo_arg_only_if_multi
     def get_commits_diff(
         base_ref: str,
         head_ref: str,
+        repo: Optional[str] = None,
         expand: Optional[List[str]] = None,
         paths_glob: Optional[List[str]] = None,
         filter_commits_by_paths: bool = False,
@@ -571,6 +595,7 @@ if "get_commits_diff" in ENABLED_TOOLS:
         Args:
             base_ref: Baseline ref/sha/tag (rev-parse resolvable)
             head_ref: Target ref/sha/tag (rev-parse resolvable)
+            repo: Repo name (multi-repo workspaces only; inferred from commit shas or a '<repo>:<ref>' prefix)
             expand: Optional expansions ["summary", "files", "patch", "commits"]
             paths_glob: Optional path filters (affects files/patch outputs)
             filter_commits_by_paths: Also filter commit list by paths_glob
@@ -583,11 +608,10 @@ if "get_commits_diff" in ENABLED_TOOLS:
             limit: Page size for list expansions
             cursor: Pagination cursor
         """
-        return analysis.get_commits_diff(
-            repo_path=AGENTBENCH_REPO_DIR,
-            data_dir=AGENTBENCH_PREPROC_DIR,
+        return ENTITY_TOOLS.get_commits_diff(
             base_ref=base_ref,
             head_ref=head_ref,
+            repo=repo,
             expand=expand,
             paths_glob=paths_glob,
             filter_commits_by_paths=filter_commits_by_paths,
@@ -634,9 +658,7 @@ if "search_entities" in ENABLED_TOOLS:
             limit: Page size
             cursor: Pagination cursor
         """
-        return _search_entities_impl(
-            repo_path=AGENTBENCH_REPO_DIR,
-            data_dir=AGENTBENCH_PREPROC_DIR,
+        return ENTITY_TOOLS.search_entities(
             types=types,
             search_mode=search_mode,
             query=query,
@@ -748,7 +770,7 @@ if "analyze_commit_coverage" in ENABLED_TOOLS:
             - overlapping_commits: Dict mapping commit SHAs to list of milestone IDs they appear in
         """
         main_commits_file = f"{AGENTBENCH_PREPROC_DIR}/main_commits.jsonl"
-        return analyze_commit_coverage(csv_file, main_commits_file, save_results=False)
+        return _analyze_commit_coverage_impl(csv_file, main_commits_file, save_results=False)
 
 
 if "analyze_milestone_size_balance" in ENABLED_TOOLS:
@@ -815,12 +837,13 @@ if "analyze_milestone_size_balance" in ENABLED_TOOLS:
             if 'loc_stats' in result:
                 print(f"LoC CV: {result['loc_stats']['loc_cv']:.3f}")
         """
-        return analyze_milestone_size_balance(
+        return _analyze_milestone_size_balance_impl(
             csv_file=csv_file,
             repo_path=AGENTBENCH_REPO_DIR,
             # save_results=save_results,
             repo_src_dir=REPO_SRC_DIRS,
             exclude_patterns=REPO_EXCLUDE_PATTERNS if REPO_EXCLUDE_PATTERNS else None,
+            resolver=RESOLVER,
         )
 
 
@@ -896,6 +919,7 @@ if "analyze_milestone_conflicts" in ENABLED_TOOLS:
             milestone_ids=milestone_ids,
             dependencies_csv_path=dependencies_csv_path,
             split_metadata_dir=split_metadata_dir,
+            resolver=RESOLVER,
         )
 
         return analysis_results
@@ -953,6 +977,7 @@ if "analyze_dag_conflicts" in ENABLED_TOOLS:
             detect_redundant=detect_redundant,
             split_metadata_dir=split_metadata_dir,
             repo_path=AGENTBENCH_REPO_DIR,
+            resolver=RESOLVER,
         )
 
         # Run the enrichment analysis (includes cycle detection)
@@ -1024,6 +1049,7 @@ if "validate_milestone_partitioning" in ENABLED_TOOLS:
             commit_dag_path=AGENTBENCH_COMMIT_DAG_PATH,
             split_metadata_dir=split_metadata_dir,
             repo_path=AGENTBENCH_REPO_DIR,
+            resolver=RESOLVER,
         )
 
 
@@ -1200,11 +1226,12 @@ if "calculate_commits_src_loc" in ENABLED_TOOLS:
         path_prefix = REPO_SRC_DIRS if REPO_SRC_DIRS else None
         exclude_patterns = REPO_EXCLUDE_PATTERNS if REPO_EXCLUDE_PATTERNS else None
 
-        return calculate_commits_src_loc(
+        return _calculate_commits_src_loc_impl(
             commits=commits,
             repo_path=AGENTBENCH_REPO_DIR,
             path_prefix=path_prefix,
             exclude_patterns=exclude_patterns,
+            resolver=RESOLVER,
         )
 
 

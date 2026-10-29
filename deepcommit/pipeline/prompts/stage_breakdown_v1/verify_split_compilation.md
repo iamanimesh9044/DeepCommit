@@ -11,6 +11,12 @@ Verify that a commit-split (multiple subcommits) compiles successfully when patc
 - `{{repo_data_path}}` - Path to repository data on host (e.g., `/path/to/repo_data`)
 - `{{split_dir}}` - Path to split directory (e.g., `/path/to/split-00c83af`)
 
+### Workspace `{{workspace_id}}`
+
+{{workspace_repos_table}}
+
+The commit being split belongs to exactly one repository, and `{{repo_data_path}}` must point to that repository's checkout (the `repo dir` column of the table); verify only that repository. Compilation is verified only for a one-repo workspace. If the split commit's milestone spans several repositories, skip this verification and report "skipped (multi-repo milestone)" instead of failing.
+
 ## Environment Setup
 
 ### 1. Start Container

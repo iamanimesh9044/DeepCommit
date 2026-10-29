@@ -19,6 +19,24 @@ Your task is to optimize the global milestone DAG by balancing milestone sizes t
 - Parallel processing where possible (Stage 2)
 - Skip documentary milestones that do not contain any source code changes.
 
+### Workspace `{{workspace_id}}`
+
+This run covers a workspace of one or more repositories that are developed together:
+
+{{workspace_repos_table}}
+
+- Inspect code with `git -C repo_data/<repo> ...` (the `repo dir` column of the table; for a one-repo workspace that is `repo_data` itself). The MCP git tools route to the correct repository automatically.
+- Commit ids are bare 7-character SHAs, unique inside the workspace. A commit's repository is its `repo` field in the commit records or its entry in `commit_repos` (`commit_repos.json`). Never guess it from the SHA and never run `git` against the wrong repository.
+- With more than one repository, every file path in merged data is prefixed `<repo>/<path-in-repo>`; strip the prefix before passing a path to `git -C repo_data/<repo>`.
+- Edges in `commit_dag.json` come in two groups. `edges_dag` holds per-repository textual edges plus HARD cross-repo edges (`"xrepo": true`, `edge_types` such as `xrepo_contract`, `xrepo_pin`, `xrepo_pr_link`). `edges_soft` holds heuristic hints (for example time proximity): never enforced, and you may cut them.
+
+**Workspace rules**:
+1. **src_loc per repository**: compute `src_loc` per repository with that repository's own source prefixes (the `src dirs` column above) and sum the per-repo values for the milestone `src_loc`. The CV is computed on the sum. The "do not regress CV vs the input" guard applies.
+2. **Thresholds are per workspace**: the commit-count and src_loc thresholds below (50 commits / 5x mean / 30% of total; FORCE_SPLIT at 80 commits / 10,000 src_loc / 40% of total) are measured against the workspace totals, as signals rather than exact rules.
+3. **Never split a contract change from its first consumer.** Chunk boundaries must keep HARD cross-repo edges (`"xrepo": true`) inside one sub-milestone.
+4. **Cross-repo validity**: a milestone that lists 2 or more repositories in `repos` must still change at least 2 repositories after splitting, and no single repository's part may be a complete feature on its own. If a split would violate this, merge or re-cut instead.
+5. **integration_test_commit**: one per repository (a SHA belongs to its own repository); never more than one per repository per milestone.
+6. **`repos` column**: preserve it, and recompute it (semicolon-separated repository names) for every sub-milestone you create.
 ---
 
 ## Input Data
@@ -35,8 +53,9 @@ Your task is to optimize the global milestone DAG by balancing milestone sizes t
 - **id**: Milestone identifier (parent like `M003`, sub-milestone like `M003_sub-01`)
 - **commits**: Semicolon-separated commit SHAs (short or full; keep the input style consistent)
 - **mini_srs**: Short functional description (keep the input style consistent)
-- **src_loc** (used for balancing): Total additions + deletions for files under `REPO_SRC_DIRS` only (respecting `exclude_patterns`)
-- **integration_test_commit** (optional, if present): Must be empty or a single SHA; never more than one per milestone
+- **src_loc** (used for balancing): Total additions + deletions for files under each repository's source dirs (`REPO_SRC_DIRS`) only, summed over repositories (respecting `exclude_patterns`)
+- **repos**: Semicolon-separated repository names of the milestone's commits
+- **integration_test_commit** (optional, if present): Empty or one SHA per repository (semicolon-separated); never more than one per repository per milestone
 
 ### 2. Dependencies
 
@@ -63,11 +82,11 @@ M2,M1,FUNC,Strong,"M1 depends on M2's infrastructure",0.9
 
 **⚠️ IMPORTANT**: The `strength` field accepts ONLY two values: `Strong` or `Weak`.
 
-### 3. Original Repository
+### 3. Original Repositories
 
-**Repository path**: `{{repo_path}}`
+**Repository root**: `{{repo_path}}` (each repository is checked out at `repo_data/<repo>`, see the table above)
 
-The original Git repository containing all commits and source code for analysis and commit splitting operations.
+The original Git repositories containing all commits and source code for analysis and commit splitting operations.
 
 ### 4. Main Branch Commits Metadata
 
@@ -106,7 +125,7 @@ python {{identify_imbalances}} \
 - `{{analyze_dag_conflicts}}(milestone_csv_path, dependencies_csv_path, split_metadata_dir=None)` - Check DAG validity; pass `split_metadata_dir` to include split commit dependencies
 
 **Configuration**:
-- `REPO_SRC_DIRS`: Source directory prefix (e.g., "src/") for src_loc calculation
+- `REPO_SRC_DIRS`: Source directory prefixes (e.g., "src/"; repo-prefixed when the workspace has several repositories) for src_loc calculation
 - `MAX_ITERATIONS`: Maximum iteration cycles (default: 5)
 
 ---
@@ -147,7 +166,7 @@ Review script output and select milestones to split:
 **Trigger condition** - Launch subagent analysis for ANY milestone with:
 - \> 50 commits, OR
 - \> 5x mean src_loc, OR
-- \> 30% of total repository src_loc
+- \> 30% of total workspace src_loc
 
 **MANDATORY**: Do NOT skip this step for complex milestones. The subagent provides critical dependency analysis that determines splitting feasibility.
 
@@ -318,7 +337,7 @@ Process `large_commits_to_split` in batches of up to 5 commits:
 - Use `sha` for full hash, `short_sha` for 7-char hash (consistent naming)
 - `src_commits` MUST be inside `split_result`, never at top level
 - `src_loc` is `src_stats.total_loc` (additions + deletions in `REPO_SRC_DIRS` only)
-- `integration_test_commit`: May be null; at most ONE per original commit
+- `integration_test_commit`: May be null; at most ONE per original commit (a commit belongs to one repository)
 - `dependency_edges`: Array of `[source, target]` pairs where target depends on source. May be empty if commits are independent.
 
 **Build split commits mapping**:
@@ -587,7 +606,7 @@ Run both validations and ensure they pass before proceeding:
 - **PERSIST UNTIL SUCCESS**: If a split attempt fails (due to cycles or other issues), do NOT give up. Try different grouping strategies (functional → topological/dependency-based → directory-based → size-based → chronological as last resort), reorder commits between groups, or adjust boundaries. Keep iterating until you find a valid split. Only mark as failed after exhausting ALL reasonable approaches.
 - **DAG Integrity**: Validate acyclic after each modification; abort operation if cycle detected
 - **Balance Both Goals**: Achieve CV < 1.0 while maintaining semantic coherence—both are important targets, not just one or the other
-- **Test Commits**: At most ONE `integration_test_commit` per milestone. When splitting: (1) write SHA to `integration_test_commit` column of FIRST sub-milestone only, (2) do NOT put this SHA in any `commits` column, (3) leave other sub-milestones' `integration_test_commit` empty
+- **Test Commits**: At most ONE `integration_test_commit` per repository per milestone. When splitting: (1) write SHA to `integration_test_commit` column of FIRST sub-milestone only, (2) do NOT put this SHA in any `commits` column, (3) leave other sub-milestones' `integration_test_commit` empty
 - **External Dependency Mapping**: Do NOT blindly inherit to all entry/exit; analyze patches to find true relationships (typically 1-2 sub-milestones per edge)
 - **FORCE_SPLIT is MANDATORY**: Milestones exceeding force thresholds (>80 commits, >10K src_loc, >40% total) MUST be decomposed using fallback strategies if needed.
 - **Dependency Preservation**: When updating dependencies.csv, only modify edges directly involving the milestone(s) being split or merged. All other existing dependency edges MUST be preserved exactly as-is. This is an incremental update, NOT a reconstruction—the output should contain all original edges minus those explicitly replaced/removed, plus any new edges added.

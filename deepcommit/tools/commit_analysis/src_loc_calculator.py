@@ -8,6 +8,8 @@ in commits, using the existing get_commit_loc method from LocalGitRepo.
 
 from typing import Any, Dict, List, Optional, Union
 
+from deepcommit.multirepo.resolver import WorkspaceResolver
+from deepcommit.tools.utils.workspace_routing import RoutedGit, is_multi
 from deepcommit.utils.git.local_git_repo import LocalGitRepo
 
 
@@ -16,9 +18,14 @@ def calculate_commits_src_loc(
     repo_path: str,
     path_prefix: Optional[Union[str, List[str]]] = None,
     exclude_patterns: Optional[List[str]] = None,
+    resolver: Optional[WorkspaceResolver] = None,
 ) -> Dict[str, Any]:
     """
     Calculate source lines of code (src_loc) for given commits.
+
+    With a multi-repo ``resolver`` each commit is measured in its own repo with that repo's src dirs and
+    exclude patterns (``repo_path`` / ``path_prefix`` / ``exclude_patterns`` are ignored); per-commit records
+    gain a ``repo`` field and the reported ``path_prefix`` / ``exclude_patterns`` are ``<repo>/``-prefixed.
 
     This function analyzes commits and calculates the lines of code changed,
     optionally filtered by path prefix(es) and exclude patterns.
@@ -68,7 +75,11 @@ def calculate_commits_src_loc(
             exclude_patterns=["**/tests/**", "**/*.md"]
         )
     """
-    repo = LocalGitRepo(repo_path)
+    multi = is_multi(resolver)
+    if multi:
+        routed = RoutedGit(resolver)
+    else:
+        repo = LocalGitRepo(repo_path)
 
     # Initialize aggregated statistics
     total_additions = 0
@@ -82,7 +93,10 @@ def calculate_commits_src_loc(
 
     for commit_sha in commits:
         # Get commit loc info using existing method
-        loc_info = repo.get_commit_loc(commit_sha, path_prefix=path_prefix, exclude_patterns=exclude_patterns)
+        if multi:
+            loc_info = routed.commit_loc(commit_sha)
+        else:
+            loc_info = repo.get_commit_loc(commit_sha, path_prefix=path_prefix, exclude_patterns=exclude_patterns)
 
         if loc_info.get("exists", False):
             # Valid commit
@@ -119,6 +133,14 @@ def calculate_commits_src_loc(
                     "error": "Commit does not exist",
                 }
             )
+
+    if multi:
+        for detail in commit_details:
+            detail["repo"] = resolver.commit_repo.get(detail["full_sha"][:7].lower(), "")
+        path_prefix = resolver.prefixed_src_dirs() or None
+        exclude_patterns = [
+            f"{n}/{p}" for n, r in resolver.repos.items() for p in list(r.test_dirs) + list(r.exclude)
+        ] or None
 
     # Build result
     result = {

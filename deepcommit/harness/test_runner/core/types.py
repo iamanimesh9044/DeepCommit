@@ -439,6 +439,14 @@ class MilestoneTestMode:
     description: str = ""
     framework: Optional[str] = None  # Override global framework for this mode
     requires_docker_socket: bool = False  # For e2e tests using testcontainers
+    # Workspace (multi-repo) suite fields. ``repo`` set => this mode is one suite of a multi-root workspace:
+    # its repo is checked out at /workspace/<repo>, tests run in ``workdir`` and test ids are namespaced
+    # ``{repo}::{native id}``.
+    repo: Optional[str] = None
+    workdir: Optional[str] = None
+    language: Optional[str] = None
+    kind: Optional[str] = None  # e.g. "integration"
+    report_file: Optional[str] = None  # output file name; may contain {state}
 
     def to_dict(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {
@@ -449,6 +457,9 @@ class MilestoneTestMode:
         }
         if self.framework:
             result["framework"] = self.framework
+        for key in ("repo", "workdir", "language", "kind", "report_file"):
+            if getattr(self, key):
+                result[key] = getattr(self, key)
         if self.requires_docker_socket:
             result["requires_docker_socket"] = self.requires_docker_socket
         return result
@@ -456,19 +467,26 @@ class MilestoneTestMode:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MilestoneTestMode":
         # Handle legacy format: pytest_args -> test_cmd
-        test_cmd = data.get("test_cmd", "")
+        test_cmd = data.get("test_cmd", "") or data.get("run_cmd", "")
         if not test_cmd and "pytest_args" in data:
             # Legacy format: convert pytest_args to test_cmd
             pytest_args = data.get("pytest_args", "")
             test_cmd = pytest_args  # Will be combined with default command later
 
+        repo = data.get("repo")
         return cls(
-            name=data["name"],
+            # A workspace suite may omit ``name``; default to ``<repo>[-<kind>]``
+            name=data.get("name") or (f"{repo}-{data['kind']}" if repo and data.get("kind") else repo) or data["name"],
             test_states=data.get("test_states", ["start", "end"]),
             test_cmd=test_cmd,
             description=data.get("description", ""),
             framework=data.get("framework"),  # Optional framework override
             requires_docker_socket=data.get("requires_docker_socket", False),
+            repo=repo,
+            workdir=data.get("workdir"),
+            language=data.get("language"),
+            kind=data.get("kind"),
+            report_file=data.get("report_file"),
         )
 
 
@@ -524,9 +542,14 @@ class MilestoneTestConfig:
         with open(path) as f:
             data = json.load(f)
 
-        # Handle both list format (new) and dict format (legacy)
+        # Handle list format, ``{"suites": [...]}`` (workspace) and dict format (legacy)
         if isinstance(data, list):
             return cls.from_list(data, include_original)
+        elif isinstance(data, dict) and isinstance(data.get("suites"), list):
+            return cls.from_list(data["suites"], include_original)
+        elif isinstance(data, dict) and data.get("run_cmd"):
+            # Old single ``run_cmd`` form -> one suite
+            return cls.from_list([{"name": "default", **data}], include_original)
         elif isinstance(data, dict):
             # Legacy format: convert to new format
             pytest_args = data.get("pytest_extra_args", "")
@@ -604,6 +627,19 @@ class MilestoneTestConfig:
         """
         # Default: compare start to end
         return [("start", "end")]
+
+    @property
+    def is_workspace(self) -> bool:
+        """True when any suite names a ``repo`` (multi-root workspace image)."""
+        return any(m.repo for m in self.modes)
+
+    def workspace_repos(self) -> List[str]:
+        """Distinct suite repos in config order."""
+        out: List[str] = []
+        for m in self.modes:
+            if m.repo and m.repo not in out:
+                out.append(m.repo)
+        return out
 
     def requires_docker_socket_any(self) -> bool:
         """
