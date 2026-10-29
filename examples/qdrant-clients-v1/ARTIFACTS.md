@@ -7,7 +7,19 @@
 
 sha256 of the zip: `3d1170cfb3676963a377f77758b55a089b7bbf8147ffadfb355c4310effa3f9f`
 
-Bucket location: _pending upload_
+Bucket (AWS S3, account access through the `annotation-dev-prod-s3-access` role):
+
+```text
+s3://ml-research-deccan/deepcommit-multirepo/qdrant-clients-v1/
+    task/csf-qdrant-clients-v1-001.zip     the complete task
+    artifacts/                             a copy of this folder
+    docs/multirepo.md                      how multi-repo milestones and task generation work
+```
+
+```bash
+aws s3 cp s3://ml-research-deccan/deepcommit-multirepo/qdrant-clients-v1/task/csf-qdrant-clients-v1-001.zip .
+aws s3 sync s3://ml-research-deccan/deepcommit-multirepo/qdrant-clients-v1/artifacts ./qdrant-clients-v1-artifacts
+```
 
 Use the zip:
 
