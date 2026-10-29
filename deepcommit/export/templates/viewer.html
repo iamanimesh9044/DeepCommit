@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cross-repo tasks</title>
+<style>
+:root{--bg:#f6f5f1;--panel:#fff;--fg:#1f2328;--mut:#6b7078;--line:#e2e0d8;--acc:#0b6b5c;--accbg:#e3f1ee;--add:#e6f6ea;--addf:#14632b;--del:#fdeaea;--delf:#a1262b;--hunk:#eef1f8;--hunkf:#4b5b86;--code:#f1efe8}
+@media(prefers-color-scheme:dark){:root{--bg:#15171a;--panel:#1d2024;--fg:#e6e6e3;--mut:#9aa0a8;--line:#2e3238;--acc:#5fc4b0;--accbg:#1c3430;--add:#16301d;--addf:#7ee2a0;--del:#3a1c1e;--delf:#ff9a9e;--hunk:#222a3d;--hunkf:#8ea3d8;--code:#25282d}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{display:grid;grid-template-columns:290px minmax(0,1fr);min-height:100vh}
+nav{border-right:1px solid var(--line);background:var(--panel);padding:14px 10px;position:sticky;top:0;height:100vh;overflow:auto}
+nav h1{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:4px 8px 10px}
+nav a{display:block;padding:7px 10px;border-radius:7px;color:var(--fg);text-decoration:none;font-size:13.5px;cursor:pointer;line-height:1.35}
+nav a:hover{background:var(--code)}nav a.on{background:var(--accbg);color:var(--acc);font-weight:600}
+nav small{display:block;color:var(--mut);font-weight:400;font-size:11.5px}
+main{padding:22px max(18px,3vw);min-width:0;max-width:1100px}
+h2{margin:0 0 4px;font-size:22px;text-wrap:balance}.sub{color:var(--mut);font-size:13px;margin-bottom:14px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:14px 0 16px;flex-wrap:wrap}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 14px;font:inherit;color:var(--mut);cursor:pointer}
+.tabs button.on{color:var(--acc);border-color:var(--acc);font-weight:600}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 20px}
+.md h1{font-size:20px}.md h2{font-size:17px;margin:18px 0 6px}.md h3{font-size:15px;margin:14px 0 4px}
+.md p{margin:8px 0}.md ul,.md ol{padding-left:22px}.md code{background:var(--code);padding:1px 5px;border-radius:4px;font:12.5px ui-monospace,Menlo,monospace}
+.md pre{background:var(--code);padding:12px;border-radius:8px;overflow:auto}.md pre code{padding:0;background:none}
+.md table{border-collapse:collapse;display:block;overflow:auto}.md td,.md th{border:1px solid var(--line);padding:4px 9px;font-size:13px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 10px}.chip{background:var(--accbg);color:var(--acc);border-radius:99px;padding:2px 10px;font-size:12px}
+details.f{border:1px solid var(--line);border-radius:8px;margin:8px 0;background:var(--panel)}
+details.f>summary{padding:8px 12px;cursor:pointer;font:12.5px ui-monospace,Menlo,monospace;display:flex;gap:10px;align-items:center}
+details.f>summary b{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}
+.st{font-size:12px}.a{color:var(--addf)}.d{color:var(--delf)}
+pre.diff{margin:0;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;border-top:1px solid var(--line)}
+pre.diff span{display:block;padding:0 12px;white-space:pre;min-width:max-content}
+.l-a{background:var(--add)}.l-d{background:var(--del)}.l-h{background:var(--hunk);color:var(--hunkf)}.l-m{color:var(--mut)}
+h3.repo{margin:18px 0 4px;font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}
+ul.ids{margin:6px 0;padding-left:18px;font:12px/1.6 ui-monospace,Menlo,monospace;max-height:340px;overflow:auto;background:var(--code);border-radius:8px;padding-top:8px;padding-bottom:8px;padding-right:12px}
+.note{color:var(--mut);font-size:12px;padding:6px 12px}
+@media(max-width:760px){.wrap{grid-template-columns:1fr}nav{position:static;height:auto;max-height:230px;border-right:0;border-bottom:1px solid var(--line)}}
+</style></head><body>
+<div class="wrap"><nav id="nav"></nav><main id="main"></main></div>
+<script>
+const TASKS=/*DATA*/;
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function md(src){
+  const L=src.split('\n');let o=[],i=0,list=null;
+  const inl=t=>esc(t).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/\[([^\]]+)\]\(([^)]+)\)/g,'$1');
+  const close=()=>{if(list){o.push('</'+list+'>');list=null}};
+  while(i<L.length){let l=L[i];
+    if(l.startsWith('```')){close();let b=[];i++;while(i<L.length&&!L[i].startsWith('```')){b.push(L[i]);i++}o.push('<pre><code>'+esc(b.join('\n'))+'</code></pre>');i++;continue}
+    if(/^\|.*\|$/.test(l)&&/^\|[\s:|-]+\|$/.test(L[i+1]||'')){close();const row=r=>r.slice(1,-1).split('|').map(c=>c.trim());
+      let h=row(l);i+=2;let t='<table><tr>'+h.map(c=>'<th>'+inl(c)+'</th>').join('')+'</tr>';
+      while(i<L.length&&/^\|.*\|$/.test(L[i])){t+='<tr>'+row(L[i]).map(c=>'<td>'+inl(c)+'</td>').join('')+'</tr>';i++}o.push(t+'</table>');continue}
+    let m;
+    if(m=l.match(/^(#{1,4})\s+(.*)/)){close();o.push('<h'+m[1].length+'>'+inl(m[2])+'</h'+m[1].length+'>')}
+    else if(m=l.match(/^\s*[-*]\s+(.*)/)){if(list!=='ul'){close();o.push('<ul>');list='ul'}o.push('<li>'+inl(m[1])+'</li>')}
+    else if(m=l.match(/^\s*\d+\.\s+(.*)/)){if(list!=='ol'){close();o.push('<ol>');list='ol'}o.push('<li>'+inl(m[1])+'</li>')}
+    else if(!l.trim()){close()}else{close();o.push('<p>'+inl(l)+'</p>')}
+    i++}
+  close();return o.join('\n')}
+function diff(f){
+  const cls=l=>l.startsWith('+')&&!l.startsWith('+++')?'l-a':l.startsWith('-')&&!l.startsWith('---')?'l-d':l.startsWith('@@')?'l-h':/^(index|new file|deleted|---|\+\+\+|similarity|rename|old mode|new mode)/.test(l)?'l-m':'';
+  const body=f.lines.slice(1).map(l=>'<span class="'+cls(l)+'">'+esc(l||' ')+'</span>').join('');
+  return '<details class="f"><summary><b>'+esc(f.path)+'</b><span class="st a">+'+f.add+'</span><span class="st d">−'+f.del+'</span></summary><pre class="diff">'+body+'</pre>'+(f.truncated?'<div class="note">… '+f.truncated+' more lines not shown</div>':'')+'</details>'}
+function plain(t){return '<pre class="diff">'+esc(t.text).split('\n').map(l=>'<span>'+(l||' ')+'</span>').join('')+'</pre>'+(t.more?'<div class="note">… '+t.more+' more lines not shown</div>':'')}
+let cur={t:0,s:-1,tab:'instruction'};
+function nav(){const n=document.getElementById('nav');
+  n.innerHTML=TASKS.map((t,ti)=>'<h1>'+esc(t.name.split('/').pop())+'</h1><a data-t="'+ti+'" data-s="-1" class="'+(cur.t==ti&&cur.s<0?'on':'')+'">Overview<small>README, repos, DAG</small></a>'
+   +t.steps.map((s,si)=>'<a data-t="'+ti+'" data-s="'+si+'" class="'+(cur.t==ti&&cur.s==si?'on':'')+'">'+esc(s.name.replace(/^(m\d+)-/,'$1 · ').replace(/-/g,' '))+'<small>'+s.f2p.length+' F2P · '+s.p2p_n+' P2P · '+Object.keys(s.gold).join(' + ')+'</small></a>').join('')).join('');
+  n.querySelectorAll('a').forEach(a=>a.onclick=()=>{cur={t:+a.dataset.t,s:+a.dataset.s,tab:'instruction'};render()})}
+function render(){nav();const t=TASKS[cur.t],m=document.getElementById('main');
+  if(cur.s<0){m.innerHTML='<h2>'+esc(t.name)+'</h2><div class="sub">'+t.steps.length+' steps · DAG <code>'+esc(t.dag)+'</code></div><div class="card md">'+md(t.readme)+'</div>';return}
+  const s=t.steps[cur.s];
+  const tabs=[['instruction','Instruction'],['code','Gold code ('+Object.values(s.gold).flat().length+' files)'],['tests','Hidden tests ('+s.f2p.length+')'],['env','Environment note']];
+  let body='';
+  if(cur.tab=='instruction')body='<div class="card md">'+md(s.instruction)+'</div>';
+  else if(cur.tab=='env')body='<div class="card md">'+md(s.env||'(none)')+'</div>';
+  else if(cur.tab=='code')body=Object.entries(s.gold).map(([r,fs])=>'<h3 class="repo">/app/'+esc(r)+' · '+fs.length+' files · +'+fs.reduce((a,f)=>a+f.add,0)+' −'+fs.reduce((a,f)=>a+f.del,0)+'</h3>'+fs.map(diff).join('')).join('');
+  else{const by={};s.f2p.forEach(i=>{const r=i.split('::')[0];(by[r]=by[r]||[]).push(i.slice(r.length+2))});
+    body='<p class="sub">Fail-to-pass: must pass after the agent\'s change. Pass-to-pass: '+s.p2p_n+' earlier tests must keep passing.</p>'
+     +Object.entries(by).map(([r,ids])=>'<h3 class="repo">'+esc(r)+' · '+ids.length+' F2P ids</h3><ul class="ids">'+ids.map(i=>'<li>'+esc(i)+'</li>').join('')+'</ul>').join('')
+     +'<h3 class="repo">Hidden test sources</h3>'+(s.tests.map(x=>'<details class="f"><summary><b>'+esc(x.repo+'/'+x.path)+'</b></summary>'+plain(x)+'</details>').join('')||'<p class="note">no test file of its own (Rust integration targets are listed above)</p>')}
+  m.innerHTML='<h2>'+esc(s.name.replace(/^(m\d+)-/,'$1 · ').replace(/-/g,' '))+'</h2><div class="chips">'+Object.keys(s.gold).map(r=>'<span class="chip">'+esc(r)+'</span>').join('')+'<span class="chip">'+s.f2p.length+' F2P</span><span class="chip">'+s.p2p_n+' P2P</span></div>'
+   +'<div class="tabs">'+tabs.map(([k,l])=>'<button class="'+(cur.tab==k?'on':'')+'" data-k="'+k+'">'+l+'</button>').join('')+'</div>'+body;
+  m.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{cur.tab=b.dataset.k;render();scrollTo(0,0)})}
+render();
+</script></body></html>
