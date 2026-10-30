@@ -1,0 +1,25 @@
+# DeepCommit pipeline: from a workspace manifest to a CSF task, reproducibly.
+#
+#   MANIFEST=config/illusion_stack_v1.workspace.yaml docker compose run --rm pipeline all
+#   MANIFEST=... TASK_IMAGE=csf-illusion-task docker compose run --rm pipeline finalize
+#   MANIFEST=... docker compose run --rm pipeline gates
+#
+# Secrets stay outside the image: ~/.ssh is mounted read-only (Bitbucket/GitHub clone over SSH), .env supplies
+# CLAUDE_CODE_OAUTH_TOKEN for Phase 2 and instruction writing. The Docker socket is used by finalize (image runs).
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pipeline
+    image: deepcommit-pipeline
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MANIFEST: ${MANIFEST:-}
+      TRIAL: ${TRIAL:-v1}
+      TASK_IMAGE: ${TASK_IMAGE:-csf-task}
+    volumes:
+      - .:/work
+      - ${HOME}/.ssh:/root/.ssh:ro
+      - /var/run/docker.sock:/var/run/docker.sock

@@ -61,6 +61,13 @@ def run_merge(manifest: Path | str, data_root: Path) -> MergeResult:
     return res
 
 
+def run_checkout(manifest: Path | str, data_root: Path) -> int:
+    from deepcommit.multirepo.checkout import checkout_workspace
+
+    checkout_workspace(load_workspace(manifest), data_root)
+    return 0
+
+
 def run_preproc(manifest: Path | str, data_root: Path, overwrite: bool = False, verbose: bool = False) -> int:
     """Run the unchanged single-repo ``preproc all`` for each member, then merge."""
     ws = load_workspace(manifest)
@@ -201,6 +208,7 @@ __all__ = [
     "workspace_dir",
     "run_validate",
     "run_merge",
+    "run_checkout",
     "run_preproc",
     "run_workspace_trial",
     "run_bundle",

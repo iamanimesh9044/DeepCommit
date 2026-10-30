@@ -372,6 +372,8 @@ def _handle_workspace_commands(args: argparse.Namespace) -> int:
                 dependencies_csv=args.dependencies_csv,
             )
             return 0 if report.built else 1
+        if args.workspace_cmd == "checkout":
+            return workspace.run_checkout(args.manifest, data_root)
         if args.workspace_cmd == "preproc":
             return workspace.run_preproc(args.manifest, data_root, overwrite=args.overwrite, verbose=args.verbose)
         if args.workspace_cmd == "run":
@@ -749,6 +751,7 @@ def _parse_workspace_args(argv: list[str]) -> argparse.Namespace:
 
     for name, help_text in (
         ("validate", "Parse a workspace manifest and report problems"),
+        ("checkout", "Clone the member repos and create start/end tags from dates"),
         ("preproc", "Run Phase 1 for every member repo, then merge"),
         ("merge", "Merge member Phase-1 outputs into the workspace dataset"),
         ("run", "Run a multi-stage trial on a merged workspace"),

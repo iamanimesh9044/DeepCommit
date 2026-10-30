@@ -84,4 +84,24 @@ def finalize(
     report = src / "export_report.json"
     if report.exists():
         readme.main([str(task), "--report", str(report), "--folded", str(src / "measure_folded.json")])
+    write_base_compose(task, image)
     return final
+
+
+def write_base_compose(task: Path, image: str) -> None:
+    """``compose.base.yaml``: build the task's base state and open a shell in it, without Harbor (for people reading the task)."""
+    (task / "compose.base.yaml").write_text(
+        "# The base state every trial starts from: repositories at their pinned commits (vendored in environment/vendor,\n"
+        "# background commits applied), dependencies installed. Not used by Harbor.\n"
+        "#   docker compose -f compose.base.yaml run --rm base\n"
+        "services:\n"
+        "  base:\n"
+        "    build:\n"
+        "      context: environment\n"
+        f"    image: {image}\n"
+        "    working_dir: /app\n"
+        "    command: bash\n"
+        "    stdin_open: true\n"
+        "    tty: true\n",
+        encoding="utf-8",
+    )

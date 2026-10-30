@@ -80,6 +80,9 @@ class RepoSpec:
     since: str = ""
     until: str = ""
     main_branch: str = "main"
+    clone_url: str = ""  # used by `workspace checkout` when the clone is missing
+    start_date: str = ""  # YYYY-MM-DD: checkout creates the `start` tag here if it does not exist
+    end_date: str = ""  # YYYY-MM-DD: same for the `end` tag
     platform: str = "github"  # github | git (local clone only: Bitbucket, GitLab, self-hosted)
     repo_src_dirs: List[str] = field(default_factory=list)
     test_dirs: List[str] = field(default_factory=list)
@@ -126,6 +129,9 @@ class RepoSpec:
             "until": self.until,
             "main_branch": self.main_branch,
             "platform": self.platform,
+            "clone_url": self.clone_url,
+            "start_date": self.start_date,
+            "end_date": self.end_date,
             "repo_src_dirs": list(self.repo_src_dirs),
             "test_dirs": list(self.test_dirs),
             "exclude": list(self.exclude),
@@ -263,6 +269,9 @@ def parse_workspace(data: Dict[str, Any]) -> Workspace:
             until=until,
             main_branch=str(r.get("main_branch", "main")),
             platform=str(r.get("platform", "github")),
+            clone_url=str(r.get("clone_url", "")),
+            start_date=str(r.get("start_date", "")),
+            end_date=str(r.get("end_date", "")),
             repo_src_dirs=_as_list(r.get("repo_src_dirs")),
             test_dirs=_as_list(r.get("test_dirs")),
             exclude=_as_list(r.get("exclude")),

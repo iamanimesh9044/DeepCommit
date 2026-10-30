@@ -128,6 +128,26 @@ harbor run -p <task folder> -a nop           # every step must score 0
 Browse the result with the HTML viewer: `python3 deepcommit/export/templates/viewer_gen.py <family folder>` writes
 `index.html` with each step's instruction, gold code and hidden tests.
 
+## Reproducible setup with Docker Compose
+
+Two compose files remove the open-ended manual steps.
+
+**Pipeline** (`compose.yaml`, `docker/`): one container with git, `uv`, the `claude` CLI and Docker. Each stage is one command:
+
+```bash
+MANIFEST=config/<ws>.workspace.yaml docker compose run --rm pipeline all        # checkout, validate, preproc, phase2 (+bundle), export
+MANIFEST=... TASK_IMAGE=<image> docker compose run --rm pipeline finalize        # measure, curate, fold, instructions, README, check-task
+MANIFEST=... docker compose run --rm pipeline gates                              # oracle and NOP with Harbor 0.25
+```
+
+`workspace checkout` is the first stage: it clones every `clone_url` and creates the `start` / `end` tags from `start_date` / `end_date`
+(last first-parent commit before the start date and through the end date), so a repo without release tags is fully described by the manifest.
+`~/.ssh` is mounted read-only for SSH clones; put `CLAUDE_CODE_OAUTH_TOKEN` in `.env` (or `--env-file`). Between `all` and `finalize` the task's
+`environment/Dockerfile` is completed once per repo set (toolchains, dependencies, vendored trees); that part is still manual.
+
+**Task** (`<task>/compose.base.yaml`, written by `finalize-task`): builds the base state (pinned commits, background commits applied, dependencies)
+and opens a shell in it, without Harbor: `docker compose -f compose.base.yaml run --rm base`.
+
 ## Making the image independent of GitHub
 
 Clone the pinned commits once and keep them with the task, so the task still builds if an upstream repository or release is deleted:

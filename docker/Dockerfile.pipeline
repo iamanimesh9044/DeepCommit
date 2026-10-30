@@ -1,0 +1,23 @@
+# DeepCommit pipeline image: Phase 1/2 (git + the claude CLI), export, and finalize (needs the host Docker socket).
+FROM python:3.13-slim
+
+ARG NODE_MAJOR=22
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates curl openssh-client docker.io \
+ && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && npm install -g @anthropic-ai/claude-code \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir uv \
+ && git config --global --add safe.directory '*'
+
+WORKDIR /work
+# The repository is mounted at /work at run time; the virtualenv lives outside it so the host's .venv is not touched.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy \
+    PATH=/opt/venv/bin:$PATH
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --no-install-project --frozen 2>/dev/null || uv sync --no-install-project
+COPY docker/pipeline.sh /usr/local/bin/pipeline
+RUN chmod +x /usr/local/bin/pipeline
+ENTRYPOINT ["pipeline"]
