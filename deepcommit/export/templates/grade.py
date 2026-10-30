@@ -34,6 +34,9 @@ _PYTEST = re.compile(r"^(PASSED|FAILED|ERROR)\s+(\S+)")
 _CARGO = re.compile(r"^test (\S+) \.\.\. (ok|FAILED)")
 _CARGO_RUN = re.compile(r"^\s*Running (?:unittests )?(\S+)")
 _GO = re.compile(r"^\s*--- (PASS|FAIL): (\S+)")
+_GO_PKG = re.compile(r"^(?:ok|FAIL)\s+(\S+)\s")
+_VITEST_PKG = re.compile(r"^== (\S+)\s*$")
+_VITEST = re.compile(r"^\s*(\u2713|\u00d7|\u2717)\s+(.+?)(?:\s+\d+(?:\.\d+)?m?s)?\s*$")
 
 
 def parse_pytest(text):
@@ -61,12 +64,46 @@ def parse_cargo(text):
 
 
 def parse_go(text):
-    return [
-        (m.group(2), "passed" if m.group(1) == "PASS" else "failed") for m in map(_GO.match, text.splitlines()) if m
-    ]
+    """``go test -v`` ids are ``<package>::<test>``: a package's tests are followed by its ``ok``/``FAIL <package>`` line."""
+    out, pending = [], []
+    for line in text.splitlines():
+        m = _GO.match(line)
+        if m:
+            pending.append((m.group(2), "passed" if m.group(1) == "PASS" else "failed"))
+            continue
+        p = _GO_PKG.match(line)
+        if p:
+            out.extend((f"{p.group(1)}::{name}", status) for name, status in pending)
+            pending = []
+    out.extend((f"?::{name}", status) for name, status in pending)
+    return out
 
 
-PARSERS = {"pytest": parse_pytest, "cargo": parse_cargo, "go": parse_go, "exit-code": lambda text: []}
+def parse_vitest(text):
+    """``vitest run --reporter=verbose`` lines: `` ✓ <file> > <suite> > <test> 12ms`` (× for a failure).
+
+    A runner that loops over workspace packages prints ``== <package>`` before each run; the id is then
+    ``<package>::<file> > <suite> > <test>``, so equal test files of two packages stay apart.
+    """
+    out, prefix = [], ""
+    for line in text.splitlines():
+        h = _VITEST_PKG.match(line)
+        if h:
+            prefix = h.group(1).rstrip("/") + "::"
+            continue
+        m = _VITEST.match(line)
+        if m:
+            out.append((prefix + m.group(2), "passed" if m.group(1) == "\u2713" else "failed"))
+    return out
+
+
+PARSERS = {
+    "pytest": parse_pytest,
+    "cargo": parse_cargo,
+    "go": parse_go,
+    "vitest": parse_vitest,
+    "exit-code": lambda text: [],
+}
 
 
 def load_suites():

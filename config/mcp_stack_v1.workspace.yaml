@@ -1,0 +1,62 @@
+# MCP: specification (schema) + TypeScript, Python and Go SDKs, 2026-07-13 .. 2026-07-25.
+# Screened as GO: spec PR #3002 (serverInfo/clientInfo in result _meta) reached the SDKs within 1-8 days
+# (TS #2513, Python #3143, Go #1097); SEP-2575 (server/discover, subscriptions/listen) shows up in all SDKs.
+# rust-sdk is left out: its window is ~19k lines on its own. Add it as a 5th repo to widen the set.
+workspace_id: mcp_stack_v1
+repos:
+  - name: mcp-spec
+    owner: modelcontextprotocol
+    repo: modelcontextprotocol
+    role: contract
+    contract_only: true
+    start: v2026.7.13   # synthetic local tag: last main commit before 2026-07-13
+    end: v2026.7.25     # synthetic local tag: last main commit on or before 2026-07-25
+    main_branch: main
+    repo_src_dirs: [schema/]
+    test_dirs: []
+    exclude: []
+    contract_paths:
+      - "schema/draft/schema.ts"
+      - "schema/draft/schema.json"
+      - "schema/2026-07-28/schema.ts"
+      - "schema/2026-07-28/schema.json"
+  - name: mcp-ts
+    owner: modelcontextprotocol
+    repo: typescript-sdk
+    role: sdk
+    start: v2026.7.13   # synthetic local tag: last main commit before 2026-07-13
+    end: v2026.7.25     # synthetic local tag: last main commit on or before 2026-07-25
+    main_branch: main
+    repo_src_dirs: [packages/client/src/, packages/server/src/, packages/core-internal/src/, packages/core/src/]
+    test_dirs: ["packages/*/test/**", "test/**"]
+    exclude: []
+  - name: mcp-py
+    owner: modelcontextprotocol
+    repo: python-sdk
+    role: sdk
+    start: v2026.7.13   # synthetic local tag: last main commit before 2026-07-13
+    end: v2026.7.25     # synthetic local tag: last main commit on or before 2026-07-25
+    main_branch: main
+    repo_src_dirs: [src/mcp/]
+    test_dirs: ["tests/**"]
+    exclude: []
+  - name: mcp-go
+    owner: modelcontextprotocol
+    repo: go-sdk
+    role: sdk
+    start: v2026.7.13   # synthetic local tag: last main commit before 2026-07-13
+    end: v2026.7.25     # synthetic local tag: last main commit on or before 2026-07-25
+    main_branch: main
+    repo_src_dirs: [mcp/, jsonrpc/, auth/, oauthex/, internal/]
+    test_dirs: ["**/*_test.go"]
+    exclude: []
+xrepo:
+  pin_files: [package.json, pyproject.toml, go.mod]
+  link_confidence_threshold: 0.7
+  time_window_days: 14
+  generated_globs:
+    - "**/spec.types*.ts"
+    - "**/schema.json"
+    - "**/pnpm-lock.yaml"
+    - "**/uv.lock"
+    - "**/go.sum"

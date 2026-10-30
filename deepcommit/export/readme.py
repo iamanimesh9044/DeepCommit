@@ -44,11 +44,15 @@ def build(task: Path, report: dict, folded: dict, gates: dict | None = None) -> 
     background = [s for s in report["steps"] if s["status"] == "background"]
     notbuilt = [s for s in report["steps"] if s["status"] in ("blocked", "skipped")]
     srcs = md.get("source_repos", [])
+    suites = json.loads((task / "tests/suites.json").read_text())
+    services = suites.get("services", [])
+    contract = suites.get("contract_only", {})
+    limits_file = task / "LIMITS.md"
     out = [
         f"# {cfg['task']['name'].split('/')[-1]}",
         "",
-        "Cross-repo milestone task derived with DeepCommit from the `qdrant_clients_v1` workspace "
-        f"({', '.join(r['name'] for r in srcs)}, v1.18.0 to v1.20.0). One agent keeps one environment through the steps below "
+        "Cross-repo milestone task derived with DeepCommit from the "
+        f"{', '.join(r['name'] for r in srcs)} workspace. One agent keeps one environment through the steps below "
         "with no reset between them. After each step Harbor collects the agent's work, a clean verifier container applies it "
         "to the base state and runs hidden tests across all repositories. Episode score is the mean over steps.",
         "",
@@ -79,26 +83,32 @@ def build(task: Path, report: dict, folded: dict, gates: dict | None = None) -> 
             for r in srcs
         ],
         "",
-        "`/app/qdrant` is the contract repository, sparse: only `lib/api/src/grpc/proto/**/*.proto` (the wire contract the "
-        "clients consume). It has no tests and nothing to build; contract edits are collected and applied like any other repo.",
+        *[
+            f"`/app/{n}` is a contract-only repository, sparse: only {', '.join('`' + p + '`' for p in c.get('contract_paths', []))} "
+            "are present. It has no tests and nothing to build; contract edits are collected and applied like any other repo."
+            for n, c in contract.items()
+        ],
         "",
         "## How grading works",
         "",
         "1. `csf-collect` writes `/logs/artifacts/model.<repo>.patch` for every repo (the agent's changes against "
         "`/opt/csf/base/<repo>.git`, which the agent cannot alter).",
         "2. The verifier builds a fresh container from `environment/`, applies each patch (changes under test dirs are dropped), "
-        "copies `tests/hidden/<repo>/` in, starts a real Qdrant server (`tests/suites.json` `services`), runs the suites "
-        "(pytest for qdrant-client, `cargo test --offline` for rust-client).",
+        "copies `tests/hidden/<repo>/` in, "
+        + (f"starts {', '.join(s['name'] for s in services)} (`tests/suites.json` `services`), " if services else "")
+        + "runs the suites declared in `tests/suites.json` ("
+        + ", ".join(f"{s['parser']} for {s['repo']}" for s in suites["suites"])
+        + ").",
         "3. `tests/grade.py` grades exactly the ids in `steps/<step>/tests/ids.json` (`f2p`: must pass, they failed before the "
         "gold patch; `p2p`: must keep passing). `reward` is 1 only if every F2P and P2P id passed in every repo.",
         "4. The ids were measured, not guessed: the gold patches were applied step by step in the task's own image and every "
         "test was run twice per state (`deepcommit/export/templates/measure.py`, `curate.py`); a test that failed in any run "
-        "is excluded. pytest retries a failing test twice (congruence tests compare local mode with the server on random data).",
+        "is excluded.",
         "",
         "## Running it",
         "",
-        "Needs Harbor 0.25 or newer (multi-step tasks, schema 1.4) and Docker. The three repositories (pinned commits) and the Qdrant "
-        "server binary are vendored in `environment/vendor/`, so the build does not depend on GitHub; it still downloads toolchains "
+        "Needs Harbor 0.25 or newer (multi-step tasks, schema 1.4) and Docker. The repositories (pinned commits) "
+        "are vendored in `environment/vendor/`, so the build does not depend on GitHub; it still downloads toolchains "
         "and crates from their registries, so it needs network. The trial itself needs none.",
         "",
         "```bash",
@@ -115,10 +125,11 @@ def build(task: Path, report: dict, folded: dict, gates: dict | None = None) -> 
         "checks that two repositories agree with each other.",
         "- Instructions are generated from the gold patch and the hidden tests (`deepcommit/export/gen_instructions.py`), not "
         "from a full Phase 4 SRS.",
-        "- `-X theirs` was used when replaying 11 background commits and about 25 test-only conflicts were auto-resolved during "
-        "export (see `_src/csf-qdrant-clients-v1-001/export_report.json`); the measured tests all pass on the resulting states.",
-        "- Milestones M35, M17_sub-02 and M17_sub-03 are not built (cherry-pick conflict on `poetry.lock`).",
-        "- The Python tests that need FastEmbed models are skipped (no model download at run time); embedding-model tests are not part of any step.",
+        *(
+            [f"- {ln.lstrip('- ').strip()}" for ln in limits_file.read_text().splitlines() if ln.strip()]
+            if limits_file.exists()
+            else []
+        ),
         "",
     ]
     return "\n".join(out)

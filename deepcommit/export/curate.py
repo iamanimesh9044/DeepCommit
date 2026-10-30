@@ -52,6 +52,28 @@ def _file_of(tid: str) -> Optional[str]:
     return parts[1] if len(parts) >= 3 and parts[1].endswith(".py") else None
 
 
+def _is_vitest(tid: str) -> bool:
+    """Vitest id ``repo::<package dir>::<file> > <suite> > <test>``."""
+    parts = tid.split("::", 2)
+    return len(parts) == 3 and " > " in parts[2] and parts[2].split(" > ", 1)[0].endswith((".ts", ".tsx", ".js", ".mjs"))
+
+
+def _vitest_file(tid: str) -> str:
+    parts = tid.split("::", 2)
+    pkg = parts[1].rstrip('/')
+    f = parts[2].split(' > ', 1)[0]
+    return f if pkg in ('', '.') else f"{pkg}/{f}"
+
+
+def _go_pkg_dir(tid: str) -> Optional[str]:
+    """Go id ``repo::<import path>::<Test>``: repo-relative package dir ('.' for the module root), None for other ids."""
+    parts = tid.split("::", 2)
+    if len(parts) != 3 or "/" not in parts[1] or not re.match(r"^[\w.\-]+\.[\w.\-]+/", parts[1]):
+        return None
+    segs = parts[1].split("/")[3:]  # host/owner/module -> remainder
+    return "/".join(segs) or "."
+
+
 def _own_files(step_dir: Path) -> Dict[str, List[str]]:
     out: Dict[str, List[str]] = {}
     for line in (step_dir / "tests/step.env").read_text().splitlines():
@@ -82,11 +104,15 @@ def curate(measure: dict, task_dir: Path, max_p2p: int = 400) -> List[StepCurati
             f = _file_of(tid)
             if f:
                 is_own = (repo, f) in own
+            elif _is_vitest(tid):
+                is_own = (repo, _vitest_file(tid)) in own
+            elif _go_pkg_dir(tid) is not None:
+                is_own = any(str(Path(of).parent) == _go_pkg_dir(tid) for of in cur.own_files.get(repo, ()))
             else:  # cargo id ``<test binary>::<name>``: own when the binary is one of the step's tests/<binary>.rs files
                 # (binary, module path..., name): own when a path component is the stem of one of the step's test files
                 parts = set(tid.split("::")[1:])
                 is_own = any(Path(of).stem in parts for of in cur.own_files.get(repo, ()) if Path(of).stem != "mod")
-            if is_own and pre.get(tid) != "passed":
+            if is_own and pre.get(tid) != "passed" and tid not in prev_pass:
                 cur.f2p.append(tid)
         for tid in sorted(post_pass & prev_pass):
             repo = tid.split("::", 1)[0]
@@ -124,7 +150,7 @@ def write(task_dir: Path, curated: List[StepCuration]) -> None:
             out: Dict[str, List[str]] = {}
             for tid in ids:
                 repo = tid.split("::", 1)[0]
-                f = _file_of(tid) or "__suite__"
+                f = _file_of(tid) or (_vitest_file(tid) if _is_vitest(tid) else None) or "__suite__"
                 if f not in out.setdefault(repo, []):
                     out[repo].append(f)
             return out

@@ -24,7 +24,11 @@ var_of() { printf '%s' "$1" | tr 'a-z.-' 'A-Z__'; }
 run_group() {  # run_group <repo> <f2p|p2p> <workdir> <run_cmd> <tests>
   local repo=$1 group=$2 workdir=$3 cmd=$4 tests=$5
   if [ -z "$tests" ]; then return 0; fi
-  local full=${cmd//\{tests\}/$tests}
+  local quoted=""
+  set -f
+  for f in $tests; do quoted+="$(printf '%q' "$f") "; done  # paths may hold ( ) [ ] (Next.js routes)
+  set +f
+  local full=${cmd//\{tests\}/$quoted}
   note "running $repo $group: $tests"
   ( cd "/app/$repo/$workdir" && bash -c "$full" ) < /dev/null > "$LOG/$repo.$group.log" 2>&1
   echo $? > "$LOG/$repo.$group.rc"

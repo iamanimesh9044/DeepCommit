@@ -17,6 +17,8 @@ Signals (strongest first)
                     to a specific commit of another workspace repo. Hard only when that commit changes the
                     contract; a pin bump alone is not a feature link.
 ``xrepo_pr_link``   an explicit ``owner/repo#N`` or GitHub URL reference to another workspace repo's PR.
+``xrepo_branch``    pull requests in two repos merged from the same feature branch name (``Merged in
+                    feat/x (pull request #N)``): one feature developed in both repos. Hard.
 ``xrepo_time``      same author in two repos within a short window. Always soft.
 """
 
@@ -37,6 +39,11 @@ EDGE_CONTRACT = "xrepo_contract"
 EDGE_PIN = "xrepo_pin"
 EDGE_PR_LINK = "xrepo_pr_link"
 EDGE_TIME = "xrepo_time"
+EDGE_BRANCH = "xrepo_branch"
+
+_MERGED_IN = re.compile(r"^Merged in (\S+) \(pull request #\d+\)")
+_GENERIC_BRANCHES = frozenset({"master", "main", "develop", "dev", "staging", "release", "prod", "production"})
+BRANCH_WINDOW_DAYS = 45
 
 # Words too generic to prove a link by themselves.
 STOP_WORDS = frozenset(
@@ -500,6 +507,42 @@ def pr_link_edges(
     return edges
 
 
+def branch_edges(ws: Workspace, commits: Dict[str, List[CommitRec]]) -> List[XEdge]:
+    """Merge commits of different repos that name the same feature branch (Bitbucket ``Merged in <branch> ...``)."""
+    by_branch: Dict[str, List[CommitRec]] = defaultdict(list)
+    for cs in commits.values():
+        for c in cs:
+            m = _MERGED_IN.match((c.message or "").strip())
+            if m and m.group(1).lower() not in _GENERIC_BRANCHES:
+                by_branch[m.group(1)].append(c)
+    window = timedelta(days=BRANCH_WINDOW_DAYS)
+    edges: List[XEdge] = []
+    for branch, cs in by_branch.items():
+        cs.sort(key=lambda c: (c.committed_at is None, c.committed_at))
+        for i, a in enumerate(cs):
+            for b in cs[i + 1 :]:
+                if a.repo == b.repo:
+                    continue
+                try:
+                    if a.committed_at and b.committed_at and b.committed_at - a.committed_at > window:
+                        continue
+                except TypeError:
+                    pass
+                edges.append(
+                    XEdge(
+                        source=a.sha,
+                        target=b.sha,
+                        source_repo=a.repo,
+                        target_repo=b.repo,
+                        edge_types=[EDGE_BRANCH],
+                        confidence=0.8,
+                        edge_class=HARD,
+                        evidence=[f"same branch {branch!r}: {a.sha}({a.repo}) -> {b.sha}({b.repo})"],
+                    )
+                )
+    return edges
+
+
 _BOT_RE = re.compile(r"(bot|noreply|dependabot|renovate)", re.I)
 
 
@@ -567,6 +610,7 @@ def build_xrepo_edges(
     edges += contract_edges(ws, commits)
     edges += pin_edges(ws, commits, releases)
     edges += pr_link_edges(ws, commits, prs or {})
+    edges += branch_edges(ws, commits)
     edges += time_edges(ws, commits)
     merged = merge_edges(edges)
     if not ws.xrepo.emit_soft_edges:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from deepcommit.multirepo import MergeResult, Workspace, load_workspace, merge_workspace, workspace_dir
@@ -65,16 +66,25 @@ def run_preproc(manifest: Path | str, data_root: Path, overwrite: bool = False, 
     ws = load_workspace(manifest)
     for spec in ws.repos:
         print(f"[workspace preproc] {spec.name}: {member_repo_spec(spec)}")
-        rc = preproc.run_all_preprocessing(
-            repo_spec=member_repo_spec(spec),
-            data_root=data_root,
-            repo_src_dirs=spec.repo_src_dirs,
-            overwrite=overwrite,
-            main_branch=spec.main_branch,
-            test_dirs=spec.test_dirs or None,
-            exclude=spec.exclude or None,
-            verbose=verbose,
-        )
+        if spec.platform == "git":
+            from deepcommit.preprocess.linearize import linearize
+
+            n = linearize(repo_checkout_path(data_root, spec), spec.main_branch)
+            print(f"[workspace preproc] {spec.name}: " + (f"linearized {n} mainline commits" if n else "already linear"))
+        os.environ["DEEPCOMMIT_PLATFORM"] = spec.platform
+        try:
+            rc = preproc.run_all_preprocessing(
+                repo_spec=member_repo_spec(spec),
+                data_root=data_root,
+                repo_src_dirs=spec.repo_src_dirs,
+                overwrite=overwrite,
+                main_branch=spec.main_branch,
+                test_dirs=spec.test_dirs or None,
+                exclude=spec.exclude or None,
+                verbose=verbose,
+            )
+        finally:
+            os.environ.pop("DEEPCOMMIT_PLATFORM", None)
         if rc != 0:
             print(f"Phase 1 failed for {spec.name} (exit {rc})")
             return rc

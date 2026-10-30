@@ -1,0 +1,32 @@
+workspace_id: illusion_stack_v1
+repos:
+  - name: illusion-backend
+    owner: deccan-ai
+    repo: illusion_backend
+    platform: git        # Bitbucket: no GitHub API, PRs rebuilt from "Merged in ... (pull request #N)" commits
+    role: server
+    start: v2026.7.1     # synthetic local tag (clone only): last master commit before 2026-07-01
+    end: v2026.8.21      # synthetic local tag: last master commit on or before 2026-08-21
+    main_branch: master
+    repo_src_dirs: [app/]
+    test_dirs: ["tests/**", "test.sh", "scripts/run_tests*.sh"]
+    exclude: ["**/*.env", "**/.env*", "ci/jenkins/**", "docs/**", "bruno/**", "**/uv.lock", "CLAUDE.md", "AGENTS.md", ".claude/**", ".codex/**"]
+  - name: illusion-frontend
+    owner: deccan-ai
+    repo: illusion_frontend
+    platform: git
+    role: sdk
+    start: v2026.7.1
+    end: v2026.8.21
+    main_branch: master
+    repo_src_dirs: [app/, components/, hooks/, lib/]
+    test_dirs: ["**/*.test.ts", "**/*.test.tsx"]
+    exclude: ["**/.env*", "**/pnpm-lock.yaml", "**/package-lock.json", "docs/**", "k8s-manifests/**", "CLAUDE.md", "AGENTS.md", ".claude/**"]
+xrepo:
+  pin_files: [package.json, pyproject.toml]
+  link_confidence_threshold: 0.7
+  time_window_days: 14
+  generated_globs:
+    - "**/pnpm-lock.yaml"
+    - "**/package-lock.json"
+    - "**/uv.lock"

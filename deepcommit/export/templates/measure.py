@@ -20,35 +20,20 @@ import os
 import re
 import shutil
 import subprocess
+import shlex
 import sys
 import time
 from pathlib import Path
 
 import tomllib
 
-PYTEST = re.compile(r"^(PASSED|FAILED|ERROR)\s+(\S+)")
-CARGO_RUN = re.compile(r"^\s*Running (?:unittests )?(\S+)")
-CARGO = re.compile(r"^test (\S+) \.\.\. (ok|FAILED)")
+sys.path.insert(0, str(Path(os.environ.get("CSF_TASK", "/task")) / "tests"))
+import grade  # noqa: E402
 
 
 def parse(parser, text):
-    out = {}
-    if parser == "pytest":
-        for line in text.splitlines():
-            m = PYTEST.match(line)
-            if m:
-                out[m.group(2)] = "passed" if m.group(1) == "PASSED" else "failed"
-    elif parser == "cargo":
-        binary = ""
-        for line in text.splitlines():
-            r = CARGO_RUN.match(line)
-            if r:
-                binary = r.group(1).split("/")[-1].removesuffix(".rs")
-                continue
-            m = CARGO.match(line)
-            if m:
-                out[f"{binary}::{m.group(1)}" if binary else m.group(1)] = "passed" if m.group(2) == "ok" else "failed"
-    return out
+    """Per-test outcomes with the parsers tests/grade.py uses, so a measured id is a gradable id."""
+    return dict(grade.PARSERS[parser](text)) if parser in grade.PARSERS else {}
 
 
 def sh(cmd, cwd=None, timeout=None, env=None):
@@ -73,7 +58,7 @@ def run_suites(suites, tests_of, timeout):
         files = tests_of(repo)
         if files == []:
             continue
-        cmd = s["run_cmd"].replace("{tests}", " ".join(files) if files else s.get("all_tests", "."))
+        cmd = s["run_cmd"].replace("{tests}", " ".join(shlex.quote(f) for f in files) if files else s.get("all_tests", "."))
         t0 = time.time()
         try:
             rc, out = sh(cmd, cwd=f"/app/{repo}/{s.get('workdir', '.')}", timeout=timeout)
@@ -86,23 +71,22 @@ def run_suites(suites, tests_of, timeout):
     return res
 
 
-def start_server():
-    """A real Qdrant for the clients' remote-mode tests, on a throwaway data dir."""
-    shutil.rmtree("/tmp/qd", ignore_errors=True)
-    os.makedirs("/tmp/qd", exist_ok=True)
-    subprocess.Popen(
-        ["qdrant", "--disable-telemetry"],
-        cwd="/tmp/qd",
-        env={**os.environ, "QDRANT__STORAGE__STORAGE_PATH": "/tmp/qd/storage", "QDRANT__LOG_LEVEL": "WARN"},
-        stdout=open("/tmp/qd/log", "w"),
-        stderr=subprocess.STDOUT,
-    )
-    for _ in range(60):
-        rc, _ = sh("curl -fs localhost:6333/healthz")
-        if rc == 0:
-            return
-        time.sleep(1)
-    raise SystemExit("qdrant server did not start")
+def start_services(services):
+    """Start every service of tests/suites.json ``services`` (a database, a server the tests talk to) and wait until healthy."""
+    for sv in services:
+        subprocess.Popen(
+            ["bash", "-c", sv["start"]],
+            stdin=subprocess.DEVNULL,
+            stdout=open(f"/tmp/service.{sv['name']}.log", "w"),
+            stderr=subprocess.STDOUT,
+        )
+        for _ in range(60):
+            rc, _ = sh(sv["health"])
+            if rc == 0:
+                break
+            time.sleep(1)
+        else:
+            raise SystemExit(f"service {sv['name']} did not become healthy")
 
 
 def main():
@@ -117,10 +101,11 @@ def main():
     task = Path(a.task)
     cfg = tomllib.loads((task / "task.toml").read_text())
     steps = [s["name"] for s in cfg["steps"]]
-    suites = json.loads((task / "tests/suites.json").read_text())["suites"]
+    cfg_suites = json.loads((task / "tests/suites.json").read_text())
+    suites = cfg_suites["suites"]
     only = {s for s in a.only.split(",") if s}
     if not a.no_server:
-        start_server()
+        start_services(cfg_suites.get("services", []))
     out = {"steps": []}
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     for name in steps:

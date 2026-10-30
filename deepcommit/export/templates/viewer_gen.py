@@ -1,7 +1,11 @@
-import json, re, sys, tomllib
+import json
+import re
+import sys
 from pathlib import Path
 
-root = Path(sys.argv[1])            # cross-repo-change
+import tomllib
+
+root = Path(sys.argv[1])  # cross-repo-change
 out = root / "index.html"
 MAXLINES = 600
 
@@ -35,7 +39,9 @@ for tdir in sorted(p for p in root.iterdir() if (p / "task.toml").exists()):
         ids = json.loads((sd / "tests/ids.json").read_text())
         instr = (sd / "instruction.md").read_text()
         body, _, env = instr.partition("\n---\n")
-        gold = {p.stem: split_patch(p.read_text(errors="replace")) for p in sorted((sd / "solution/gold").glob("*.patch"))}
+        gold = {
+            p.stem: split_patch(p.read_text(errors="replace")) for p in sorted((sd / "solution/gold").glob("*.patch"))
+        }
         own = {}
         for line in (sd / "tests/step.env").read_text().splitlines():
             m = re.match(r"F2P_([A-Z_]+)='(.*)'", line)
@@ -47,12 +53,29 @@ for tdir in sorted(p for p in root.iterdir() if (p / "task.toml").exists()):
                 p = sd / "tests/hidden" / repo / f
                 if p.is_file():
                     t = p.read_text(errors="replace").splitlines()
-                    tests.append({"repo": repo, "path": f, "text": "\n".join(t[:MAXLINES]), "more": max(0, len(t) - MAXLINES)})
-        steps.append({"name": st["name"], "instruction": body.strip(), "env": env.strip(), "gold": gold,
-                      "f2p": ids["f2p"], "p2p_n": len(ids["p2p"]), "tests": tests})
-    tasks.append({"name": cfg["task"]["name"], "dag": md.get("csf_milestone_dag", ""),
-                  "repos": md.get("source_repos", []), "readme": (tdir / "README.md").read_text() if (tdir / "README.md").exists() else "",
-                  "steps": steps})
+                    tests.append(
+                        {"repo": repo, "path": f, "text": "\n".join(t[:MAXLINES]), "more": max(0, len(t) - MAXLINES)}
+                    )
+        steps.append(
+            {
+                "name": st["name"],
+                "instruction": body.strip(),
+                "env": env.strip(),
+                "gold": gold,
+                "f2p": ids["f2p"],
+                "p2p_n": len(ids["p2p"]),
+                "tests": tests,
+            }
+        )
+    tasks.append(
+        {
+            "name": cfg["task"]["name"],
+            "dag": md.get("csf_milestone_dag", ""),
+            "repos": md.get("source_repos", []),
+            "readme": (tdir / "README.md").read_text() if (tdir / "README.md").exists() else "",
+            "steps": steps,
+        }
+    )
 
 data = json.dumps(tasks).replace("</", "<\\/")
 html = (Path(__file__).parent / "viewer.html").read_text().replace("/*DATA*/", data)

@@ -472,7 +472,8 @@ def generate_codemaat_log(
     # Execute command
     start_time = time.time()
     if verbose:
-        print(f"Executing: {' '.join(cmd)}\n")
+        shown = [("***" if i and cmd[i - 1] == "--token" else c) for i, c in enumerate(cmd)]
+        print(f"Executing: {' '.join(shown)}\n")
 
     try:
         result = subprocess.run(cmd, check=True)  # noqa: F841
@@ -595,8 +596,9 @@ def collect_github_data(
         output_dir = Path(output_dir).expanduser().resolve()
 
     # Get GitHub token (prefer GITHUB_CRAWLER_TOKENS, fallback to GITHUB_TOKEN)
+    platform = os.getenv("DEEPCOMMIT_PLATFORM", "github")
     token = os.getenv("GITHUB_CRAWLER_TOKENS", "") or os.getenv("GITHUB_TOKEN", "")
-    if not token:
+    if platform != "git" and not token:
         print("Error: GITHUB_CRAWLER_TOKENS (or GITHUB_TOKEN) environment variable not set", file=sys.stderr)
         return 1
 
@@ -642,11 +644,13 @@ def collect_github_data(
         end_tag,
         "--output-dir",
         str(output_dir),
-        "--token",
-        token,
         "--workers",
         str(workers),
     ]
+    if platform == "git":
+        cmd.extend(["--platform", "git"])
+    else:
+        cmd.extend(["--token", token])
 
     if local_repo:
         cmd.extend(["--local-repo", str(local_repo)])
@@ -675,7 +679,8 @@ def collect_github_data(
     # Execute command
     start_time = time.time()
     if verbose:
-        print(f"Executing: {' '.join(cmd)}\n")
+        shown = [("***" if i and cmd[i - 1] == "--token" else c) for i, c in enumerate(cmd)]
+        print(f"Executing: {' '.join(shown)}\n")
 
     try:
         result = subprocess.run(cmd, check=True)  # noqa: F841

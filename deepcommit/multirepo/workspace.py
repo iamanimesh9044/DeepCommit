@@ -80,6 +80,7 @@ class RepoSpec:
     since: str = ""
     until: str = ""
     main_branch: str = "main"
+    platform: str = "github"  # github | git (local clone only: Bitbucket, GitLab, self-hosted)
     repo_src_dirs: List[str] = field(default_factory=list)
     test_dirs: List[str] = field(default_factory=list)
     exclude: List[str] = field(default_factory=list)
@@ -124,6 +125,7 @@ class RepoSpec:
             "since": self.since,
             "until": self.until,
             "main_branch": self.main_branch,
+            "platform": self.platform,
             "repo_src_dirs": list(self.repo_src_dirs),
             "test_dirs": list(self.test_dirs),
             "exclude": list(self.exclude),
@@ -260,6 +262,7 @@ def parse_workspace(data: Dict[str, Any]) -> Workspace:
             since=since,
             until=until,
             main_branch=str(r.get("main_branch", "main")),
+            platform=str(r.get("platform", "github")),
             repo_src_dirs=_as_list(r.get("repo_src_dirs")),
             test_dirs=_as_list(r.get("test_dirs")),
             exclude=_as_list(r.get("exclude")),

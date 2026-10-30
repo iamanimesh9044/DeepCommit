@@ -38,6 +38,22 @@ and applied like any other repository's. The `xrepo:` block configures cross-rep
 `link_confidence_threshold`, `time_window_days`, `generated_globs`). Examples: [`config/examples/`](../config/examples/);
 schema: `deepcommit/multirepo/workspace.py`.
 
+### Repositories that are not on GitHub (Bitbucket, GitLab, self-hosted)
+
+Set `platform: git` on a repository. Phase 1 then needs no API and no token, only a clone at `DATA/github_data/repos/<owner>_<repo>`:
+
+- Make the clone with `git clone` (a copy: DeepCommit rewrites the mainline branch in it). Without release tags, create local ones in the clone for the
+  range (`git tag v2026.7.1 <commit>`, `git tag v2026.8.21 <commit>`) and put them in `start` / `end`.
+- `workspace preproc` runs `deepcommit/preprocess/linearize.py` on the clone: each first-parent step (a merge commit for a pull request)
+  becomes one commit with the same tree, author, dates and message. Without it, merge commits have no patch and the DAG is empty.
+  The original tip stays at `refs/deepcommit/orig/<branch>`; tags are moved to the linear commits.
+- Pull requests are rebuilt from the `Merged in <branch> (pull request #N)` subjects by `deepcommit/preprocess/git_only_api.py`. Issues,
+  comments, labels and reviews do not exist locally and stay empty.
+- Cross-repo edges: besides pins and PR links, pull requests that merge the **same feature branch name** in two repositories get a hard
+  `xrepo_branch` edge (`xrepo.py`, 45-day window, generic names like `master` ignored).
+
+Use `exclude` for tracked secrets (`**/*.env`) so they never reach patches, hidden tests or vendored trees.
+
 ### Cross-repo edges
 
 Commit keys stay bare 7-char SHAs (a collision between repos is a hard error in `validate`); the repo of a commit comes from

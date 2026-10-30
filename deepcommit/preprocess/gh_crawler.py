@@ -1034,6 +1034,12 @@ def main():
         default=os.getenv("GITHUB_CRAWLER_TOKENS", "") or os.getenv("GITHUB_TOKEN", ""),
         help="GitHub token(s)",
     )
+    parser.add_argument(
+        "--platform",
+        choices=["github", "git"],
+        default="github",
+        help="github: use the GitHub API; git: local clone only (Bitbucket, GitLab, self-hosted); PRs come from merge commits",
+    )
     parser.add_argument("--workers", type=int, default=10, help="并发worker数量")
     parser.add_argument("--local-repo", help="本地git仓库路径")
     parser.add_argument("--main-branch", help="主分支名称", default="main")
@@ -1074,7 +1080,7 @@ def main():
     if (args.start_tag or args.end_tag) and args.limit:
         parser.error("--start-tag/--end-tag 不能与 --limit 同时使用")
 
-    if not args.token:
+    if args.platform != "git" and not args.token:
         print("错误: 请提供 --token 或设置 GITHUB_CRAWLER_TOKENS 环境变量", file=sys.stderr)
         sys.exit(1)
 
@@ -1165,7 +1171,14 @@ def main():
             print(f"Warning: Could not initialize LocalGitRepo: {e}")
 
     github_api = None
-    if GitHubAPI:
+    if args.platform == "git":
+        from deepcommit.preprocess.git_only_api import GitOnlyAPI
+
+        if not config.local_repo_path:
+            parser.error("--platform git needs --local-repo (a clone of the repository)")
+        github_api = GitOnlyAPI(args.owner, args.repo, repo_path=config.local_repo_path, main_branch=args.main_branch)
+        github_api.print_rate_limit_status()
+    elif GitHubAPI:
         github_api = GitHubAPI(args.owner, args.repo, args.token)
 
         # 显示 rate limit 状态
