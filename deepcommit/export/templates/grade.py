@@ -1,23 +1,26 @@
-"""Grade one step of a cross-repo CSF task from the per-repo logs that test.sh wrote to /logs/verifier.
+"""Grade one step of a cross-repo CSF task. GENERATED (DeepCommit export): the same in every step.
 
-test.sh runs, for every repo with a non-empty list, ``<repo>.<f2p|p2p>.log`` and ``<repo>.<f2p|p2p>.rc``. This script parses
-those logs with the parser named in tests/suites.json, namespaces every test id as ``<repo>::<id>`` and merges them into
-one result set.
+Reads /tests/suite.json (this step's name, its suites, services, the files to run and every check with its bucket) and
+the logs test.sh wrote to /logs/verifier (<repo>.<f2p|p2p>.log/.rc, deploy.<service>.rc).
+
+Buckets: ``deploy`` (a service the suites need came up healthy), ``f2p`` (failed before this step's gold patch, must
+pass), ``p2p`` (must keep passing). Test ids are ``<repo>::<id>``. A suite.json without ``checks`` (not curated yet) is
+graded by files: every test the f2p and p2p runs report must pass.
 
 Writes /logs/verifier/reward.json (numbers only, as Harbor requires):
-  reward      1 if every fail-to-pass and every pass-to-pass test of EVERY repo passed (and at least one F2P ran), else 0
-  f2p_total, f2p_passed, p2p_total, p2p_passed
-  f2p_total__<repo>, f2p_passed__<repo>, p2p_total__<repo>, p2p_passed__<repo>
-and /logs/verifier/ctrf.json with one entry per test.
+  reward      1 only if every check passed (and at least one f2p check exists), else 0
+  <bucket>_total, <bucket>_passed, and per repo <bucket>_total__<repo>, <bucket>_passed__<repo>
+and /logs/verifier/checks.json (every check with its bucket and status) and ctrf.json.
 
   python3 grade.py                grade the logs
-  python3 grade.py --error WHY    record a verifier error (reward 0, no logs)
-  python3 grade.py repos          print every repo of suites.json (suites and contract-only repos: patches apply to all)
-  python3 grade.py suites         print "repo<TAB>workdir<TAB>whole_suite<TAB>run_cmd" per suite (contract-only repos have none)
-  python3 grade.py services       print "name<TAB>start_cmd<TAB>health_cmd" per service the suites need (e.g. a database)
-  python3 grade.py excludes REPO  print the patterns git apply must exclude (the repo's test dirs)
+  python3 grade.py --error WHY    record a verifier error (reward 0)
+  python3 grade.py step           print the step name
+  python3 grade.py repos          print every repo (suites and contract-only repos)
+  python3 grade.py suites         print "repo workdir whole_suite run_cmd f2p_files p2p_files", separated by \\x1f
+  python3 grade.py services       print "name<TAB>kind<TAB>health_cmd" per service (kind: app = harbor-svc deploy)
+  python3 grade.py excludes REPO  print the repo's test dirs (test.sh resets them to the base tree)
 
-CSF_LOG_DIR / CSF_TESTS_DIR override /logs/verifier and /tests (used by the exporter's own tests).
+CSF_LOG_DIR / CSF_TESTS_DIR / CSF_APP_DIR override /logs/verifier, /tests and /app.
 """
 
 import json
@@ -28,7 +31,8 @@ from pathlib import Path
 
 LOG = Path(os.environ.get("CSF_LOG_DIR", "/logs/verifier"))
 TESTS = Path(os.environ.get("CSF_TESTS_DIR", "/tests"))
-GROUPS = ("f2p", "p2p")
+APP = Path(os.environ.get("CSF_APP_DIR", "/app"))
+BUCKETS = ("deploy", "f2p", "p2p")
 
 _PYTEST = re.compile(r"^(PASSED|FAILED|ERROR)\s+(\S+)")
 _CARGO = re.compile(r"^test (\S+) \.\.\. (ok|FAILED)")
@@ -106,54 +110,89 @@ PARSERS = {
 }
 
 
-def load_suites():
-    return json.loads((TESTS / "suites.json").read_text(encoding="utf-8"))["suites"]
+def _glob_re(pattern):
+    out, i = "", 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif pattern.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif pattern[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        else:
+            out, i = out + re.escape(pattern[i]), i + 1
+    return re.compile(out + r"\Z")
 
 
-def contract_only_repos():
-    return sorted(json.loads((TESTS / "suites.json").read_text(encoding="utf-8")).get("contract_only", {}))
+def test_dirs(repo, patterns, app=None):
+    """Concrete test directories of a repo for its test_excludes patterns (``tests/*``, ``**/tests/**``): every
+    directory, in the agent's tree or in the base tree, whose files the pattern covers. Outermost only."""
+    import subprocess
+
+    dirs = set()
+    root = (app or APP) / repo
+    skip = {".git", "target", "node_modules", "__pycache__", ".venv", ".pytest_cache"}
+    for cur, subdirs, _ in os.walk(root):
+        subdirs[:] = [d for d in subdirs if d not in skip]
+        dirs |= {(Path(cur) / d).relative_to(root).as_posix() for d in subdirs}
+    base = subprocess.run(["git", f"--git-dir=/opt/csf/base/{repo}.git", "ls-tree", "-r", "-d", "--name-only", "HEAD"],
+                          capture_output=True, text=True)
+    dirs |= set(base.stdout.split())
+    out = set()
+    for pattern in patterns:
+        stem = pattern
+        for suffix in ("/**", "/*"):
+            stem = stem.removesuffix(suffix)
+        rx = _glob_re(stem)
+        out |= {d for d in dirs if rx.match(d)}
+    return sorted(d for d in out if not any(d.startswith(o + "/") for o in out))
 
 
-def grade_group(repo, group, suite):
-    """Tests of one repo/group, or None if test.sh did not run it (empty list)."""
+def suite():
+    return json.loads((TESTS / "suite.json").read_text(encoding="utf-8"))
+
+
+def run_results(repo, group, s):
+    """Test results of one repo/group run, or {} if test.sh did not run it. A run that exits non-zero without any
+    failing test (a build or collection error) adds the failed id ``<repo>::<group>:exit-code-<rc>``."""
     rc_path = LOG / f"{repo}.{group}.rc"
     if not rc_path.exists():
-        return None
+        return {}
     rc = int(rc_path.read_text().strip() or 1)
     log_path = LOG / f"{repo}.{group}.log"
     text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
-    tests = [(f"{repo}::{tid}", status) for tid, status in PARSERS[suite.get("parser", "exit-code")](text)]
-    if rc != 0 and not any(s == "failed" for _, s in tests):
-        tests.append((f"{repo}::{group}:exit-code-{rc}", "failed"))
-    if rc == 0 and not tests:
-        tests.append((f"{repo}::{group}", "passed" if suite.get("parser", "exit-code") == "exit-code" else "failed"))
-    return tests
+    out = {f"{repo}::{tid}": status for tid, status in PARSERS[s.get("parser", "exit-code")](text)}
+    if rc != 0 and "failed" not in out.values():
+        out[f"{repo}::{group}:exit-code-{rc}"] = "failed"
+    if rc == 0 and not out and s.get("parser", "exit-code") == "exit-code":
+        out[f"{repo}::{group}"] = "passed"
+    return out
 
 
-def load_ids():
-    """Curated test ids of this step (tests/ids.json: {"f2p": [...], "p2p": [...]}), or None for file-level grading."""
-    path = TESTS / "ids.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+def deploy_status(service):
+    rc = LOG / f"deploy.{service}.rc"
+    return "passed" if rc.exists() and rc.read_text().strip() == "0" else "failed"
 
 
-def write(rewards, tests, notes):
+def write(rewards, checks, notes):
     LOG.mkdir(parents=True, exist_ok=True)
     (LOG / "reward.json").write_text(json.dumps(rewards, sort_keys=True), encoding="utf-8")
+    (LOG / "checks.json").write_text(json.dumps(checks, indent=1), encoding="utf-8")
     counts = {}
-    for t in tests:
-        counts[t["status"]] = counts.get(t["status"], 0) + 1
+    for c in checks:
+        counts[c["status"]] = counts.get(c["status"], 0) + 1
     ctrf = {
         "results": {
             "tool": {"name": "csf-grade"},
             "summary": {
-                "tests": len(tests),
+                "tests": len(checks),
                 "passed": counts.get("passed", 0),
                 "failed": counts.get("failed", 0),
                 "skipped": 0,
                 "pending": 0,
                 "other": 0,
             },
-            "tests": tests,
+            "tests": [{"name": c["id"], "status": c["status"], "suite": c["bucket"], "repo": c["repo"]} for c in checks],
         }
     }
     (LOG / "ctrf.json").write_text(json.dumps(ctrf, indent=2), encoding="utf-8")
@@ -163,63 +202,68 @@ def write(rewards, tests, notes):
 
 
 def grade():
-    rewards = {}
-    tests = []
-    notes = []
-    totals = {g: [0, 0] for g in GROUPS}
-    ids = load_ids()
-    seen = {}  # repo -> {group: {id: status}}
-    for suite in load_suites():
-        repo = suite["repo"]
-        for group in GROUPS:
-            seen.setdefault(repo, {})[group] = dict(grade_group(repo, group, suite) or [])
-    for suite in load_suites():
-        repo = suite["repo"]
-        for group in GROUPS:
-            got = seen[repo][group]
-            if ids is None:
-                res = list(got.items())
-            else:
-                # curated: exactly the listed ids of this repo, from the run of any group (a test is one test)
-                pool = {**seen[repo]["p2p"], **seen[repo]["f2p"]}
-                res = [(i, pool.get(i, "failed")) for i in ids.get(group, []) if i.startswith(f"{repo}::")]
-            passed = sum(1 for _, s in res if s == "passed")
-            rewards[f"{group}_total__{repo}"] = len(res)
-            rewards[f"{group}_passed__{repo}"] = passed
-            totals[group][0] += len(res)
-            totals[group][1] += passed
-            tests.extend({"name": name, "status": status, "suite": group, "repo": repo} for name, status in res)
-            if passed != len(res):
-                notes.append(f"{repo} {group}: {len(res) - passed} failed")
-    ok = totals["f2p"][0] > 0 and totals["f2p"][0] == totals["f2p"][1] and totals["p2p"][0] == totals["p2p"][1]
-    if totals["f2p"][0] == 0:
-        notes.append("no F2P test ran")
-    rewards.update(
-        reward=1 if ok else 0,
-        f2p_total=totals["f2p"][0],
-        f2p_passed=totals["f2p"][1],
-        p2p_total=totals["p2p"][0],
-        p2p_passed=totals["p2p"][1],
-    )
-    write(rewards, tests, notes)
+    s = suite()
+    pool = {}  # repo -> {id: status}, from the run of any group (a test is one test)
+    for su in s["suites"]:
+        repo = su["repo"]
+        pool[repo] = {**run_results(repo, "p2p", su), **run_results(repo, "f2p", su)}
+    if "checks" not in s:  # not curated yet: grade by files, every reported test of every run counts
+        listed = [{"id": f"deploy::{sv['name']}", "repo": sv["name"], "bucket": "deploy"}
+                  for sv in s.get("services", [])]
+        for su in s["suites"]:
+            repo = su["repo"]
+            for group in ("f2p", "p2p"):
+                seen = {c["id"] for c in listed}
+                listed += [{"id": i, "repo": repo, "bucket": group} for i in run_results(repo, group, su) if i not in seen]
+        s = {**s, "checks": listed}
+    checks = []
+    for c in s["checks"]:
+        if c["bucket"] == "deploy":
+            status = deploy_status(c["id"].split("::", 1)[1])
+        else:
+            status = pool.get(c["repo"], {}).get(c["id"], "failed")
+        checks.append({**c, "status": status})
+    rewards, notes = {}, []
+    for b in BUCKETS:
+        mine = [c for c in checks if c["bucket"] == b]
+        rewards[f"{b}_total"] = len(mine)
+        rewards[f"{b}_passed"] = sum(c["status"] == "passed" for c in mine)
+        for repo in sorted({c["repo"] for c in mine}):
+            r = [c for c in mine if c["repo"] == repo]
+            rewards[f"{b}_total__{repo}"] = len(r)
+            rewards[f"{b}_passed__{repo}"] = sum(c["status"] == "passed" for c in r)
+            if rewards[f"{b}_passed__{repo}"] != len(r):
+                notes.append(f"{repo} {b}: {len(r) - rewards[f'{b}_passed__{repo}']} failed")
+    ok = rewards["f2p_total"] > 0 and all(c["status"] == "passed" for c in checks)
+    if rewards["f2p_total"] == 0:
+        notes.append("no f2p check in suite.json")
+    rewards["reward"] = 1 if ok else 0
+    write(rewards, checks, notes)
 
 
 def main(argv):
     if argv[:1] == ["--error"]:
-        rewards = {"reward": 0, "f2p_total": 0, "f2p_passed": 0, "p2p_total": 0, "p2p_passed": 0, "verifier_error": 1}
+        rewards = {"reward": 0, "verifier_error": 1, **{f"{b}_{k}": 0 for b in BUCKETS for k in ("total", "passed")}}
         write(rewards, [], [argv[1] if len(argv) > 1 else "verifier error"])
+        return
+    s = suite()
+    if argv[:1] == ["step"]:
+        print(s["step"])
     elif argv[:1] == ["repos"]:
-        print("\n".join([s["repo"] for s in load_suites()] + contract_only_repos()))
+        print("\n".join([su["repo"] for su in s["suites"]] + sorted(s.get("contract_only", {}))))
     elif argv[:1] == ["suites"]:
-        for s in load_suites():
-            print(f"{s['repo']}\t{s.get('workdir', '.')}\t{int(bool(s.get('whole_suite')))}\t{s['run_cmd']}")
+        for su in s["suites"]:
+            f = s["files"].get(su["repo"], {})
+            fields = [su["repo"], su.get("workdir", "."), str(int(bool(su.get("whole_suite")))), su["run_cmd"],
+                      " ".join(f.get("f2p", [])), " ".join(f.get("p2p", []))]
+            print("\x1f".join(fields))  # not a tab: bash read merges empty tab-separated fields
     elif argv[:1] == ["services"]:
-        for sv in json.loads((TESTS / "suites.json").read_text(encoding="utf-8")).get("services", []):
-            print(f"{sv['name']}\t{sv['start']}\t{sv['health']}")
+        for sv in s.get("services", []):
+            print(f"{sv['name']}\t{sv.get('kind', 'app')}\t{sv['health']}")
     elif argv[:1] == ["excludes"]:
-        for s in load_suites():
-            if s["repo"] == argv[1]:
-                print("\n".join(s.get("test_excludes", [])))
+        for su in s["suites"]:
+            if su["repo"] == argv[1]:
+                print("\n".join(test_dirs(argv[1], su.get("test_excludes", []))))
     else:
         grade()
 

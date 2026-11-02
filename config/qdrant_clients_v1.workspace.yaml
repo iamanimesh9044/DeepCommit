@@ -28,6 +28,10 @@ repos:
     repo_src_dirs: [src/]
     test_dirs: ["tests/**"]
     exclude: []
+    csf_suite:
+      run_cmd: cargo test --no-fail-fast --offline
+      whole_suite: true
+      all_tests: tests
   - name: qdrant-client
     owner: qdrant
     repo: qdrant-client
@@ -38,6 +42,51 @@ repos:
     repo_src_dirs: [qdrant_client/]
     test_dirs: ["tests/**"]
     exclude: []
+    csf_suite:
+      # congruence tests compare local mode with the server on random data: a failed test is retried twice
+      run_cmd: python -m pytest -rA -p no:cacheprovider -q --continue-on-collection-errors --timeout=120 --reruns 2 {tests}
+      all_tests: tests
+# CSF export (deepcommit/export/svc_layout.py): the services the clients' tests talk to and the main image's setup.
+csf_services:
+  - name: qdrant-server
+    runtime: {name: qdrant-1.20, dir: csf/runtimes/qdrant-1.20}
+    command: qdrant --disable-telemetry
+    port: 6333
+    health: /healthz
+    env:
+      QDRANT__STORAGE__STORAGE_PATH: /tmp/qdrant/storage
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /tmp/qdrant/snapshots
+      QDRANT__STORAGE__TEMP_PATH: /tmp/qdrant/tmp
+    # the clients default to localhost (QdrantClient(), the Rust doc-tests, the upstream tests)
+    localhost_ports: [6333, 6334]
+csf_environment:
+  apt: [python3, python3-venv, python3-dev, libssl-dev, protobuf-compiler, jq, xz-utils]
+  toolchains: |
+    # Rust toolchain (shared CARGO_HOME so the crates prefetched below serve every later build offline).
+    ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/opt/venv/bin:$PATH
+    RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+
+    # Python environment for qdrant-client (deps of the newest release, a superset of every step's).
+    RUN python3 -m venv /opt/venv \
+     && /opt/venv/bin/pip install --no-cache-dir 'httpx[http2]' numpy 'pydantic>=2.4' grpcio grpcio-tools 'protobuf>=5' \
+          urllib3 portalocker pytest pytest-asyncio pytest-timeout pytest-mock pytest-rerunfailures coverage
+  after_app: |
+    # Prefetch the crates of the base state and of the newest rust-client release, so no step needs the network.
+    RUN cd /app/rust-client && cargo fetch \
+     && git clone -q --depth 1 -b v1.20.0 https://github.com/qdrant/rust-client /tmp/rc-final \
+     && cd /tmp/rc-final && cargo fetch && rm -rf /tmp/rc-final
+
+    # qdrant-client reads its own installed version at import time: install it editable (metadata only).
+    RUN /opt/venv/bin/pip install --no-cache-dir --no-deps -e /app/qdrant-client
+  service_control:
+    app_cpus: 1.0
+    app_memory_mb: 2048
+    deploy_timeout_sec: 180
+    guide: |
+      qdrant-server is the Qdrant server the clients' tests use: the released 1.20.0 binary, not built from /app/qdrant
+      (that folder holds only the .proto contract). Its manifest is /app/qdrant-server/csf-service.toml. Your container
+      forwards localhost:6333 (REST) and localhost:6334 (gRPC) to it. Its storage is in /tmp (tmpfs): a restart or
+      redeploy can leave you an empty server. Grading deploys it from your /app, so keep the manifest valid.
 xrepo:
   pin_files: [Cargo.toml, pyproject.toml]
   link_confidence_threshold: 0.7

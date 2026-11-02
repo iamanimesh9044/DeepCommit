@@ -5,8 +5,8 @@
 #   stages: checkout validate preproc phase2 export finalize gates all
 #
 # Env: MANIFEST (default config/workspace.yaml), TRIAL (default v1), TASK_IMAGE (default csf-task).
-# `all` stops before finalize: the task's environment/Dockerfile (toolchains, dependencies, vendored trees) is completed
-# once per repo set, then `finalize` and `gates` run against the built image.
+# `all` stops before finalize: the task's environment (main image, services) comes from the manifest's csf_environment
+# and csf_services; check environment/Dockerfile for TODO markers, then `finalize` and `gates` run against its stack.
 set -euo pipefail
 cd /work
 MANIFEST=${MANIFEST:?set MANIFEST to a config/<workspace>.workspace.yaml}

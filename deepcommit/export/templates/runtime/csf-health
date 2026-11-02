@@ -1,0 +1,18 @@
+#!/bin/sh
+# csf-health: the healthcheck of every app service on this runtime.
+#
+# CSF_HEALTH="/path"  HTTP GET http://127.0.0.1:$CSF_PORT/path, healthy on 2xx
+# CSF_HEALTH="tcp"    a TCP connection to 127.0.0.1:$CSF_PORT
+# no CSF_HEALTH       a TCP connection when CSF_PORT is set, else "csf-run's child is alive"
+#
+# Exit 0 means healthy. Writes nothing, so it works on a read-only root filesystem.
+port=${CSF_PORT:-}
+health=${CSF_HEALTH:-}
+if [ -z "$port" ]; then
+  [ -r /tmp/csf-run/pid ] && kill -0 "$(cat /tmp/csf-run/pid)" 2>/dev/null
+  exit $?
+fi
+case "$health" in
+  /*) exec curl -fsS -o /dev/null --max-time 3 "http://127.0.0.1:$port$health" ;;
+  *)  exec bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null ;;
+esac

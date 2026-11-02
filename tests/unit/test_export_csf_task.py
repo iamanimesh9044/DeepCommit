@@ -197,27 +197,34 @@ def test_layout(world):
     _, _, _, report = world
     t = report.task_dir
     for rel in (
-        "task.toml", "README.md", "environment/Dockerfile", "environment/csf-collect", "tests/test.sh",
-        "tests/grade.py", "tests/p2p_core.txt", "tests/suites.json",
+        "task.toml", "README.md", "instruction.md", "environment/Dockerfile", "environment/docker-compose.yaml",
+        "environment/app/proto/api/schema.proto", "environment/app/sdk-a/sdk_a/client.py", "environment/app/sdk-b/src/lib.rs",
     ):  # fmt: skip
         assert (t / rel).is_file(), rel
+    assert not (t / "tests").exists() and not (t / "environment/csf-collect").exists()
+    assert not (t / "environment/base.patch").exists()
     names = [d.name for d in sorted((t / "steps").iterdir())]
     assert names == STEPS
     for n in names:
-        for rel in ("instruction.md", "solution/solve.sh", "tests/step.env"):
+        for rel in ("instruction.md", "solution/solve.sh", "solution/gold.patch", "tests/test.sh", "tests/grade.py",
+                    "tests/suite.json"):  # fmt: skip
             assert (t / "steps" / n / rel).is_file(), (n, rel)
-    assert sorted(p.name for p in (t / "steps/m1-add-id-field/solution/gold").iterdir()) == [
-        "proto.patch",
-        "sdk-a.patch",
-    ]
-    assert b"pub const X: u32 = 2;" in (t / "environment" / "base.patch").read_bytes()  # b0 is background
-    assert "source=base.patch" in (t / "environment" / "Dockerfile").read_text()
+    gold = (t / "steps/m1-add-id-field/solution/gold.patch").read_text()
+    assert {line.split()[2].split("/")[1] for line in gold.splitlines() if line.startswith("diff --git")} == {
+        "proto", "sdk-a"
+    }  # fmt: skip
+    # b0 is background: in the starting code
+    assert (t / "environment/app/sdk-b/src/lib.rs").read_text() == "pub const X: u32 = 2;\n"
+    assert "COPY app/ /app/" in (t / "environment" / "Dockerfile").read_text()
     src = report.src_dir
     assert src == t.parent.parent / "_src" / "csf-toy-001"
     for rel in (
         "milestones.csv",
         "render.py",
         "steps.json",
+        "suites.json",
+        "runner/test.sh",
+        "runner/grade.py",
         "instructions/_context.md",
         "gold/m1-add-id-field/proto.patch",
     ):
@@ -240,24 +247,28 @@ def test_task_toml(world):
     assert all(len(r["commit"]) == 40 and r["url"].startswith("https://github.com/acme/") for r in m["source_repos"])
     assert m["csf_milestone_dag"] == "m1 -> m2; m1 -> m3; m4; m5"
     assert d["environment"]["workdir"] == "/app" and d["verifier"]["environment_mode"] == "separate"
-    assert d["verifier"]["collect"] == [{"command": "csf-collect", "timeout_sec": 300}]
+    assert "collect" not in d["verifier"]
+    (art,) = d["artifacts"]
+    assert art["source"] == "/app" and art["required"] and "sdk-b/target" in art["exclude"]
     assert [s["name"] for s in d["steps"]] == STEPS
+    assert all(s["verifier"] == {"environment_mode": "separate", "env": {"CSF_STEP": s["name"]}} for s in d["steps"])
+    assert [c["step"] for c in m["milestone_cards"]] == STEPS and m["milestone_cards"][0]["milestones"] == ["M01"]
+    assert "service_control" not in d["environment"]  # the toy workspace declares no services
 
 
 def test_gold_applies_in_sequence_and_hidden_split(world, tmp_path):
+    import shutil
+
     root, _, _, report = world
     t = report.task_dir
-    work = {}
-    for repo in ("proto", "sdk-a", "sdk-b"):
-        work[repo] = tmp_path / repo
-        git(tmp_path, "clone", "-q", str(root / "DATA/github_data/repos" / f"acme_{repo}"), str(work[repo]))
-        git(work[repo], "checkout", "-q", "v1")
-    git(tmp_path, "apply", str(t / "environment" / "base.patch"))  # rooted at /app: a/<repo>/...
+    app = tmp_path / "app"
+    shutil.copytree(t / "environment/app", app)  # the starting code, rooted at /app
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}
     for step in sorted((t / "steps").iterdir()):
-        for patch in sorted((step / "solution" / "gold").glob("*.patch")):
-            repo = patch.stem
-            git(work[repo], "apply", "--check", str(patch))
-            git(work[repo], "apply", str(patch))
+        patch = step / "solution" / "gold.patch"
+        subprocess.run(["git", "apply", "--check", str(patch)], cwd=app, env=env, check=True)
+        subprocess.run(["git", "apply", str(patch)], cwd=app, env=env, check=True)
+    work = {r: app / r for r in ("proto", "sdk-a", "sdk-b")}
     assert (work["proto"] / "api/schema.proto").read_text() == "message A {\n  int32 id = 1;\n}\n"
     assert (work["proto"] / "api/extra.proto").exists()
     assert (work["sdk-a"] / "sdk_a/late.py").exists()
@@ -265,39 +276,32 @@ def test_gold_applies_in_sequence_and_hidden_split(world, tmp_path):
     assert (work["sdk-a"] / "sdk_a/client.py").read_text() == "VALUE = 3\n"
     assert (work["sdk-a"] / "sdk_a/more.py").read_text() == "MORE = 2\n"  # M06 background + M07 gold
     assert (work["sdk-b"] / "src/feature.rs").exists() and not (work["sdk-b"] / "src/other.rs").exists()
-    assert (work["sdk-b"] / "src/lib.rs").read_text() == "pub const X: u32 = 9\n".replace("9\n", "9;\n")
+    assert (work["sdk-b"] / "src/lib.rs").read_text() == "pub const X: u32 = 9;\n"
     assert (work["sdk-b"] / "src/newmod.rs").read_text() == "pub fn n2() {}\n"  # b4 attached to M05
     # no gold patch touches a test dir, and the gold-applied trees hold none of the hidden tests
     assert (
         not (work["sdk-a"] / "tests/test_client.py").exists() and not (work["proto"] / "tests/test_proto.py").exists()
     )
-    for patch in t.glob("steps/*/solution/gold/*.patch"):
-        assert "tests/" not in "".join(
-            line for line in patch.read_text().splitlines(True) if line.startswith("diff --git")
-        )
+    for patch in t.glob("steps/*/solution/gold.patch"):
+        heads = [line for line in patch.read_text().splitlines() if line.startswith("diff --git")]
+        assert all("/tests/" not in h for h in heads)
     # hidden tests: own step plus everything earlier (cumulative)
     s1, s2, s3, s4, s5 = (t / "steps" / n / "tests" for n in STEPS)
-    assert (s1 / "hidden/sdk-a/tests/test_client.py").read_text() == "def test_c(): assert True\n"
-    assert not (s1 / "hidden/proto").exists()
-    assert (s2 / "hidden/sdk-b/tests/feature.rs").exists() and (s2 / "hidden/sdk-a/tests/test_client.py").exists()
-    assert (s3 / "hidden/proto/tests/test_proto.py").exists()
-    assert (s4 / "hidden/sdk-b/tests/y.rs").exists() and not (s4 / "hidden/sdk-b/tests/x.rs").exists()
-    assert (s5 / "hidden/sdk-a/tests/test_late.py").exists() and (s5 / "hidden/proto/tests/test_proto.py").exists()
-    # base tree (the start tag) has none of the hidden-only test files
-    for repo, rel in (
-        ("sdk-a", "tests/test_client.py"),
-        ("sdk-b", "tests/feature.rs"),
-        ("proto", "tests/test_proto.py"),
-    ):
-        res = subprocess.run(
-            ["git", "cat-file", "-e", f"v1:{rel}"], cwd=root / "DATA/github_data/repos" / f"acme_{repo}"
-        )
-        assert res.returncode != 0
-    env = dict(line.split("=", 1) for line in (s5 / "step.env").read_text().splitlines())
-    assert env["STEP"] == STEPS[4] and env["F2P_SDK_A"] == "'tests/test_late.py'"
-    assert env["P2P_EARLIER_SDK_A"] == "'tests/test_client.py'" and env["P2P_EARLIER_PROTO"] == "'tests/test_proto.py'"
-    assert env["P2P_EARLIER_SDK_B"] == "'tests/feature.rs tests/y.rs'"
-    suites = {s["repo"]: s for s in json.loads((t / "tests/suites.json").read_text())["suites"]}
+    assert (s1 / "checks/sdk-a/tests/test_client.py").read_text() == "def test_c(): assert True\n"
+    assert not (s1 / "checks/proto").exists()
+    assert (s2 / "checks/sdk-b/tests/feature.rs").exists() and (s2 / "checks/sdk-a/tests/test_client.py").exists()
+    assert (s3 / "checks/proto/tests/test_proto.py").exists()
+    assert (s4 / "checks/sdk-b/tests/y.rs").exists() and not (s4 / "checks/sdk-b/tests/x.rs").exists()
+    assert (s5 / "checks/sdk-a/tests/test_late.py").exists() and (s5 / "checks/proto/tests/test_proto.py").exists()
+    # the starting code has none of the hidden-only test files
+    for rel in ("sdk-a/tests/test_client.py", "sdk-b/tests/feature.rs", "proto/tests/test_proto.py"):
+        assert not (t / "environment/app" / rel).exists()
+    suite = json.loads((s5 / "suite.json").read_text())
+    assert suite["step"] == STEPS[4] and suite["own_files"] == {"sdk-a": ["tests/test_late.py"]}
+    assert suite["files"]["sdk-a"] == {"f2p": ["tests/test_late.py"], "p2p": ["tests/test_client.py"]}
+    assert suite["files"]["proto"]["p2p"] == ["tests/test_proto.py"]
+    assert suite["files"]["sdk-b"]["p2p"] == ["tests/feature.rs", "tests/y.rs"]
+    suites = {s["repo"]: s for s in suite["suites"]}
     assert suites["sdk-b"]["parser"] == "cargo" and suites["sdk-a"]["parser"] == "pytest"
     assert suites["proto"]["language"] == "unknown"
 
@@ -314,38 +318,39 @@ def test_instructions(world):
 def test_scripts_are_executable_and_lint_clean(world):
     _, _, _, report = world
     t = report.task_dir
-    scripts = [t / "environment/csf-collect", t / "tests/test.sh", *t.glob("steps/*/solution/solve.sh")]
+    scripts = [*t.glob("steps/*/tests/test.sh"), *t.glob("steps/*/solution/solve.sh")]
     for s in scripts:
         assert os.access(s, os.X_OK), s
         assert subprocess.run(["bash", "-n", str(s)], capture_output=True).returncode == 0, s
     assert (report.src_dir / "render.py").stat().st_mode & 0o111
     first = (t / "environment/Dockerfile").read_text()
-    assert first.count("git clone") == 3 and "/opt/csf/base" in first and "COPY csf-collect" in first
+    assert "git clone" not in first and "/opt/csf/base" in first and "COPY app/ /app/" in first
+    assert "TODO toolchains" in first  # the toy manifest has no csf_environment
 
 
-def run_grade(task: Path, logs: Path, *args: str):
-    env = {**os.environ, "CSF_LOG_DIR": str(logs), "CSF_TESTS_DIR": str(task / "tests")}
-    subprocess.run([sys.executable, str(task / "tests/grade.py"), *args], env=env, check=True, capture_output=True)
+def run_grade(tests: Path, logs: Path, *args: str):
+    env = {**os.environ, "CSF_LOG_DIR": str(logs), "CSF_TESTS_DIR": str(tests)}
+    subprocess.run([sys.executable, str(tests / "grade.py"), *args], env=env, check=True, capture_output=True)
     return json.loads((logs / "reward.json").read_text())
 
 
 def test_grader_emits_reward_keys(world, tmp_path):
     _, _, _, report = world
-    task = report.task_dir
+    tests = report.task_dir / "steps" / STEPS[4] / "tests"  # not curated: graded by files
     logs = tmp_path / "ok"
     logs.mkdir()
     (logs / "sdk-b.f2p.log").write_text("test a ... ok\ntest b ... ok\n")
     (logs / "sdk-b.f2p.rc").write_text("0\n")
     (logs / "sdk-a.p2p.log").write_text("PASSED tests/test_client.py::test_c\nSKIPPED x\n")
     (logs / "sdk-a.p2p.rc").write_text("0\n")
-    r = run_grade(task, logs)
-    expected = {"reward", "f2p_total", "f2p_passed", "p2p_total", "p2p_passed"} | {
-        f"{g}_{k}__{repo}" for g in ("f2p", "p2p") for k in ("total", "passed") for repo in ("proto", "sdk-a", "sdk-b")
-    }
+    r = run_grade(tests, logs)
+    expected = {"reward"} | {f"{b}_{k}" for b in ("deploy", "f2p", "p2p") for k in ("total", "passed")}
+    expected |= {"f2p_total__sdk-b", "f2p_passed__sdk-b", "p2p_total__sdk-a", "p2p_passed__sdk-a"}
     assert set(r) == expected
     assert (r["reward"], r["f2p_total"], r["f2p_passed"], r["p2p_total"], r["p2p_passed"]) == (1, 2, 2, 1, 1)
-    assert r["f2p_total__sdk-b"] == 2 and r["p2p_total__sdk-a"] == 1
     assert json.loads((logs / "ctrf.json").read_text())["results"]["summary"]["tests"] == 3
+    checks = json.loads((logs / "checks.json").read_text())
+    assert {c["bucket"] for c in checks} == {"f2p", "p2p"}
 
     bad = tmp_path / "bad"
     bad.mkdir()
@@ -353,32 +358,33 @@ def test_grader_emits_reward_keys(world, tmp_path):
     (bad / "sdk-b.f2p.rc").write_text("101\n")
     (bad / "sdk-a.p2p.log").write_text("PASSED t::x\n")
     (bad / "sdk-a.p2p.rc").write_text("0\n")
-    r = run_grade(task, bad)
+    r = run_grade(tests, bad)
     assert (r["reward"], r["f2p_total"], r["f2p_passed"]) == (0, 2, 1)
 
     none = tmp_path / "none"
     none.mkdir()
-    assert run_grade(task, none)["reward"] == 0
+    assert run_grade(tests, none)["reward"] == 0
     err = tmp_path / "err"
     err.mkdir()
-    r = run_grade(task, err, "--error", "boom")
+    r = run_grade(tests, err, "--error", "boom")
     assert r["reward"] == 0 and r["verifier_error"] == 1
 
 
-def test_verify_helpers_print(world):
+def test_verify_helpers_print(world, tmp_path):
     _, _, _, report = world
-    env = {**os.environ, "CSF_TESTS_DIR": str(report.task_dir / "tests")}
+    tests = report.task_dir / "steps" / STEPS[0] / "tests"
+    (tmp_path / "sdk-a/tests/unit").mkdir(parents=True)
+    env = {**os.environ, "CSF_TESTS_DIR": str(tests), "CSF_APP_DIR": str(tmp_path)}
     out = subprocess.run(
-        [sys.executable, str(report.task_dir / "tests/grade.py"), "excludes", "sdk-a"],
-        env=env,
-        capture_output=True,
-        text=True,
+        [sys.executable, str(tests / "grade.py"), "excludes", "sdk-a"], env=env, capture_output=True, text=True
     ).stdout.split()
-    assert "tests/*" in out
+    assert out == ["tests"]  # "tests/**" expanded to the concrete directory, outermost only
     suites = subprocess.run(
-        [sys.executable, str(report.task_dir / "tests/grade.py"), "suites"], env=env, capture_output=True, text=True
+        [sys.executable, str(tests / "grade.py"), "suites"], env=env, capture_output=True, text=True
     ).stdout.splitlines()
-    assert len(suites) == 3 and suites[1].split("\t")[0] == "sdk-a"
+    assert len(suites) == 3 and suites[1].split("\x1f")[0] == "sdk-a"
+    step = subprocess.run([sys.executable, str(tests / "grade.py"), "step"], env=env, capture_output=True, text=True)
+    assert step.stdout.strip() == STEPS[0]
 
 
 def test_export_is_deterministic_and_render_reproduces_steps(world, tmp_path):
@@ -569,46 +575,47 @@ def test_contract_only_manifest_validation():
         parse_workspace(data)
 
 
+def _gold_repos(patch: Path) -> list:
+    return sorted({ln.split()[2].split("/")[1] for ln in patch.read_text().splitlines() if ln.startswith("diff --git")})
+
+
 def test_contract_only_steps_and_gold(cworld, tmp_path):
+    import shutil
+
     root, _, report = cworld
     sha = json.loads((root / "sha.json").read_text())
     s = by_mid(report)
     assert [s[m]["status"] for m in ("M01", "M02", "M03")] == ["built"] * 3
     t = report.task_dir
-    gold = {
-        n: sorted(p.name for p in (t / "steps" / n / "solution/gold").iterdir())
-        for n in (d.name for d in (t / "steps").iterdir())
-    }
-    assert gold["m1-contract-id"] == ["api.patch", "cl-a.patch"]  # cross-repo
-    assert gold["m2-client-only"] == ["cl-b.patch"]  # nothing new on the contract
-    assert gold["m3-contract-and-b"] == ["api.patch", "cl-b.patch"]
-    for patch in t.glob("steps/*/solution/gold/api.patch"):
+    gold = {d.name: _gold_repos(d / "solution/gold.patch") for d in (t / "steps").iterdir()}
+    assert gold["m1-contract-id"] == ["api", "cl-a"]  # cross-repo
+    assert gold["m2-client-only"] == ["cl-b"]  # nothing new on the contract
+    assert gold["m3-contract-and-b"] == ["api", "cl-b"]
+    for patch in t.glob("steps/*/solution/gold.patch"):
         text = patch.read_text()
-        assert "src/server.rs" not in text and "proto/" in text
+        assert "api/src/server.rs" not in text
     # the commit that no milestone owns lands in the gold of the step whose prefix includes it
     assert s["M01"]["contract_background"] == []
     assert s["M03"]["contract_background"] == [{"repo": "api", "commit": sha["s3"], "files": ["proto/bg.proto"]}]
-    assert "proto/bg.proto" in (t / "steps/m3-contract-and-b/solution/gold/api.patch").read_text()
+    assert "api/proto/bg.proto" in (t / "steps/m3-contract-and-b/solution/gold.patch").read_text()
     assert (
         report.background["api"]["mode"] == "contract-only"
         and report.background["api"]["contract_background_commits"] == 1
     )
-    assert not list(t.glob("steps/*/tests/hidden/api"))
-    # gold applies in sequence onto the sparse base (the start tree restricted to the contract paths + base.patch)
-    work = tmp_path / "api"
-    git(tmp_path, "clone", "-q", str(root / "DATA/github_data/repos/acme_api"), str(work))
-    git(work, "checkout", "-q", "v1")
-    for f in ("src/server.rs", "tests/t.rs", "LICENSE"):
-        (work / f).unlink()
-    git(tmp_path, "apply", "--include=api/*", str(t / "environment/base.patch"))  # rooted at /app: a/api/...
-    assert (work / "proto/old.proto").read_text() == "old\n"  # older background contract change is in the base
-    for n in ("m1-contract-id", "m3-contract-and-b"):
-        patch = t / "steps" / n / "solution/gold/api.patch"
-        git(work, "apply", "--check", str(patch))
-        git(work, "apply", str(patch))
-    assert (work / "proto/svc.proto").read_text() == "v3\n" and (work / "proto/bg.proto").read_text() == "bg\n"
-    assert sorted(p.name for p in (work / "proto").iterdir()) == ["bg.proto", "old.proto", "svc.proto"]
-    assert "old.proto" not in (t / "steps/m1-contract-id/solution/gold/api.patch").read_text()
+    assert not list(t.glob("steps/*/tests/checks/api"))
+    # the sparse starting code: the contract paths only, the older background contract change included
+    base = t / "environment/app/api"
+    assert sorted(str(p.relative_to(base)) for p in base.rglob("*") if p.is_file()) == ["proto/old.proto", "proto/svc.proto"]
+    assert (base / "proto/svc.proto").read_text() == "v1\n"
+    # gold applies in sequence onto it
+    app = tmp_path / "app"
+    shutil.copytree(t / "environment/app", app)
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(tmp_path)}
+    for n in ("m1-contract-id", "m2-client-only", "m3-contract-and-b"):
+        subprocess.run(["git", "apply", str(t / "steps" / n / "solution/gold.patch")], cwd=app, env=env, check=True)
+    assert (app / "api/proto/svc.proto").read_text() == "v3\n" and (app / "api/proto/bg.proto").read_text() == "bg\n"
+    assert sorted(p.name for p in (app / "api/proto").iterdir()) == ["bg.proto", "old.proto", "svc.proto"]
+    assert "old.proto" not in (t / "steps/m1-contract-id/solution/gold.patch").read_text()
     bg = report.background["api"]
     assert bg["contract_base_commit"] == sha["s0"] and bg["contract_base_background_commits"] == 1
     assert s["M03"]["contract_background_count"] == 1 and "contract_gold_large" not in s["M03"]
@@ -631,20 +638,20 @@ def test_contract_only_task_files_and_checker(cworld):
     toml = tomllib.loads((t / "task.toml").read_text())
     assert toml["metadata"]["contract_only_repos"] == ["api"]
     assert toml["metadata"]["repo_roles"]["api"] == "contract" and toml["metadata"]["repos"] == ["api", "cl-a", "cl-b"]
-    suites = json.loads((t / "tests/suites.json").read_text())
+    tests = t / "steps/m1-contract-id/tests"
+    suites = json.loads((tests / "suite.json").read_text())
     assert [x["repo"] for x in suites["suites"]] == ["cl-a", "cl-b"]
     assert suites["contract_only"]["api"]["mode"] == "contract-only"
-    assert "api" in (t / "environment/csf-collect").read_text().split("for repo in")[1].split(";")[0].split()
-    assert "git ls-files -z -- ':(glob)proto/**/*.proto'" in (t / "environment/Dockerfile").read_text()
+    assert "for repo in api cl-a cl-b" in (t / "environment/Dockerfile").read_text()
     inst = (t / "steps/m1-contract-id/instruction.md").read_text()
     assert "`proto/svc.proto`" in inst and "tools/generate_grpc_client.sh" in inst and "diff --git" not in inst
     assert "sparse checkout" in inst
     assert "contract-only" in (t / "README.md").read_text()
     assert report.check.ok, report.check.format()  # >= 1 cross-repo step, no suite needed for the contract repo
-    env = {"CSF_TESTS_DIR": str(t / "tests"), **os.environ}
-    out = subprocess.run([sys.executable, str(t / "tests/grade.py"), "repos"], env=env, capture_output=True, text=True)
+    env = {**os.environ, "CSF_TESTS_DIR": str(tests)}
+    out = subprocess.run([sys.executable, str(tests / "grade.py"), "repos"], env=env, capture_output=True, text=True)
     assert out.stdout.split() == ["cl-a", "cl-b", "api"]
-    out = subprocess.run([sys.executable, str(t / "tests/grade.py"), "suites"], env=env, capture_output=True, text=True)
+    out = subprocess.run([sys.executable, str(tests / "grade.py"), "suites"], env=env, capture_output=True, text=True)
     assert len(out.stdout.splitlines()) == 2
 
 
@@ -751,12 +758,12 @@ def test_split_commits_are_applied_as_their_chain(tmp_path):
     assert s["M01_sub-01"]["status"] == "built" and s["M02"]["status"] == "built"
     # sub-02 has no tests of its own: background, so it is in the base, not a step
     assert s["M01_sub-02"]["status"] == "background"
-    assert b"lib_/b.py" in (report.task_dir / "environment/base.patch").read_bytes()
     t = report.task_dir
-    gold = (t / "steps/m1-first-half/solution/gold/lib.patch").read_text()
-    assert "lib_/a.py" in gold and "lib_/b.py" not in gold and "tests/" not in gold
+    assert (t / "environment/app/lib/lib_/b.py").read_text() == "B = 1\n"
+    gold = (t / "steps/m1-first-half/solution/gold.patch").read_text()
+    assert "lib/lib_/a.py" in gold and "lib_/b.py" not in gold and "tests/" not in gold
     # the integration-test commit supplies the hidden test
-    assert (t / "steps/m1-first-half/tests/hidden/lib/tests/test_ab.py").exists()
+    assert (t / "steps/m1-first-half/tests/checks/lib/tests/test_ab.py").exists()
     (sp,) = report.splits
     assert sp["union_ok"] and sp["original"] == info["orig"] and len(sp["chain"]) == 3
     (rec,) = s["M01_sub-01"]["split_commits"]

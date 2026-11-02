@@ -16,7 +16,6 @@ import csv
 import json
 import os
 import re
-import shlex
 import shutil
 import stat
 import string
@@ -33,6 +32,8 @@ import yaml
 from deepcommit.harness.utils.src_filter import SrcFileFilter
 from deepcommit.multirepo.merge import preprocessed_path, repo_checkout_path, workspace_dir
 from deepcommit.multirepo.workspace import RepoSpec, Workspace, load_workspace
+
+from . import svc_layout
 
 TEMPLATES = Path(__file__).parent / "templates"
 RENAME_THRESHOLD = 20
@@ -482,53 +483,47 @@ def _write(path: Path, data: str | bytes, executable: bool = False) -> None:
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-BASE_PATCH_BLOCK = """# Background commits (history that no step owns) are part of the base state. The patch is bind-mounted for this one
-# step, so it never lands in an image layer the agent could read.
-RUN --mount=type=bind,source=base.patch,target=/tmp/csf/base.patch \\
-    cd /app && git apply --whitespace=nowarn /tmp/csf/base.patch
-"""
-
-
-def _sparse_block(contract_only: Dict[str, List[str]]) -> str:
-    out = []
-    for name, paths in sorted(contract_only.items()):
-        keep = " ".join(shlex.quote(f":(glob){p}") for p in paths)
-        out.append(
-            f"# {name} is contract-only: keep just the files matching its contract paths.\n"
-            f"RUN cd /app/{name} \\\n"
-            f" && git ls-files -z -- {keep} | sort -z > /tmp/keep.txt \\\n"
-            " && git ls-files -z | sort -z > /tmp/all.txt \\\n"
-            " && comm -z -23 /tmp/all.txt /tmp/keep.txt | xargs -0 -r rm -f \\\n"
-            " && find . -type d -empty -not -path './.git/*' -delete \\\n"
-            " && rm -f /tmp/keep.txt /tmp/all.txt\n"
-        )
-    return "\n".join(out)
-
-
-def _render_dockerfile(
-    task_id: str,
-    repos: List[Dict[str, Any]],
-    languages: List[str],
-    base_patch: bool,
-    contract_only: Optional[Dict[str, List[str]]] = None,
-) -> str:
-    clone = "\n".join(
-        f"RUN git clone -q {r['url']} /app/{r['name']} \\\n && git -C /app/{r['name']} checkout -q --detach {r['commit']}"
-        for r in repos
-    )
-    names = " ".join(r["name"] for r in repos)
+def _render_dockerfile(task_id: str, repo_names: List[str], languages: List[str], env, services) -> str:
+    """environment/Dockerfile of the service layout (main: the agent's container and the test runner)."""
+    todo_tool = f"# TODO toolchains for: {', '.join(languages)} (e.g. rustup + cargo, a Python venv + pytest, go)."
+    todo_deps = ("# TODO prefetch dependencies and warm the build per repo (cargo fetch/build --tests, pip install -e, "
+                 "go mod download); the run has no network.")
+    forwards = any(s.localhost_ports for s in services)
+    apt = list(env.apt) + (["socat"] if forwards and "socat" not in env.apt else [])
+    app_services = [s.name for s in services if s.kind == "app"]
     return string.Template((TEMPLATES / "Dockerfile.tmpl").read_text(encoding="utf-8")).substitute(
         task_id=task_id,
-        repo_count=len(repos),
-        clone_block=clone,
-        repo_names=names,
-        languages=", ".join(languages),
-        base_patch_block=(_sparse_block(contract_only or {}) + "\n" if contract_only else "")
-        + (BASE_PATCH_BLOCK if base_patch else ""),
+        repo_count=len(repo_names),
+        repo_names=" ".join(repo_names),
+        apt_packages=" ".join(apt),
+        toolchains_block=env.toolchains.strip() or todo_tool,
+        after_app_block=env.after_app.strip() or todo_deps,
+        services_note=(
+            "; the services (" + ", ".join(s.name for s in services) + ") are not here: see docker-compose.yaml"
+            if services else ""
+        ),
+        app_services_note=(", and " + ", ".join(f"{n}/" for n in app_services) + " (app service manifests)"
+                           if app_services else ""),
     )
 
 
-def _context_md(ws: Workspace, suites: Dict[str, Dict[str, Any]]) -> str:
+def _write_tree(dst: Path, repo_dir: Path, rev: str, pathspecs: Optional[List[str]] = None) -> int:
+    """Materialise ``rev``'s tree (optionally only the files matching ``pathspecs``) at ``dst``; returns the file count."""
+    files = None
+    if pathspecs:
+        empty = _git_text(repo_dir, "hash-object", "-t", "tree", "/dev/null")
+        out = _git(repo_dir, "diff", "--name-only", "-z", "--no-renames", empty, rev, "--", *pathspecs).stdout
+        files = [f for f in out.decode("utf-8", "replace").split("\0") if f]
+        if not files:
+            dst.mkdir(parents=True, exist_ok=True)
+            return 0
+    archive = _git(repo_dir, "archive", "--format=tar", rev, *(["--", *files] if files else [])).stdout
+    dst.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["tar", "-x", "-C", str(dst)], input=archive, check=True)
+    return len(files) if files is not None else sum(1 for p in dst.rglob("*") if p.is_file())
+
+
+def _context_md(ws: Workspace, suites: Dict[str, Dict[str, Any]], services=()) -> str:
     rows = [
         f"| `/app/{r.name}` | {r.full_name} | {r.role} | "
         + ("none: contract files only" if r.contract_only else suites[r.name]["framework"])
@@ -555,6 +550,17 @@ def _context_md(ws: Workspace, suites: Dict[str, Dict[str, Any]]) -> str:
         lines.append(
             f"- `{contract[0].name}` is the contract repository: the other repositories consume what it defines."
         )
+    for sv in services:
+        where = (", ".join(f"`localhost:{p}`" for p in sv.localhost_ports) + " (forwarded from your container)"
+                 if sv.localhost_ports else f"`{sv.name}:{sv.port}`" if sv.port else "the app network")
+        if sv.kind == "app":
+            lines.append(
+                f"- `{sv.name}` is a running service (`/app/{sv.name}/csf-service.toml`), reachable at {where}. Manage it "
+                f"with `harbor-svc status|logs|restart|stop|start|deploy {sv.name}`. Grading deploys it from your `/app`, "
+                "so keep its manifest valid."
+            )
+        else:
+            lines.append(f"- `{sv.name}` is infrastructure, reachable at {where} (`harbor-svc status|logs|restart`).")
     for r in ws.repos:
         if r.contract_only:
             lines.append(
@@ -597,67 +603,6 @@ def _step_md(
     return body.rstrip("\n") + "\n\n" + "\n".join(scope) + "\n"
 
 
-def _render_toml(meta: Dict[str, Any]) -> str:
-    ws_repos = meta["source_repos"]
-    contract = next((r for r in ws_repos if r["name"] == meta["contract_repo"]), ws_repos[0])
-    t = [
-        'schema_version = "1.4"',
-        'multi_step_reward_strategy = "mean"',
-        "",
-        "[task]",
-        f"name = {_t('csf/' + meta['slug'])}",
-        'version = "0.1.0"',
-        f"description = {_t(meta['description'])}",
-        f"keywords = {_t(['csf', meta['family'], *meta['languages'], 'multi-repo', 'multi-step'])}",
-        "",
-        "[[task.authors]]",
-        'name = "Deccan AI"',
-        'email = "csf@deccan.ai"',
-        "",
-        "[metadata]",
-        f"family = {_t(meta['family'])}",
-        f"source_repo = {_t(contract['url'])}",
-        f"source_commit = {_t(contract['commit'])}",
-        f"milestones_planned = {meta['planned']}",
-        f"milestones_built = {meta['built']}",
-        f"languages = {_t(meta['languages'])}",
-        f"repos = {_t(meta['repos'])}",
-        "repo_roles = { " + ", ".join(f"{_t(k)} = {_t(v)}" for k, v in meta["repo_roles"].items()) + " }",
-        f"contract_only_repos = {_t(meta['contract_only_repos'])}",
-        "source_repos = [",
-        *[f"  {{ name = {_t(r['name'])}, url = {_t(r['url'])}, commit = {_t(r['commit'])} }}," for r in ws_repos],
-        "]",
-        'csf_task_source = "derived"',
-        f"csf_milestone_dag = {_t(meta['dag'])}",
-    ]
-    if meta["license"]:
-        t.append(f"source_license = {_t(meta['license'])}")
-    t += [
-        "",
-        "[environment]",
-        "build_timeout_sec = 3600",
-        "cpus = 4",
-        "memory_mb = 8192",
-        "storage_mb = 20480",
-        'workdir = "/app"',
-        "",
-        "[agent]",
-        "timeout_sec = 7200",
-        "",
-        "[verifier]",
-        'environment_mode = "separate"',
-        "timeout_sec = 1800",
-        "",
-        "# Runs in the agent's container after each step: writes /logs/artifacts/model.<repo>.patch for every repo.",
-        "[[verifier.collect]]",
-        'command = "csf-collect"',
-        "timeout_sec = 300",
-    ]
-    for name in meta["step_names"]:
-        t += ["", "[[steps]]", f"name = {_t(name)}"]
-    return "\n".join(t) + "\n"
-
-
 def _render_readme(task_id: str, ws: Workspace, report: ExportReport, bases: Dict[str, str], dag: str) -> str:
     rows = [
         "| # | Step | Milestone | Repos | Gold files | Hidden test files | Status |",
@@ -686,8 +631,8 @@ def _render_readme(task_id: str, ws: Workspace, report: ExportReport, bases: Dic
                 "those paths, at the newest commit (history order) among the commits of steps 1..k, so older commits' "
                 "contract changes land in the gold of the first step whose prefix includes them (`contract_background` in "
                 "`_src/export_report.json`). Nothing is cherry-picked, tests of that repo are never exported, and it has "
-                "no entry in `tests/suites.json` (only a `contract_only` record). `csf-collect` still collects it, so "
-                "contract edits by the agent are applied in the verifier before the clients' suites run."
+                "no suite (only a `contract_only` record in each step's `suite.json`). It is part of the graded `/app` "
+                "like any other repo, so contract edits by the agent are in place before the clients' suites run."
                 for r in contract_only
             ],
             "",
@@ -721,20 +666,20 @@ def _render_readme(task_id: str, ws: Workspace, report: ExportReport, bases: Dic
             *sparse,
             "## How grading works",
             "",
-            "1. `csf-collect` (agent container, after each step) diffs every `/app/<repo>` against `/opt/csf/base/<repo>.git` "
-            "and writes `/logs/artifacts/model.<repo>.patch`.",
-            "2. `tests/test.sh` (clean verifier container) applies each patch to the base tree, drops changes under the "
-            "repo's test dirs, copies `tests/hidden/<repo>/` over, runs each repo's suites from `tests/suites.json`, "
-            "then `tests/grade.py` merges the results (ids are `<repo>::<id>`).",
-            "3. `reward.json`: `reward` is 1 only if every F2P and every P2P test of every repo passed; it also has "
-            "`f2p_total`, `f2p_passed`, `p2p_total`, `p2p_passed` and the same four per repo (`f2p_total__<repo>`, ...).",
+            "1. The task's only artifact is `/app`: after each step Harbor copies it out of the agent's stack into a fresh "
+            "grading stack built from `environment/` (`[steps.verifier] environment_mode = \"separate\"`).",
+            "2. `steps/<step>/tests/test.sh` resets each repo's test dirs to `/opt/csf/base/<repo>.git`, copies "
+            "`tests/checks/<repo>/` over, deploys the app services with `harbor-svc deploy` (one `deploy` check each), runs "
+            "each repo's suites from `tests/suite.json`, then `tests/grade.py` grades the checks (ids are `<repo>::<id>`).",
+            "3. `reward.json`: `reward` is 1 only if every check passed; it also has `<bucket>_total` / `<bucket>_passed` "
+            "for the buckets deploy, f2p, p2p, and the same per repo (`f2p_total__<repo>`, ...).",
             "",
             "## How the states were cut",
             "",
             "Per repo the base is the start tag. State after step k = base + the commits of steps 1..k cherry-picked in "
             "topological order (`-x --allow-empty`, ort, patience). Gold of step k per repo = diff of the two states "
-            "restricted to non-test files (`steps/<step>/solution/gold/<repo>.patch`); test files the milestone changed are "
-            "hidden (`steps/<step>/tests/hidden/<repo>/`, cumulative over steps 1..k). Cherry-pick conflicts are listed "
+            "restricted to non-test files (`steps/<step>/solution/gold.patch`, paths `<repo>/...`); test files the milestone "
+            "changed are hidden (`steps/<step>/tests/checks/<repo>/`, cumulative over steps 1..k). Cherry-pick conflicts are listed "
             "in `_src/export_report.json` and block the step and its dependents.",
             "",
             "## Regenerating `steps/`",
@@ -745,12 +690,13 @@ def _render_readme(task_id: str, ws: Workspace, report: ExportReport, bases: Dic
             "",
             "## Known limits",
             "",
-            "- `environment/Dockerfile` is a skeleton: toolchains, dependency prefetch (no network at run time) and "
-            "the build are TODO; it was not built.",
-            "- `tests/test.sh` and the Dockerfile were not executed (no Docker in the export environment).",
-            "- `environment/base.patch` (when present) carries the background commits applied to the base; commits that "
-            "conflicted there are retried before the first step touching the same files (`attached_background` in "
+            "- `environment/Dockerfile` takes its toolchains and dependency prefetch from the workspace manifest's "
+            "`csf_environment` (TODO markers when it has none); it was not built by the exporter.",
+            "- `environment/app/` holds the base trees with the background commits applied; commits that conflicted "
+            "there are retried before the first step touching the same files (`attached_background` in "
             "`_src/export_report.json`).",
+            "- Built steps are not curated yet: `suite.json` has no `checks`, so a step is graded by its test files until "
+            "`workspace finalize-task` measures and curates it.",
             "",
         ]
     )
@@ -808,6 +754,7 @@ def export_csf_task(
     data_root, out_dir = Path(data_root), Path(out_dir)
     ws = load_workspace(workspace_manifest)
     raw_manifest = yaml.safe_load(Path(workspace_manifest).read_text(encoding="utf-8"))
+    raw_manifest["__dir__"] = str(Path(workspace_manifest).resolve().parent)
     res, trial, mpath, dpath, commit_repos = _load_inputs(ws, data_root, trial_name, bool(milestones_csv))
     mpath = Path(milestones_csv) if milestones_csv else mpath
     dpath = Path(dependencies_csv) if dependencies_csv else dpath
@@ -905,6 +852,9 @@ def _export(
     crepo = {n: _ContractRepo(ws.get(n), repo_checkout_path(data_root, ws.get(n)), bases[n]) for n in contract_only}
     languages = {n: _detect_language(box(n).dir, bases[n]) for n in clients}
     suites = _suites(ws, raw_manifest, languages)
+    manifest_dir = Path(raw_manifest.get("__dir__", "."))
+    services = svc_layout.parse_services(raw_manifest, manifest_dir, names)
+    envspec = svc_layout.parse_environment(raw_manifest, manifest_dir)
     regen = {n: _regen_script(box(n).dir, bases[n]) for n in clients}
     regen = {n: path for n, path in regen.items() if path}
     licenses = sorted(
@@ -1159,24 +1109,20 @@ def _export(
             ),
         }
 
-    # the environment base = start tag + the clean background commits, shipped as one patch rooted at /app
-    base_patch = b"".join(
-        _git(
-            box(r).dir, "diff", "--binary", "--full-index", "--no-color", "--no-renames",
-            f"--src-prefix=a/{r}/", f"--dst-prefix=b/{r}/", bases[r], base_heads[r],
-        ).stdout
-        for r in clients
-    ) + b"".join(
-        cr.patch(bases[r], cbase[r], cr.changed(bases[r], cbase[r]), prefix=True) for r, cr in crepo.items()
-    )  # fmt: skip
-
     # ---- authoring sources
     step_labels = {b["mid"]: f"m{i}" for i, b in enumerate(built, 1)}
     edges = {
         step_labels[b["mid"]]: sorted(step_labels[p] for p in deps.get(b["mid"], []) if p in step_labels) for b in built
     }
     dag = _dag_string(edges)
-    _write(src_dir / "instructions" / "_context.md", _context_md(ws, suites))
+    _write(src_dir / "instructions" / "_context.md", _context_md(ws, suites, services))
+    contract_cfg = {n: {"mode": "contract-only", "contract_paths": ws.get(n).contract_paths} for n in contract_only}
+    _write(
+        src_dir / "suites.json",
+        json.dumps(svc_layout.suites_config([suites[n] for n in clients], contract_cfg, services), indent=2) + "\n",
+    )
+    for runner in ("test.sh", "grade.py"):
+        _write(src_dir / "runner" / runner, (TEMPLATES / runner).read_text(encoding="utf-8"), runner == "test.sh")
     for b in built:
         name = b["name"]
         repos = [r for r in names if r in b["gold"]]
@@ -1208,12 +1154,26 @@ def _export(
                         ";".join(deps.get(b["mid"], []))])  # fmt: skip
     _write(src_dir / "render.py", (TEMPLATES / "render.py").read_text(encoding="utf-8"), executable=True)
 
-    # ---- the task
+    # ---- the task (service layout: svc_layout.py)
     repo_meta = [
         {"name": r.name, "url": f"https://github.com/{r.full_name}", "commit": bases[r.name]} for r in ws.repos
     ]
     contract = next((r.name for r in ws.repos if r.role == "contract"), names[0])
     all_langs = sorted({lang for lang in languages.values() if lang != "unknown"})
+    env_dir = task_dir / "environment"
+    # starting code: each client's tree at its base head (start tag + background commits), contract-only repos pruned
+    app_files = {}
+    for r in clients:
+        app_files[r] = _write_tree(env_dir / "app" / r, box(r).dir, base_heads[r])
+    for r, cr in crepo.items():
+        app_files[r] = _write_tree(env_dir / "app" / r, cr.dir, cbase[r], cr.pathspecs)
+    for sv in services:
+        if sv.kind == "app":
+            _write(env_dir / "app" / sv.name / svc_layout.MANIFEST, svc_layout.render_manifest(sv))
+    catalog = svc_layout.write_runtimes(env_dir, services)
+    svc_layout.write_vendor(env_dir, envspec)
+    _write(env_dir / "Dockerfile", _render_dockerfile(task_id, names, all_langs, envspec, services))
+    _write(env_dir / "docker-compose.yaml", svc_layout.render_compose(services))
     meta = {
         "slug": task_id[4:] if task_id.startswith("csf-") else task_id,
         "description": f"Cross-repo milestones over {', '.join(r.full_name for r in ws.repos)} "
@@ -1230,41 +1190,13 @@ def _export(
         "dag": dag,
         "license": source_license or ",".join(licenses),
         "step_names": [b["name"] for b in built],
+        "artifact_excludes": [f"{n}/target" for n in clients if languages.get(n) == "rust"],
+        "cards": [
+            {"step": b["name"], "milestones": [b["mid"]], "gold_repos": sorted(b["gold"])} for b in built
+        ],
     }
-    _write(task_dir / "task.toml", _render_toml(meta))
-    _write(
-        task_dir / "environment" / "Dockerfile",
-        _render_dockerfile(
-            task_id, repo_meta, all_langs, bool(base_patch), {n: ws.get(n).contract_paths for n in contract_only}
-        ),
-    )
-    if base_patch:
-        _write(task_dir / "environment" / "base.patch", base_patch)
-    _write(
-        task_dir / "environment" / "csf-collect",
-        (TEMPLATES / "csf-collect").read_text(encoding="utf-8").replace("@REPOS@", " ".join(names)),
-        True,
-    )
-    _write(task_dir / "tests" / "test.sh", (TEMPLATES / "test.sh").read_text(encoding="utf-8"), True)
-    _write(task_dir / "tests" / "grade.py", (TEMPLATES / "grade.py").read_text(encoding="utf-8"), True)
-    _write(
-        task_dir / "tests" / "p2p_core.txt",
-        "# Core regression tests run as P2P at every step: '<repo> <test file or id>' per line.\n",
-    )
-    _write(
-        task_dir / "tests" / "suites.json",
-        json.dumps(
-            {
-                "suites": [suites[n] for n in clients],
-                "contract_only": {
-                    n: {"mode": "contract-only", "contract_paths": ws.get(n).contract_paths} for n in contract_only
-                },
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-    )
+    _write(task_dir / "task.toml", svc_layout.render_task_toml(meta, services, envspec, catalog))
+    _write(task_dir / "instruction.md", "# Episode context\n\n" + _context_md(ws, suites, services).split("\n", 1)[1])
     _write(task_dir / "README.md", _render_readme(task_id, ws, report, bases, dag))
     subprocess.run(
         [sys.executable, str(src_dir / "render.py"), "--task", str(task_dir)], check=True, capture_output=True

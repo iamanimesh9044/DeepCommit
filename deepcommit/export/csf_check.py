@@ -1,11 +1,14 @@
 """Conformance checker for CSF (Harbor multi-step) task folders.
 
 Pure stdlib. ``check_task(path)`` validates a task root (``tasks/<family>/<task-id>/``) against the CSF task format
-and returns a :class:`CheckReport`. Three flavours are auto-detected from ``task.toml``:
+and returns a :class:`CheckReport`. Four flavours are auto-detected from ``task.toml``:
 
 * ``history`` (a): single repo, ``[[verifier.collect]] csf-collect``, shared ``tests/test.sh`` + grader + ``step.env``.
 * ``services`` (b): multi-service, ``artifacts = [...]``, per-step verifier stacks (``steps/<s>/tests/test.sh``).
-* ``multirepo`` (c): DeepCommit extension, family ``cross-repo-change``, ``/app/<repo>`` checkouts.
+* ``multirepo`` (c): DeepCommit extension, family ``cross-repo-change``, ``/app/<repo>`` checkouts, csf-collect patches.
+* ``multirepo-svc`` (d): DeepCommit service layout (``svc_layout.py``): ``multirepo`` with ``artifacts = [{source="/app"}]``,
+  starting code in ``environment/app/``, a compose stack whose Dockerfiles are all referenced, app services from
+  ``csf-service.toml`` manifests run through harbor-svc, and per-step ``tests/{test.sh, grade.py, suite.json, checks/}``.
 
 Where the real tasks (ground truth) differ from the written spec, the real tasks win; each such decision is
 recorded in a ``REAL:`` comment next to the rule.
@@ -30,6 +33,9 @@ TASK_NAME_RE = re.compile(r"^csf/([a-z0-9]+(?:-[a-z0-9]+)*)-(\d{3})$")
 FOLDER_RE = re.compile(r"^csf-([a-z0-9]+(?:-[a-z0-9]+)*)-(\d{3})$")
 LEAK_DIRS = {"tests", "steps", "solution", "hidden", "_src"}
 SUITE_KEYS = ("repo", "workdir", "language", "framework", "run_cmd")
+MANIFEST = "csf-service.toml"
+MANIFEST_KEYS = {"runtime", "build", "command", "port", "health", "depends_on", "env"}
+BUCKETS = {"deploy", "f2p", "p2p"}
 
 
 @dataclass(frozen=True)
@@ -129,6 +135,8 @@ class _Checker:
         self.check_collect_or_artifacts()
         self.check_dockerfile()
         self.check_collect_script()
+        if self.svc:
+            self.check_svc_environment()
         self.locate_steps()
         self.check_root_tests()
         if self.has_steps:
@@ -151,12 +159,17 @@ class _Checker:
         repos = self.meta.get("repos")
         self.repos = [r for r in repos if isinstance(r, str)] if isinstance(repos, list) else []
         self.step_names = [s.get("name", "") for s in self.toml.get("steps", []) if isinstance(s, dict)]
+        sc = self.toml.get("environment", {}).get("service_control", {}) or {}
+        self.runtimes = sc.get("runtimes", {}) or {}
+        app_dir = self.root / "environment" / "app"
+        self.app_services = sorted(m.parent.name for m in app_dir.glob(f"*/{MANIFEST}")) if app_dir.is_dir() else []
+        self.services = set(self.app_services) | set(sc.get("services", {}) or {})
         return True
 
     def detect_flavour(self) -> None:
         collect = self.toml.get("verifier", {}).get("collect")
         if self.meta.get("family") == "cross-repo-change" or "repos" in self.meta:
-            self.report.flavour = "multirepo"
+            self.report.flavour = "multirepo-svc" if "artifacts" in self.toml and not collect else "multirepo"
         elif "artifacts" in self.toml and not collect:
             self.report.flavour = "services"
         else:
@@ -165,6 +178,14 @@ class _Checker:
     @property
     def flavour(self) -> str:
         return self.report.flavour
+
+    @property
+    def multi(self) -> bool:
+        return self.flavour.startswith("multirepo")
+
+    @property
+    def svc(self) -> bool:
+        return self.flavour == "multirepo-svc"
 
     # -- task.toml -----------------------------------------------------------------------------------------------
     def check_header(self) -> None:
@@ -211,7 +232,7 @@ class _Checker:
                     f"milestones_built ({built}) must equal the number of [[steps]] ({len(self.step_names)})",
                 )
         derived = meta.get("csf_task_source", "derived") != "authored"
-        if self.flavour == "multirepo":
+        if self.multi:
             self.check_multirepo_metadata()
         elif derived:
             for key in ("source_repo", "source_commit"):
@@ -289,7 +310,7 @@ class _Checker:
         dag = self.meta.get("csf_milestone_dag")
         if dag is None:
             # REAL: chatwoot-automation-001 has no csf_milestone_dag, so it is only a warning outside multi-repo.
-            if self.flavour != "multirepo":
+            if not self.multi:
                 self.warn(
                     "CSF007", p, 'metadata.csf_milestone_dag is not set; add e.g. "m1 -> m2" to record dependencies'
                 )
@@ -383,6 +404,8 @@ class _Checker:
             src = a.get("source") if isinstance(a, dict) else a
             if not isinstance(src, str) or not src.startswith("/app"):
                 self.err("CSF010", p, f"artifacts source must be a path under /app, got {src!r}")
+        if self.svc and not any((a.get("source") if isinstance(a, dict) else a) in ("/app", "/app/") for a in artifacts or []):
+            self.err("CSF010", p, 'the service layout grades the whole tree: artifacts must include { source = "/app" }')
 
     # -- environment/ --------------------------------------------------------------------------------------------
     def _dockerfile_instructions(self, text: str) -> list[tuple[str, str]]:
@@ -503,7 +526,7 @@ class _Checker:
     def check_root_tests(self) -> None:
         tests = self.root / "tests"
         shared = tests / "test.sh"
-        per_step = self.flavour == "services"
+        per_step = self.flavour == "services" or self.svc
         if shared.is_file():
             self.check_test_sh(shared)
         elif not per_step:
@@ -530,7 +553,7 @@ class _Checker:
                     f"`bash -n` failed: {r.stderr.strip().splitlines()[-1] if r.stderr.strip() else 'syntax error'}",
                 )
         # REAL: voting-app's per-step test.sh does not source step.env (it derives K from baked file names).
-        if self.flavour != "services" and not re.search(r"(\.|source)\s+/tests/step\.env", text):
+        if self.flavour not in ("services", "multirepo-svc") and not re.search(r"(\.|source)\s+/tests/step\.env", text):
             self.err("CSF017", p, "test.sh must source /tests/step.env (STEP, F2P, P2P_EARLIER)")
         if not re.search(r"give_up|--error|infra_invalid|echo\s+'?\"?\{\s*\\?\"reward\\?\"\s*:\s*0", text):
             self.err(
@@ -541,7 +564,10 @@ class _Checker:
             )
         if not re.search(r"/tests/(grade|score)[\w.]*|(ruby|python3?|node|bash)\s+\S*(grade|score)[\w.]*", text):
             self.err("CSF017", p, "test.sh never calls a grader (grade.* / score.*)")
-        if self.flavour == "multirepo":
+        if self.svc:
+            if "grade.py" not in text or "suite" not in text:
+                self.warn("CSF017", p, "test.sh should drive the suites through grade.py and suite.json")
+        elif self.flavour == "multirepo":
             for repo in self.repos:
                 if repo not in text and "suites.json" not in text and "model." not in text:
                     self.err("CSF017", p, f"multi-repo test.sh does not handle repo {repo!r}")
@@ -562,13 +588,16 @@ class _Checker:
         alt = ("current_f2p", "current_p2p", "prior_pass_rate", "prior_failures")
         have_spec = all(k in text for k in spec)
         have_alt = all(k in text for k in alt)
-        if self.flavour == "services":
+        if self.svc:
+            if not all(k in text for k in ('"f2p"', '"p2p"', "_total", "_passed")):
+                self.err("CSF018", graders[0], "grader must emit <bucket>_total / <bucket>_passed for f2p and p2p")
+        elif self.flavour == "services":
             if not (have_spec or have_alt):
                 self.err("CSF018", graders[0], f"grader reward keys must include {list(spec)} or {list(alt)}")
         elif not have_spec:
             miss = [k for k in spec if k not in text]
             self.err("CSF018", graders[0], f"grader does not emit reward key(s) {miss}")
-        if self.flavour == "multirepo" and not re.search(r"(f2p|p2p)_(total|passed)__|_total__", text):
+        if self.multi and not re.search(r"(f2p|p2p)_(total|passed)__|_total__", text):
             self.warn("CSF018", graders[0], "multi-repo grader should also emit per-repo keys f2p_total__<repo>, ...")
 
     def check_p2p_core(self, p: Path) -> None:
@@ -634,7 +663,7 @@ class _Checker:
             d = self.steps_dir / n
             if d.is_dir():
                 self.check_step(n, d, root_hidden)
-        if self.flavour == "multirepo" and self.step_names and not self.cross_repo_steps:
+        if self.multi and self.step_names and not self.cross_repo_steps:
             self.err("CSF020", self.steps_dir, "a multi-repo task needs at least one step whose gold changes 2+ repos")
 
     def parse_env(self, p: Path) -> dict[str, str]:
@@ -664,9 +693,11 @@ class _Checker:
         if step_env.is_file():
             env = self.parse_env(step_env)
             self.check_step_env(name, step_env, env)
+        elif self.svc:
+            env = self.check_suite_json(name, tests / "suite.json")
         elif self.flavour != "services":
             self.err("CSF022", step_env, "tests/step.env is missing (STEP, F2P, P2P_EARLIER)")
-        if self.flavour == "services":
+        if self.flavour == "services" or self.svc:
             ts = tests / "test.sh"
             if not ts.is_file():
                 self.err("CSF017", ts, "per-step verifier needs tests/test.sh")
@@ -722,7 +753,10 @@ class _Checker:
                 out += [f.relative_to(base) for f in base.rglob("*") if f.is_file()]
         checks = d / "tests" / "checks"
         if checks.is_dir():
-            out += [Path(f.name) for f in checks.rglob("*") if f.is_file() and f.name != "conftest.py"]
+            if self.svc:
+                out += [f.relative_to(checks) for f in checks.rglob("*") if f.is_file()]
+            else:
+                out += [Path(f.name) for f in checks.rglob("*") if f.is_file() and f.name != "conftest.py"]
         return out
 
     def check_instruction_paths(self, name: str, inst: Path, text: str, hidden: list[Path], env: dict) -> None:
@@ -731,7 +765,7 @@ class _Checker:
         for rel in hidden:
             parts = rel.parts
             names.add(str(rel))
-            if self.flavour == "multirepo" and len(parts) > 1 and parts[0] in self.repos:
+            if self.multi and len(parts) > 1 and parts[0] in self.repos:
                 names.add("/".join(parts[1:]))
         for k, v in env.items():
             if k == "F2P" or k.startswith("F2P_"):
@@ -757,7 +791,26 @@ class _Checker:
             stext = self._text(solve)
             if not re.search(r"git\s+(-C\s+\S+\s+)?apply|\bpatch\s+-p", stext):
                 self.err("CSF020", solve, "solve.sh does not apply a gold patch (`git apply ...`)")
-        if self.flavour == "multirepo":
+        if self.svc:
+            g = sol / "gold.patch"
+            if not g.is_file():
+                self.err("CSF020", g, "solution/gold.patch is missing (one patch rooted at /app, paths <repo>/...)")
+                return
+            self.check_patch(g)
+            repos = sorted(set(re.findall(r"^diff --git a/([^/\s]+)/", self._text(g), re.M)))
+            for repo in repos:
+                if repo not in self.repos and repo not in self.services:
+                    self.err("CSF020", g, f"gold.patch touches {repo!r}, which is neither a repo nor a service")
+            touched = [r for r in repos if r in self.repos]
+            if len(touched) >= 2:
+                self.cross_repo_steps += 1
+            elif touched:
+                self.warn("CSF020", g, f"single-repo step: gold.patch only changes {touched[0]}")
+            if stext and not re.search(r"cd\s+/app\b", stext):
+                self.warn("CSF020", solve, "solve.sh should apply gold.patch from /app (`cd /app && git apply ...`)")
+            if stext and self.app_services and "harbor-svc deploy" not in stext:
+                self.warn("CSF020", solve, "the task has app services: solve.sh should end with `harbor-svc deploy --all`")
+        elif self.flavour == "multirepo":
             gold = sol / "gold"
             files = sorted(gold.glob("*.patch")) if gold.is_dir() else []
             if not files:
@@ -826,6 +879,141 @@ class _Checker:
         if nfiles == 0:
             self.err("CSF021", g, "gold patch is not a unified git diff (no `diff --git` header)")
 
+
+    # -- service layout (multirepo-svc) ------------------------------------------------------------------------------
+    def check_svc_environment(self) -> None:
+        env = self.root / "environment"
+        compose_p = env / "docker-compose.yaml"
+        compose: dict = {}
+        if not compose_p.is_file():
+            self.err("CSF032", compose_p, "the service layout needs environment/docker-compose.yaml (main, app-src, appnet)")
+        else:
+            try:
+                import yaml
+
+                compose = yaml.safe_load(self._text(compose_p)) or {}
+            except Exception as e:  # noqa: BLE001
+                self.err("CSF032", compose_p, f"docker-compose.yaml does not parse: {e}")
+        services = compose.get("services", {}) or {}
+        # every Dockerfile under environment/ is linked: main's, a compose build, or a runtime of the catalog
+        linked = {(env / "Dockerfile").resolve()}
+        for name, svc in services.items():
+            build = (svc or {}).get("build")
+            if isinstance(build, str):
+                build = {"context": build}
+            if isinstance(build, dict):
+                ctx = (env / build.get("context", ".")).resolve()
+                df = (ctx / build.get("dockerfile", "Dockerfile")).resolve()
+                linked.add(df)
+                if not df.is_file():
+                    self.err("CSF032", compose_p, f"service {name!r} builds {df.relative_to(self.root)} which is missing")
+        for rt, path in self.runtimes.items():
+            df = (env / path / "Dockerfile").resolve()
+            linked.add(df)
+            if not df.is_file():
+                self.err("CSF033", env / path, f"runtime {rt!r} has no Dockerfile")
+            for helper in ("csf-run", "csf-health"):
+                h = env / path / helper
+                if not h.is_file():
+                    self.err("CSF033", h, f"runtime {rt!r} needs {helper} (the app-service entrypoint and healthcheck)")
+        for df in env.rglob("*Dockerfile*"):
+            if df.is_file() and "app" not in df.relative_to(env).parts[:1] and df.resolve() not in linked:
+                self.err("CSF032", df, "Dockerfile is not linked: neither main, a compose build, nor a runtime")
+        main = services.get("main") or {}
+        if self.app_services or self.runtimes:
+            if "app-src" not in (compose.get("volumes") or {}):
+                self.err("CSF032", compose_p, "app services need the code volume `app-src` (volumes: app-src)")
+            if not ((compose.get("networks") or {}).get("appnet") or {}).get("internal"):
+                self.err("CSF032", compose_p, "app services need the internal network `appnet` (internal: true)")
+            if not any(str(v).startswith("app-src:/app") for v in main.get("volumes", []) or []):
+                self.err("CSF032", compose_p, "main must mount app-src at /app")
+            if "appnet" not in (main.get("networks") or []):
+                self.err("CSF032", compose_p, "main must be on appnet")
+        # starting code and manifests
+        app = env / "app"
+        for repo in self.repos:
+            if not (app / repo).is_dir():
+                self.err("CSF034", app / repo, f"starting code of repo {repo!r} is missing (environment/app/{repo}/)")
+        for svc in self.app_services:
+            m = app / svc / MANIFEST
+            try:
+                data = tomllib.loads(self._text(m))
+            except tomllib.TOMLDecodeError as e:
+                self.err("CSF035", m, f"manifest does not parse: {e}")
+                continue
+            extra = sorted(set(data) - MANIFEST_KEYS)
+            if extra:
+                self.err("CSF035", m, f"manifest keys {extra} are not allowed (only {sorted(MANIFEST_KEYS)})")
+            if data.get("runtime") not in self.runtimes:
+                self.err("CSF035", m, f"runtime {data.get('runtime')!r} is not in [environment.service_control.runtimes]")
+            if not data.get("command"):
+                self.err("CSF035", m, "manifest needs a command")
+            if data.get("health") and not data.get("port"):
+                self.err("CSF035", m, "health needs a port")
+        if self.app_services and not self.toml.get("environment", {}).get("service_control", {}).get("enabled"):
+            self.err("CSF035", self.root / "task.toml", "app services need [environment.service_control] enabled = true")
+        if (env / "base.patch").exists():
+            self.warn("CSF014", env / "base.patch", "the service layout ships the base in environment/app/, not base.patch")
+
+    def check_suite_json(self, name: str, p: Path) -> dict:
+        """A step's tests/suite.json; returns an env-like dict for the instruction-path check."""
+        if not p.is_file():
+            self.err("CSF022", p, "tests/suite.json is missing (step, suites, files, checks)")
+            return {}
+        try:
+            suite = json.loads(self._text(p))
+        except json.JSONDecodeError as e:
+            self.err("CSF022", p, f"suite.json does not parse: {e}")
+            return {}
+        if suite.get("step") != name:
+            self.err("CSF022", p, f"suite.json step must be {name!r}, got {suite.get('step')!r}")
+        for i, su in enumerate(suite.get("suites", [])):
+            for k in SUITE_KEYS:
+                if not su.get(k):
+                    self.err("CSF029", p, f"suite #{i} is missing `{k}`")
+            if su.get("repo") not in self.repos:
+                self.err("CSF029", p, f"suite #{i} repo {su.get('repo')!r} is not in metadata.repos")
+        covered = {su.get("repo") for su in suite.get("suites", [])}
+        for r in self.repos:
+            if r not in covered and r not in self.contract_only:
+                self.err("CSF029", p, f"no suite for repo {r!r}")
+        for sv in suite.get("services", []):
+            if sv.get("name") not in self.services:
+                self.err("CSF022", p, f"service {sv.get('name')!r} is neither an app service manifest nor in service_control")
+        if "checks" not in suite:
+            self.warn("CSF022", p, "suite.json has no `checks` yet (not curated): the step is graded by files")
+        else:
+            checks = suite["checks"]
+            bad = [c for c in checks if c.get("bucket") not in BUCKETS or "::" not in str(c.get("id", ""))]
+            if bad:
+                self.err("CSF022", p, f"checks need a `<repo>::<id>` id and a bucket in {sorted(BUCKETS)}: {bad[:2]}")
+            if not any(c.get("bucket") == "f2p" for c in checks):
+                self.err("CSF022", p, "suite.json has no f2p check")
+            deploy = {c["id"].split("::", 1)[1] for c in checks if c.get("bucket") == "deploy"}
+            for sv in suite.get("services", []):
+                if sv.get("name") not in deploy:
+                    self.warn("CSF022", p, f"service {sv.get('name')!r} has no deploy check")
+        own = suite.get("own_files", {}) or {}
+        return {"F2P_" + re.sub(r"\W", "_", r).upper(): " ".join(fs) for r, fs in own.items()}
+
+    def check_svc_leak(self, env: Path) -> None:
+        """A check file must not be in environment/ with its content: checks hold only the test files a milestone
+        changed, so a copy anywhere under environment/ (the starting code included) hands the agent a hidden test."""
+        import hashlib
+
+        def h(f: Path) -> str:
+            return hashlib.sha256(f.read_bytes()).hexdigest()
+
+        env_hashes = {h(f) for f in env.rglob("*") if f.is_file()}
+        for n in self.step_names:
+            checks = self.steps_dir / n / "tests" / "checks"
+            if not checks.is_dir():
+                continue
+            for f in checks.rglob("*"):
+                if f.is_file() and f.stat().st_size > 64 and h(f) in env_hashes:
+                    self.err("CSF023", env, f"hidden check {f.relative_to(checks)} (step {n}) also appears under "
+                             "environment/ (leak)")
+
     # -- environment leak ---------------------------------------------------------------------------------------------
     def check_env_leak(self) -> None:
         env = self.root / "environment"
@@ -841,6 +1029,9 @@ class _Checker:
         for f in env.rglob("step.env"):
             self.err("CSF023", f, "step.env must not live under environment/")
         if not self.has_steps:
+            return
+        if self.svc:
+            self.check_svc_leak(env)
             return
         env_rel = {f.relative_to(env) for f in env.rglob("*") if f.is_file() and f.name != "base.patch"}
         hidden_roots = [

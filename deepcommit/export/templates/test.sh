@@ -1,80 +1,85 @@
 #!/usr/bin/env bash
-# Shared verifier for every step. Harbor uploads tests/ plus steps/<step>/tests/ to /tests and runs this in a
-# fresh container built from environment/ (the base state of every repo), separate from the agent's container.
+# Grades one step in its own grading stack, built from environment/. Harbor has replaced /app with the agent's /app (the
+# task's only artifact) and uploaded this folder to /tests. GENERATED (DeepCommit export): the same in every step.
 #
-# 1. For every repo, apply the agent's patch (/logs/artifacts/model.<repo>.patch, written by csf-collect) to the clean
-#    base tree at /app/<repo>. Changes under the repo's test dirs are dropped: the hidden tests own them.
-# 2. Copy /tests/hidden/<repo>/ over the tree.
-# 3. Run each repo's suites (tests/suites.json): this step's fail-to-pass files, then the pass-to-pass files
-#    (P2P_EARLIER_<REPO> from step.env plus tests/p2p_core.txt).
-# 4. grade.py merges every repo's results into one set (ids are <repo>::<id>) and writes /logs/verifier/reward.json:
-#    reward 1 only if every F2P and every P2P test across ALL repos passed.
+#   seed    reset each repo's test dirs (suite.json suites[].test_excludes) to the base tree in /opt/csf/base/<repo>.git,
+#           then copy checks/<repo>/ over the tree. Whatever the agent did in the test dirs is dropped.
+#   deploy  for every service in suite.json "services": an app service is deployed with `harbor-svc deploy <svc>` from
+#           the agent's /app/<svc>/csf-service.toml; infrastructure is already up. Then its health command: one deploy
+#           check each.
+#   checks  run each repo's suite: this step's f2p files, then its p2p files (suite.json "files").
+#   grade   grade.py: reward 1 only if every check in suite.json passed; writes reward.json and checks.json.
 set -uo pipefail
 
 LOG=/logs/verifier
+T=/tests
 mkdir -p "$LOG"
-# shellcheck source=/dev/null
-. /tests/step.env    # STEP, F2P_<REPO>, P2P_EARLIER_<REPO>
+echo '{"reward": 0}' > "$LOG/reward.json"
 shopt -u patsub_replacement 2> /dev/null || true
 
 note() { echo "csf-verify: $*" | tee -a "$LOG/verify.log"; }
-give_up() { note "$1"; python3 /tests/grade.py --error "$1"; exit 0; }
-var_of() { printf '%s' "$1" | tr 'a-z.-' 'A-Z__'; }
+give_up() { note "$1"; python3 "$T/grade.py" --error "$1"; exit 0; }
 
 run_group() {  # run_group <repo> <f2p|p2p> <workdir> <run_cmd> <tests>
   local repo=$1 group=$2 workdir=$3 cmd=$4 tests=$5
   if [ -z "$tests" ]; then return 0; fi
-  local quoted=""
-  set -f
-  for f in $tests; do quoted+="$(printf '%q' "$f") "; done  # paths may hold ( ) [ ] (Next.js routes)
-  set +f
-  local full=${cmd//\{tests\}/$quoted}
+  local full=${cmd//\{tests\}/$tests}
   note "running $repo $group: $tests"
   ( cd "/app/$repo/$workdir" && bash -c "$full" ) < /dev/null > "$LOG/$repo.$group.log" 2>&1
   echo $? > "$LOG/$repo.$group.rc"
   tail -n 3 "$LOG/$repo.$group.log" | tee -a "$LOG/verify.log"
 }
 
-note "step ${STEP}"
-repos=$(python3 /tests/grade.py repos) || give_up "tests/suites.json is unreadable"
+note "step $(python3 "$T/grade.py" step)"
+repos=$(python3 "$T/grade.py" repos) || give_up "suite.json is unreadable"
 
+# seed
 for repo in $repos; do
-  cd "/app/$repo" 2> /dev/null || give_up "/app/$repo is missing"
-  patch=/logs/artifacts/model.$repo.patch
-  if [ -s "$patch" ]; then
-    args=()
-    while IFS= read -r pattern; do args+=("--exclude=$pattern"); done < <(python3 /tests/grade.py excludes "$repo")
-    note "applying the agent's patch to $repo ($(grep -c '^diff --git' "$patch") files; test dirs excluded)"
-    git apply --binary --whitespace=nowarn ${args[@]+"${args[@]}"} "$patch" >> "$LOG/verify.log" 2>&1 \
-      || give_up "the agent's changes to $repo do not apply to the base tree"
-  else
-    note "no changes from the agent in $repo"
-  fi
-  if [ -d "/tests/hidden/$repo" ]; then cp -a "/tests/hidden/$repo/." "/app/$repo/"; fi
+  [ -d "/app/$repo" ] || give_up "/app/$repo is missing from the agent's tree"
+  base=/opt/csf/base/$repo.git
+  [ -d "$base" ] || give_up "$base is missing from the image"
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    note "resetting $repo/$dir to the base tree"
+    rm -rf "/app/$repo/$dir"
+    if git --git-dir="$base" ls-tree -d --name-only HEAD -- "$dir" | grep -q .; then
+      git --git-dir="$base" --work-tree="/app/$repo" checkout HEAD -- "$dir" >> "$LOG/verify.log" 2>&1 \
+        || give_up "could not restore $repo/$dir from the base tree"
+    fi
+  done < <(python3 "$T/grade.py" excludes "$repo")
+  if [ -d "$T/checks/$repo" ]; then cp -a "$T/checks/$repo/." "/app/$repo/"; fi
 done
 
-# Services the suites talk to (suites.json "services"): start each, wait for its health command.
-while IFS=$'\t' read -r sname sstart shealth; do
-  note "starting service $sname"
-  ( bash -c "$sstart" ) < /dev/null > "$LOG/service.$sname.log" 2>&1 &
-  for _ in $(seq 1 60); do bash -c "$shealth" > /dev/null 2>&1 && break; sleep 1; done
-  bash -c "$shealth" > /dev/null 2>&1 || give_up "service $sname did not become healthy"
-done < <(python3 /tests/grade.py services)
+# deploy
+while IFS=$'\t' read -r sname skind shealth; do
+  rc=0
+  if [ "$skind" = app ]; then
+    note "harbor-svc deploy $sname"
+    harbor-svc deploy "$sname" > "$LOG/deploy.$sname.log" 2>&1
+    rc=$?
+    tail -n 5 "$LOG/deploy.$sname.log" | tee -a "$LOG/verify.log"
+    [ "$rc" -eq 3 ] && note "no service $sname in the agent's /app (manifest removed)"
+    [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ] && note "harbor-svc deploy $sname failed (exit $rc)"
+  else
+    note "waiting for infrastructure service $sname"
+  fi
+  if [ "$rc" -eq 0 ]; then
+    for _ in $(seq 1 60); do bash -c "$shealth" > /dev/null 2>&1 && break; sleep 1; done
+    bash -c "$shealth" > /dev/null 2>&1 || { note "service $sname: $shealth fails"; rc=1; }
+  fi
+  [ "$skind" = app ] && { harbor-svc logs "$sname" --tail 500 > "$LOG/service.$sname.log" 2>&1 || true; }
+  if [ "$rc" -eq 0 ]; then echo 0; else echo 1; fi > "$LOG/deploy.$sname.rc"
+done < <(python3 "$T/grade.py" services)
 
-while IFS=$'\t' read -r repo workdir whole cmd; do
-  up=$(var_of "$repo")
-  f2p_var="F2P_$up"
-  p2p_var="P2P_EARLIER_$up"
-  core=$(awk -v r="$repo" '$1 == r { print $2 }' /tests/p2p_core.txt | xargs)
-  f2p="${!f2p_var:-}"
-  p2p="$(printf '%s %s' "${!p2p_var:-}" "$core" | xargs)"
+# checks
+while IFS=$'\x1f' read -r repo workdir whole cmd f2p p2p; do
   if [ "$whole" = 1 ]; then
-    # the suite's command takes no file list (cargo test): run it once, ids.json picks what counts
+    # the suite's command takes no file list (cargo test): run it once, suite.json picks what counts
     run_group "$repo" f2p "$workdir" "$cmd" "all"
   else
     run_group "$repo" f2p "$workdir" "$cmd" "$f2p"
     run_group "$repo" p2p "$workdir" "$cmd" "$p2p"
   fi
-done < <(python3 /tests/grade.py suites)
+done < <(python3 "$T/grade.py" suites)
 
-python3 /tests/grade.py
+python3 "$T/grade.py"

@@ -3,8 +3,8 @@
 A step is gradable only if some hidden test goes from failing to passing across its gold patch. A milestone that leaves
 the checkout unimportable until a later milestone lands (generated stubs, a pending dependency bump) has no such test:
 its change and tests belong in the next step. ``plan`` finds those steps from the curated measurement, ``apply`` rewrites
-the task folder: gold patches are concatenated per repository (``git apply`` applies them in order), the hidden tree is
-the last member's (it is cumulative), steps are renumbered, task.toml and the DAG follow.
+the task folder: the members' gold.patch files are concatenated (``git apply`` applies them in order), the checks tree is
+the last member's (it is cumulative), own test files are the union, steps are renumbered, task.toml and the DAG follow.
 """
 
 from __future__ import annotations
@@ -15,12 +15,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from .curate import StepCuration
-
-SOLVE = """#!/bin/bash
-# Reference solution: apply this step's gold patch to every repo it touches.
-set -euo pipefail
-here=$(cd "$(dirname "$0")" && pwd)
-"""
+from .svc_layout import read_suite, write_suite
 
 
 def plan(curated: List[StepCuration]) -> List[List[str]]:
@@ -71,35 +66,21 @@ def apply(task: Path, groups: List[List[str]]) -> Dict[str, str]:
         out = stage / new
         last = steps / g[-1]
         shutil.copytree(last, out)
-        shutil.rmtree(out / "solution/gold")
-        (out / "solution/gold").mkdir(parents=True)
-        repos = sorted({p.stem for n in g for p in (steps / n / "solution/gold").glob("*.patch")})
-        for repo in repos:
-            parts = [
-                (steps / n / "solution/gold" / f"{repo}.patch").read_text()
-                for n in g
-                if (steps / n / "solution/gold" / f"{repo}.patch").exists()
-            ]
-            (out / "solution/gold" / f"{repo}.patch").write_text(
-                "".join(p if p.endswith("\n") else p + "\n" for p in parts)
-            )
-        solve = out / "solution/solve.sh"
-        solve.write_text(
-            SOLVE + "\n".join(f'git -C /app/{r} apply --whitespace=nowarn "$here/gold/{r}.patch"' for r in repos) + "\n"
-        )
-        solve.chmod(0o755)
-        # own test files: union over members
+        parts = [(steps / n / "solution/gold.patch").read_text() for n in g if (steps / n / "solution/gold.patch").exists()]
+        (out / "solution/gold.patch").write_text("".join(p if p.endswith("\n") else p + "\n" for p in parts))
+        # solve.sh is the same for every step (apply gold.patch, then deploy): the last member's is kept
         own: Dict[str, List[str]] = {}
         for n in g:
-            for line in (steps / n / "tests/step.env").read_text().splitlines():
-                m = re.match(r"F2P_([A-Z_]+)='(.*)'", line)
-                if m:
-                    for f in m.group(2).split():
-                        if f not in own.setdefault(m.group(1), []):
-                            own[m.group(1)].append(f)
-        env = [f"STEP={new}"] + [f"F2P_{k}='{' '.join(v)}'" for k, v in sorted(own.items())]
-        env += [f"P2P_EARLIER_{k}=''" for k in sorted(own)]
-        (out / "tests/step.env").write_text("\n".join(env) + "\n")
+            member = read_suite(steps / n)
+            for repo, files in (member.get("own_files") or {}).items():
+                for f in files:
+                    if f not in own.setdefault(repo, []):
+                        own[repo].append(f)
+        suite = read_suite(out)
+        suite.update(step=new, index=i, own_files=own)
+        suite["files"] = {r: {"f2p": list(own.get(r, [])), "p2p": []} for r in suite.get("files", {})}
+        suite.pop("checks", None)  # curation writes the folded step's checks
+        write_suite(out, suite)
         if len(g) > 1:  # instruction: the members' specs in order (gen_instructions rewrites it)
             specs = []
             for n in g:
@@ -141,4 +122,11 @@ def _rewrite_toml(task: Path, groups: List[List[str]], rename: Dict[str, str]) -
         edges += [n.split("-")[0] for n in new_names if n.split("-")[0] not in referenced]
         head = head.replace(m.group(0), f'csf_milestone_dag = "{"; ".join(edges)}"')
     head = re.sub(r"milestones_built = \d+", f"milestones_built = {sum(1 for _ in new_names)}", head)
-    p.write_text(head + "\n".join(f'[[steps]]\nname = "{n}"\n' for n in new_names))
+    p.write_text(
+        head.rstrip("\n")
+        + "\n"
+        + "".join(
+            f'\n[[steps]]\nname = "{n}"\n[steps.verifier]\nenvironment_mode = "separate"\nenv = {{ CSF_STEP = "{n}" }}\n'
+            for n in new_names
+        )
+    )

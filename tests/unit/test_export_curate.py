@@ -19,8 +19,14 @@ def _grade_module():
 def _step(task: Path, name: str, f2p_files: dict):
     d = task / "steps" / name / "tests"
     d.mkdir(parents=True)
-    lines = [f"STEP={name}"] + [f"F2P_{r.upper().replace('-', '_')}='{' '.join(fs)}'" for r, fs in f2p_files.items()]
-    (d / "step.env").write_text("\n".join(lines) + "\n")
+    suite = {
+        "step": name,
+        "suites": [{"repo": r} for r in f2p_files],
+        "services": [],
+        "files": {r: {"f2p": fs, "p2p": []} for r, fs in f2p_files.items()},
+        "own_files": f2p_files,
+    }
+    (d / "suite.json").write_text(json.dumps(suite))
 
 
 def test_f2p_is_own_failing_then_passing_and_p2p_is_earlier(tmp_path):
@@ -70,8 +76,19 @@ def test_grade_uses_only_listed_ids(tmp_path, monkeypatch):
     tests, log = tmp_path / "tests", tmp_path / "log"
     tests.mkdir()
     log.mkdir()
-    (tests / "suites.json").write_text(json.dumps({"suites": [{"repo": "r", "parser": "pytest", "run_cmd": "x"}]}))
-    (tests / "ids.json").write_text(json.dumps({"f2p": ["r::t::new"], "p2p": ["r::t::old"]}))
+    (tests / "suite.json").write_text(
+        json.dumps(
+            {
+                "step": "m1-a",
+                "suites": [{"repo": "r", "parser": "pytest", "run_cmd": "x"}],
+                "services": [],
+                "checks": [
+                    {"id": "r::t::new", "repo": "r", "bucket": "f2p"},
+                    {"id": "r::t::old", "repo": "r", "bucket": "p2p"},
+                ],
+            }
+        )
+    )
     (log / "r.f2p.log").write_text("PASSED t::new\nFAILED t::unrelated\n")
     (log / "r.f2p.rc").write_text("1")
     (log / "r.p2p.log").write_text("PASSED t::old\n")
@@ -85,3 +102,13 @@ def test_grade_uses_only_listed_ids(tmp_path, monkeypatch):
     (log / "r.p2p.log").write_text("FAILED t::old\n")
     g.grade()
     assert json.loads((log / "reward.json").read_text())["reward"] == 0
+
+
+def test_write_keeps_own_files_and_sets_checks(tmp_path):
+    _step(tmp_path, "m1-a", {"qdrant-client": ["tests/test_a.py", "tests/test_z.py"]})
+    a = "qdrant-client::tests/test_a.py::t"
+    curate.write(tmp_path, [curate.StepCuration("m1-a", f2p=[a], p2p=[])])
+    suite = json.loads((tmp_path / "steps/m1-a/tests/suite.json").read_text())
+    assert suite["checks"] == [{"id": a, "repo": "qdrant-client", "bucket": "f2p"}]
+    assert suite["files"]["qdrant-client"] == {"f2p": ["tests/test_a.py"], "p2p": []}
+    assert suite["own_files"] == {"qdrant-client": ["tests/test_a.py", "tests/test_z.py"]}

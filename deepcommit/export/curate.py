@@ -8,8 +8,8 @@ Rules, per step k (state k = base + gold of steps 1..k):
   P2P   a test of any earlier step's test files (or a core test) that passes in state k-1 and in state k, every run
 A step with no F2P test cannot be graded: it is reported as ``unusable`` so the caller folds it into its successor.
 
-Writes steps/<step>/tests/ids.json and rewrites the F2P_/P2P_EARLIER_ lists of steps/<step>/tests/step.env to the
-files of those ids (test.sh runs files; grade.py grades ids).
+Writes the ``checks`` of steps/<step>/tests/suite.json and its ``files`` (the files of those ids: test.sh runs files,
+grade.py grades ids).
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+
+from .svc_layout import set_checks
 
 
 @dataclass
@@ -75,12 +77,12 @@ def _go_pkg_dir(tid: str) -> Optional[str]:
 
 
 def _own_files(step_dir: Path) -> Dict[str, List[str]]:
-    out: Dict[str, List[str]] = {}
-    for line in (step_dir / "tests/step.env").read_text().splitlines():
-        m = re.match(r"F2P_([A-Z_]+)='(.*)'", line)
-        if m and m.group(2).strip():
-            out[m.group(1).lower().replace("_", "-")] = m.group(2).split()
-    return out
+    """The step's own test files per repo: ``own_files`` of tests/suite.json (written by render.py, kept by curation)."""
+    suite = json.loads((step_dir / "tests/suite.json").read_text())
+    own = suite.get("own_files")
+    if own is None:  # a suite.json written before own_files existed: its f2p files
+        own = {r: f.get("f2p", []) for r, f in suite.get("files", {}).items()}
+    return {r: list(fs) for r, fs in own.items() if fs}
 
 
 def curate(measure: dict, task_dir: Path, max_p2p: int = 400) -> List[StepCuration]:
@@ -138,26 +140,9 @@ def curate(measure: dict, task_dir: Path, max_p2p: int = 400) -> List[StepCurati
 
 
 def write(task_dir: Path, curated: List[StepCuration]) -> None:
+    """Write every usable step's checks into tests/suite.json (deploy check per service, f2p, p2p) and the files
+    test.sh runs for them; ``own_files`` is left as it is, so the task can be curated again."""
     for cur in curated:
-        sd = task_dir / "steps" / cur.step / "tests"
         if not cur.usable:
             continue
-        (sd / "ids.json").write_text(json.dumps({"f2p": cur.f2p, "p2p": cur.p2p}, indent=1) + "\n")
-        env = (sd / "step.env").read_text().splitlines()
-        keep = [ln for ln in env if not re.match(r"(F2P_|P2P_EARLIER_)", ln)]
-
-        def files(ids: List[str]) -> Dict[str, List[str]]:
-            out: Dict[str, List[str]] = {}
-            for tid in ids:
-                repo = tid.split("::", 1)[0]
-                f = _file_of(tid) or (_vitest_file(tid) if _is_vitest(tid) else None) or "__suite__"
-                if f not in out.setdefault(repo, []):
-                    out[repo].append(f)
-            return out
-
-        for prefix, ids in (("F2P", cur.f2p), ("P2P_EARLIER", cur.p2p)):
-            by_repo = files(ids)
-            for repo in sorted(set(cur.own_files) | set(by_repo)):
-                fs = [f for f in by_repo.get(repo, []) if f != "__suite__"]
-                keep.append(f"{prefix}_{repo.upper().replace('-', '_')}='{' '.join(fs)}'")
-        (sd / "step.env").write_text("\n".join(keep) + "\n")
+        set_checks(task_dir / "steps" / cur.step, cur.f2p, cur.p2p, {"curation_note": cur.note} if cur.note else None)

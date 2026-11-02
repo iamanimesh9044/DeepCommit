@@ -47,10 +47,10 @@ Write the task statement in Markdown, starting with a `# <title>` line. Rules:
    short lists. No preamble, no closing remarks. Output ONLY the Markdown."""
 
 
-def _step_info(task: Path, step: dict):
-    sd = task / "steps" / step["name"]
-    ids = sd / "tests/ids.json"
-    return sd, ids
+def _f2p_ids(sd: Path) -> list:
+    suite = sd / "tests/suite.json"
+    checks = json.loads(suite.read_text()).get("checks", []) if suite.exists() else []
+    return [c["id"] for c in checks if c["bucket"] == "f2p"]
 
 
 def build_prompt(task: Path, scratch: Path, names: list[str], i: int) -> str:
@@ -61,10 +61,9 @@ def build_prompt(task: Path, scratch: Path, names: list[str], i: int) -> str:
     old = orig.read_text() if orig.exists() else (sd / "instruction.md").read_text()
     summary.write_text(old.split("\n---\n")[0])
     f2p = scratch / f"{name}.f2p.json"
-    ids = sd / "tests/ids.json"
-    f2p.write_text(json.dumps(json.loads(ids.read_text())["f2p"], indent=1) if ids.exists() else "[]")
-    gold = " ".join(str(p) for p in sorted((sd / "solution/gold").glob("*.patch")))
-    hidden = sd / "tests/hidden"
+    f2p.write_text(json.dumps(_f2p_ids(sd), indent=1))
+    gold = str(sd / "solution/gold.patch")
+    hidden = sd / "tests/checks"
     tests = (
         " ".join(str(p) for p in sorted(hidden.rglob("*")) if p.is_file() and p.suffix in (".py", ".rs"))
         if hidden.is_dir()
